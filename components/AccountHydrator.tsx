@@ -7,6 +7,9 @@ import { collection, getDocsFromServer, query, where } from "firebase/firestore"
 import { getCustomerAccount } from "@/lib/customerAccount";
 import { clearStoredCustomerMobile, ensureClientOnboarding, getStoredCustomerMobile, normalizeIndianMobile } from "@/lib/clientOnboarding";
 
+const DEMO_OTP_ENABLED = process.env.NODE_ENV !== 'production' && process.env.NEXT_PUBLIC_ENABLE_DEMO_OTP === 'true';
+const DEMO_OTP = process.env.NEXT_PUBLIC_DEMO_OTP || '';
+
 function formatDate(value: string) {
   if (!value) return "—";
   const date = new Date(`${value}T00:00:00`);
@@ -38,7 +41,6 @@ function renderLogin(root: HTMLElement) {
             <p>Sign in with your mobile number to view orders, addresses and subscriptions.</p>
             <label>Mobile number<input type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile number" /></label>
             <a class="btn primary" href="#" data-account-login>Send OTP</a>
-            <p class="auth-hint" style="text-align:center;margin-top:12px;font-size:13px">Demo OTP: <strong>1234</strong></p>
           </div>
         </section>
       </div>
@@ -73,7 +75,8 @@ function renderLogin(root: HTMLElement) {
     timer=setInterval(tick,1000); tick();
     verify.addEventListener('click', async()=>{
       message(''); if(Date.now()>=expiresAt){message('OTP expired. Please request a new OTP.');return;}
-      if(otp.value.trim()!=='1234'){message('Invalid OTP. Please enter 1234.');return;}
+      if(!DEMO_OTP_ENABLED || !DEMO_OTP){message('Phone OTP authentication is not configured for this environment.');return;}
+      if(otp.value.trim()!==DEMO_OTP){message('Invalid OTP. Please enter the correct 4-digit OTP.');return;}
       verify.disabled=true; verify.textContent='Verifying…';
       try { await ensureClientOnboarding(mobile); if(!auth.currentUser) await signInAnonymously(auth); window.location.assign('/account'); }
       catch(e){ console.error('Customer login failed',e); message('Unable to complete login. Please check your connection.'); verify.disabled=false; verify.textContent='Verify OTP'; }
@@ -83,6 +86,7 @@ function renderLogin(root: HTMLElement) {
     e.preventDefault(); message('');
     const normalized=normalizeIndianMobile(input.value); if(!normalized){message('Enter a valid 10-digit Indian mobile number.');return;}
     mobile=normalized;
+    if(!DEMO_OTP_ENABLED || !DEMO_OTP){message('Phone OTP authentication is not configured for this environment.');return;}
     // Send OTP is a one-shot action for this login attempt. Hide it after sending
     // so repeated clicks cannot create duplicate OTP inputs/verify buttons.
     action.style.display='none';

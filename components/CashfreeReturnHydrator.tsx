@@ -2,6 +2,7 @@
 
 import React, { useEffect } from 'react';
 import { clearCart } from '@/lib/cart';
+import { completeCashfreePayment } from '@/lib/cashfreeFunctions';
 
 export default function CashfreeReturnHydrator({ children }: { children: React.ReactNode }) {
   useEffect(() => {
@@ -15,9 +16,8 @@ export default function CashfreeReturnHydrator({ children }: { children: React.R
 
       for (let attempt = 0; attempt < 5 && !cancelled; attempt += 1) {
         try {
-          const response = await fetch(`/api/cashfree/complete?order_id=${encodeURIComponent(orderId)}`, { cache: 'no-store' });
-          const data = await response.json();
-          if (response.ok && data?.status === 'paid') {
+          const data = await completeCashfreePayment(orderId);
+          if (data?.status === 'paid') {
             clearCart();
             sessionStorage.setItem('seedlings_last_order', JSON.stringify({
               orderId: data.orderNumber,
@@ -30,7 +30,7 @@ export default function CashfreeReturnHydrator({ children }: { children: React.R
             window.location.replace(`/payment/result?status=success&order=${encodeURIComponent(data.orderNumber || '')}`);
             return;
           }
-          if (response.ok && data?.status === 'failed') {
+          if (data?.status === 'failed') {
             sessionStorage.setItem('seedlings_last_order', JSON.stringify({
               orderId: data.orderNumber || '',
               orderNumber: data.orderNumber || '',

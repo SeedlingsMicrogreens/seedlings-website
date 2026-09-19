@@ -36,6 +36,12 @@ const richTextHtml = (value: string | undefined, fallback = '') => {
     });
     if (element.tagName === 'A' && element.getAttribute('href')) { element.setAttribute('target', '_blank'); element.setAttribute('rel', 'noopener noreferrer'); }
   });
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode as Text);
+  textNodes.forEach((node) => {
+    node.nodeValue = (node.nodeValue || '').replace(/\[\s*\d+(?:\s*,\s*\d+)*\s*\]/g, '');
+  });
   return template.innerHTML;
 };
 

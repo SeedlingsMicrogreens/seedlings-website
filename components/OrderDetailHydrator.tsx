@@ -101,13 +101,19 @@ function orderType(order: Order) {
 
 function addressText(address: Record<string, unknown> | undefined) {
   if (!address) return 'Delivery address unavailable';
+  const seen = new Set<string>();
   const lines = [
     address.addressLine1,
     address.addressLine2,
     address.landmark,
     [address.city, address.state].filter(Boolean).join(', '),
     address.pincode,
-  ].filter(value => String(value ?? '').trim());
+  ].map(value => String(value ?? '').trim()).filter(value => {
+    const key = value.replace(/\s+/g, ' ').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   return lines.map(esc).join('<br>');
 }
 

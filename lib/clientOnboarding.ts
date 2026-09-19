@@ -1,6 +1,7 @@
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 import { auth, db } from './firebase';
+import { mergeGuestCartIntoCustomer } from './cart';
 
 const CUSTOMERS_COLLECTION = 'customers';
 const CUSTOMER_MOBILE_KEY = 'seedlings_customer_mobile';
@@ -26,6 +27,7 @@ export async function ensureClientOnboarding(mobile: string) {
   const existing = await getDoc(customerRef);
 
   if (existing.exists()) {
+    mergeGuestCartIntoCustomer(normalizedMobile);
     localStorage.setItem(CUSTOMER_MOBILE_KEY, normalizedMobile);
     return { customerId: existing.id, isNew: false };
   }
@@ -39,6 +41,7 @@ export async function ensureClientOnboarding(mobile: string) {
     updatedAt: serverTimestamp(),
   });
 
+  mergeGuestCartIntoCustomer(normalizedMobile);
   localStorage.setItem(CUSTOMER_MOBILE_KEY, normalizedMobile);
   return { customerId: customerRef.id, isNew: true };
 }

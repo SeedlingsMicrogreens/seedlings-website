@@ -12,7 +12,15 @@ import { confirmHarvestShortage, showCustomerSuccess } from "@/lib/customerAlert
 
 const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const money = (v: unknown) => `₹${Number(v || 0).toLocaleString("en-IN")}`;
-const addressText = (a: CustomerAddress) => [a.addressLine1, a.addressLine2, a.landmark, a.city, a.state, a.pincode].filter(Boolean).join(", ");
+const addressText = (a: CustomerAddress) => {
+  const seen = new Set<string>();
+  return [a.addressLine1, a.addressLine2, a.landmark, a.city, a.state, a.pincode].map(v => String(v ?? '').trim()).filter(v => {
+    const key = v.replace(/\s+/g, ' ').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join(", ");
+};
 
 
 function renderPlans(plans: any[], selectedPlanId: string) {

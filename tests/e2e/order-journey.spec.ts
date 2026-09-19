@@ -17,7 +17,9 @@ async function login(page: Page) {
   await mobileInput.fill(TEST_MOBILE);
   await page.getByText('Send OTP', { exact: true }).click();
   await expect(page.locator('.account-otp-row input')).toBeVisible();
-  await page.locator('.account-otp-row input').fill('1234');
+  const otp = process.env.E2E_TEST_OTP || '';
+  if (otp.length !== 4) throw new Error('Set E2E_TEST_OTP to the 4-digit OTP configured for the test environment.');
+  await page.locator('.account-otp-row input').fill(otp);
   await page.getByRole('button', { name: 'Verify OTP' }).click();
   await expect(page.getByText('You are signed in', { exact: false })).toBeVisible();
 }
@@ -100,7 +102,7 @@ test.describe('Seedlings complete customer order journey', () => {
     await expect(page.locator('[data-purchase-option="subscription"]')).toBeVisible();
     await expect(page.locator('[data-subscription-picker]')).toBeHidden();
     await setQuantity(page, 2);
-    await page.getByRole('button', { name: 'Buy now' }).click();
+    await page.getByRole('button', { name: 'Add' }).click();
 
     await expect(page).toHaveURL(/\/cart$/);
     const cartItem = page.locator('.cart-item').first();
@@ -115,7 +117,7 @@ test.describe('Seedlings complete customer order journey', () => {
     await expect(page.locator('#qty')).toHaveText('1');
     await page.locator('[data-plus="#qty"]').click();
     await expect(page.locator('#qty')).toHaveText('2');
-    await page.getByRole('button', { name: 'Buy now' }).click();
+    await page.getByRole('button', { name: 'Add' }).click();
     await expect(page.locator('.cart-item').first().locator('[data-qty]')).toHaveText('2');
 
     // CHECKOUT + ONE-TIME ORDER.
@@ -155,13 +157,18 @@ test.describe('Seedlings complete customer order journey', () => {
     await planSelect.selectOption({ index: 1 });
     await page.locator('[data-subscribe]').click();
 
-    // SUBSCRIPTION CREATION.
-    await expect(page).toHaveURL(/\/subscriptions$/);
-    await expect(page.getByText('Start subscription', { exact: false })).toBeVisible();
+    // SUBSCRIPTION is now added to the unified cart, not created immediately.
+    await expect(page).toHaveURL(/\/cart$/);
+    await expect(page.locator('.cart-section').filter({ hasText: 'Subscriptions' })).toBeVisible();
+    await expect(page.locator('.cart-item').first()).toBeVisible();
+
+    // UNIFIED CHECKOUT creates the subscription and its initial order.
+    await page.goto('/checkout');
+    await expect(page.getByRole('button', { name: 'Pay / Place Order' })).toBeVisible();
     await page.locator('[data-address]').selectOption({ index: 0 });
-    await expect(page.locator('[data-quantity]')).toHaveValue('2');
-    await page.getByRole('button', { name: 'Create Subscription' }).click();
-    await expect(page.getByText(/Subscription SUB-|created successfully/i)).toBeVisible({ timeout: 30_000 });
+    await page.locator('[data-slot]').selectOption({ index: 1 });
+    await page.getByRole('button', { name: 'Pay / Place Order' }).click();
+    await expect(page).toHaveURL(/\/order-success\?order=/, { timeout: 30_000 });
 
     // MY SUBSCRIPTIONS must show the real newly-created subscription.
     await page.goto('/subscriptions');

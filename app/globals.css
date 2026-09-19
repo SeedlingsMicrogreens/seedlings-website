@@ -269,3 +269,10 @@ body.subscribe-sheet-open{overflow:hidden}
 .checkout-address-preview{background:#faf7f1;border:1px solid #ddd2be;border-radius:14px;padding:13px;margin:8px 0 16px;font-size:13px}
 .checkout-new-address{background:#faf7f1;border:1px solid #ddd2be;border-radius:14px;padding:16px;margin:0 0 16px}
 .checkout-new-address>strong{display:block;margin-bottom:12px}
+
+/* Phase 15: keep the viewport-fixed Cart from covering the bottom of mobile pages. */
+body:has(.floating-cart) .footer{padding-bottom:88px}
+@media(max-width:700px){
+  body:has(.floating-cart) .footer{padding-bottom:92px}
+  .floating-cart{bottom:max(12px,env(safe-area-inset-bottom));}
+}

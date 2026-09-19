@@ -5,6 +5,7 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { clearStoredCustomerMobile, getStoredCustomerMobile } from '@/lib/clientOnboarding';
 import { getCustomerAccount, updateCustomerAddresses, type CustomerAddress } from '@/lib/customerAccount';
+import { confirmCustomerAddressDelete } from '@/lib/customerAlerts';
 
 type Address = CustomerAddress & { id: string };
 
@@ -12,10 +13,21 @@ function esc(value: unknown) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char] || char));
 }
 
+function uniqueAddressParts(parts: unknown[]) {
+  const seen = new Set<string>();
+  return parts.map(value => String(value ?? '').trim()).filter(value => {
+    if (!value) return false;
+    const key = value.replace(/\s+/g, ' ').toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function addressLines(address: Address) {
-  return [address.name, address.addressLine1, address.addressLine2, address.landmark,
+  return uniqueAddressParts([address.name, address.addressLine1, address.addressLine2, address.landmark,
     [address.city, address.state, address.pincode].filter(Boolean).join(', '),
-    address.mobileNumber ? `+91 ${address.mobileNumber}` : ''].filter(Boolean);
+    address.mobileNumber ? `+91 ${address.mobileNumber}` : '']);
 }
 
 function renderLogin(root: HTMLElement) {
@@ -172,7 +184,7 @@ function renderAddresses(root: HTMLElement, mobile: string, addresses: Address[]
 
   if (!addresses.length) { grid.innerHTML = `<div class="panel" style="grid-column:1/-1;text-align:center"><h3>No saved addresses</h3><p class="muted">Add a delivery address to continue with checkout.</p></div>`; return; }
 
-  grid.innerHTML = addresses.map((address, index) => `<div class="address-card${index === 0 ? ' default' : ''}"><span class="default-label" style="${index === 0 ? '' : 'visibility:hidden'}">Default address</span><h4>${esc(address.label || 'Address')}</h4><p>${addressLines(address).map(esc).join('<br>')}</p><div class="actions"><button class="btn mini" type="button" data-edit="${esc(address.id)}">Edit</button>${index !== 0 ? `<button class="btn mini" type="button" data-default="${esc(address.id)}">Set default</button>` : ''}</div></div>`).join('');
+  grid.innerHTML = addresses.map((address, index) => `<div class="address-card${index === 0 ? ' default' : ''}"><span class="default-label" style="${index === 0 ? '' : 'visibility:hidden'}">Default address</span><h4>${esc(address.label || 'Address')}</h4><p>${addressLines(address).map(esc).join('<br>')}</p><div class="actions"><button class="btn mini" type="button" data-edit="${esc(address.id)}">Edit</button>${index !== 0 ? `<button class="btn mini" type="button" data-default="${esc(address.id)}">Set default</button>` : ''}<button class="btn mini" type="button" data-delete="${esc(address.id)}">Delete</button></div></div>`).join('');
 
   grid.querySelectorAll('[data-edit]').forEach(button => button.addEventListener('click', () => { const address = addresses.find(item => item.id === (button as HTMLElement).dataset.edit); if (address) openForm(address); }));
   grid.querySelectorAll('[data-default]').forEach(button => button.addEventListener('click', async () => {
@@ -183,5 +195,30 @@ function renderAddresses(root: HTMLElement, mobile: string, addresses: Address[]
     if (index < 0) return;
     const next = [addresses[index], ...addresses.filter((_, i) => i !== index)];
     await saveAddresses(next, 'Default address updated.', target);
+  }));
+
+  grid.querySelectorAll('[data-delete]').forEach(button => button.addEventListener('click', async () => {
+    const target = button as HTMLButtonElement;
+    const id = target.dataset.delete;
+    if (!id) return;
+    const index = addresses.findIndex(item => item.id === id);
+    if (index < 0) return;
+    const address = addresses[index];
+    const confirmed = await confirmCustomerAddressDelete(address.label || 'this address');
+    if (!confirmed) return;
+
+    target.disabled = true;
+    target.textContent = 'Deleting…';
+    const next = addresses.filter(item => item.id !== id);
+    try {
+      await updateCustomerAddresses(mobile, next);
+      writeAddressCache(mobile, next);
+      renderAddresses(root, mobile, next);
+      setMessage('Address deleted.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to delete address.', true);
+      target.disabled = false;
+      target.textContent = 'Delete';
+    }
   }));
 }

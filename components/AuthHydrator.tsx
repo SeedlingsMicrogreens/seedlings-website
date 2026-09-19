@@ -10,7 +10,8 @@ import {
   normalizeIndianMobile,
 } from '@/lib/clientOnboarding';
 
-const STATIC_OTP = '1234';
+const DEMO_OTP_ENABLED = process.env.NODE_ENV !== 'production' && process.env.NEXT_PUBLIC_ENABLE_DEMO_OTP === 'true';
+const DEMO_OTP = process.env.NEXT_PUBLIC_DEMO_OTP || '';
 const OTP_VALIDITY_SECONDS = 60;
 
 function setText(root: HTMLElement, selector: string, text: string) {
@@ -92,8 +93,7 @@ export default function AuthHydrator({ children }: { children: ReactNode }) {
       row.innerHTML = `
         <label>OTP<input type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="4" placeholder="Enter 4-digit OTP"></label>
         <p class="otp-timer" style="text-align:center;margin:10px 0;font-size:13px">OTP expires in 1:00</p>
-        <p style="text-align:center;margin:0 0 12px;font-size:13px">Demo OTP: <strong>1234</strong></p>
-        <button class="btn outline" type="button" style="width:100%">Verify OTP</button>`;
+          <button class="btn outline" type="button" style="width:100%">Verify OTP</button>`;
       card.insertBefore(row, action.parentElement?.nextElementSibling ?? null);
 
       const otpInput = row.querySelector('input') as HTMLInputElement;
@@ -126,7 +126,11 @@ export default function AuthHydrator({ children }: { children: ReactNode }) {
           setError(root, 'Enter the 4-digit OTP.');
           return;
         }
-        if (otp !== STATIC_OTP) {
+        if (!DEMO_OTP_ENABLED || !DEMO_OTP) {
+          setError(root, 'Phone OTP authentication is not configured for this environment.');
+          return;
+        }
+        if (otp !== DEMO_OTP) {
           setError(root, 'Invalid OTP. Please enter the correct 4-digit OTP.');
           return;
         }
@@ -162,6 +166,11 @@ export default function AuthHydrator({ children }: { children: ReactNode }) {
       const normalized = normalizeIndianMobile(input.value);
       if (!normalized) {
         setError(root, 'Enter a valid 10-digit Indian mobile number.');
+        return;
+      }
+
+      if (!DEMO_OTP_ENABLED || !DEMO_OTP) {
+        setError(root, 'Phone OTP authentication is not configured for this environment.');
         return;
       }
 

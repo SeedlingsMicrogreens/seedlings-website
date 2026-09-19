@@ -41,3 +41,20 @@ export async function showCustomerSuccess(title: string, text?: string) {
     confirmButtonText: 'OK',
   });
 }
+
+export async function confirmCustomerAddressDelete(addressLabel: string) {
+  const { default: Swal } = await import('sweetalert2');
+  const result = await Swal.fire({
+    icon: 'warning',
+    title: 'Delete address?',
+    html: `Delete <strong>${String(addressLabel || 'this address').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char] || char))}</strong>?<br><br>This action cannot be undone.`,
+    showCancelButton: true,
+    confirmButtonText: 'Delete address',
+    cancelButtonText: 'Cancel',
+    reverseButtons: true,
+    focusCancel: true,
+    allowOutsideClick: false,
+    allowEscapeKey: true,
+  });
+  return result.isConfirmed;
+}

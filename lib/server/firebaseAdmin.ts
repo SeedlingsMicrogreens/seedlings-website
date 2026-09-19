@@ -1,27 +1,69 @@
-import { applicationDefault, cert, getApps, initializeApp } from 'firebase-admin/app';
+import 'server-only';
+
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 
-function getAdminApp() {
+import { HttpError } from './httpError';
+
+function isManagedRuntime() {
+  return Boolean(process.env.K_SERVICE || process.env.FUNCTION_TARGET || process.env.GAE_ENV);
+}
+
+function initializeFirebaseAdminApp() {
   if (getApps().length) return getApps()[0];
 
-  const projectId = process.env.FIREBASE_ADMIN_PROJECT_ID || process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim() || '';
+  if (serviceAccountJson) {
+    let parsed: { project_id?: string; client_email?: string; private_key?: string };
+    try {
+      parsed = JSON.parse(serviceAccountJson) as { project_id?: string; client_email?: string; private_key?: string };
+    } catch {
+      throw new HttpError(500, 'Server Firebase credentials are invalid JSON.');
+    }
 
-  if (clientEmail && privateKey && projectId) {
+    if (!parsed.project_id || !parsed.client_email || !parsed.private_key) {
+      throw new HttpError(500, 'Server Firebase credentials are missing required fields.');
+    }
+
     return initializeApp({
-      credential: cert({ projectId, clientEmail, privateKey }),
-      projectId,
+      credential: cert({
+        projectId: parsed.project_id,
+        clientEmail: parsed.client_email,
+        privateKey: parsed.private_key.replace(/\\n/g, '\n'),
+      }),
     });
   }
 
-  return initializeApp({
-    credential: applicationDefault(),
-    ...(projectId ? { projectId } : {}),
-  });
+  const projectId = process.env.FIREBASE_ADMIN_PROJECT_ID?.trim() || '';
+  const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL?.trim() || '';
+  const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY?.trim() || '';
+  if (projectId && clientEmail && privateKey) {
+    return initializeApp({
+      credential: cert({
+        projectId,
+        clientEmail,
+        privateKey: privateKey.replace(/\\n/g, '\n'),
+      }),
+    });
+  }
+
+  if (isManagedRuntime()) {
+    return initializeApp();
+  }
+
+  throw new HttpError(
+    500,
+    'Server Firebase credentials are not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_ADMIN_* variables.'
+  );
 }
 
-const app = getAdminApp();
-export const adminAuth = getAuth(app);
-export const adminDb = getFirestore(app);
+export function getAdminAuth() {
+  const app = initializeFirebaseAdminApp();
+  return getAuth(app);
+}
+
+export function getAdminDb() {
+  const app = initializeFirebaseAdminApp();
+  return getFirestore(app);
+}

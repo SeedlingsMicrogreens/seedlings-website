@@ -1,12 +1,13 @@
 export const CART_STORAGE_KEY = 'seedlings_cart';
-const CUSTOMER_CART_STORAGE_PREFIX = 'seedlings_cart:';
+export const CUSTOMER_CART_STORAGE_PREFIX = 'seedlings_cart:';
+const GUEST_CART_STORAGE_KEY = `${CUSTOMER_CART_STORAGE_PREFIX}guest`;
 
 type StoredCart = { oneTimeItems: CartItem[]; subscriptionItems: SubscriptionCartItem[] };
 
 function activeCartStorageKey(): string {
   if (typeof window === 'undefined') return CART_STORAGE_KEY;
   const mobile = window.localStorage.getItem('seedlings_customer_mobile') || '';
-  return mobile ? `${CUSTOMER_CART_STORAGE_PREFIX}${mobile}` : `${CUSTOMER_CART_STORAGE_PREFIX}guest`;
+  return mobile ? `${CUSTOMER_CART_STORAGE_PREFIX}${mobile}` : GUEST_CART_STORAGE_KEY;
 }
 
 export type CartItem = {
@@ -45,6 +46,41 @@ function safeParse(value: string | null): StoredCart {
       }).filter(Boolean) as SubscriptionCartItem[] : [],
     };
   } catch { return { oneTimeItems: [], subscriptionItems: [] }; }
+}
+
+
+export function mergeGuestCartIntoCustomer(mobile: string) {
+  if (typeof window === 'undefined' || !mobile) return;
+
+  const normalizedMobile = String(mobile).replace(/\D/g, '');
+  if (!normalizedMobile) return;
+
+  const guest = safeParse(localStorage.getItem(GUEST_CART_STORAGE_KEY) ?? localStorage.getItem(CART_STORAGE_KEY));
+  const customerKey = `${CUSTOMER_CART_STORAGE_PREFIX}${normalizedMobile}`;
+  const customer = safeParse(localStorage.getItem(customerKey));
+
+  const oneTime = [...customer.oneTimeItems];
+  for (const guestItem of guest.oneTimeItems) {
+    const existing = oneTime.find((item) => item.productId === guestItem.productId);
+    if (existing) existing.quantity += guestItem.quantity;
+    else oneTime.push(guestItem);
+  }
+
+  const subscription = [...customer.subscriptionItems];
+  for (const guestItem of guest.subscriptionItems) {
+    const existing = subscription.find((item) =>
+      item.productId === guestItem.productId &&
+      item.planId === guestItem.planId &&
+      item.startDate === guestItem.startDate
+    );
+    if (existing) existing.quantity += guestItem.quantity;
+    else subscription.push(guestItem);
+  }
+
+  localStorage.setItem(customerKey, JSON.stringify({ oneTimeItems: oneTime, subscriptionItems: subscription }));
+  localStorage.removeItem(GUEST_CART_STORAGE_KEY);
+  localStorage.removeItem(CART_STORAGE_KEY);
+  window.dispatchEvent(new CustomEvent('seedlings-cart-updated'));
 }
 
 export function getUnifiedCart(): StoredCart {

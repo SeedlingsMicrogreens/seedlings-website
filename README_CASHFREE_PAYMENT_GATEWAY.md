@@ -42,24 +42,23 @@ If recurring automatic collection is required later, Cashfree Subscriptions is a
 
 ## Test environment
 
-Use the Cashfree Test Environment/Sandbox credentials in `.env.local`:
+The Website only needs the public Cashfree SDK mode:
+
+```env
+NEXT_PUBLIC_CASHFREE_ENVIRONMENT=sandbox
+```
+
+Cashfree server credentials are configured as server-only environment variables in the Next.js runtime:
 
 ```env
 CASHFREE_ENVIRONMENT=sandbox
-CASHFREE_API_VERSION=2026-01-01
-CASHFREE_CLIENT_ID=...
-CASHFREE_CLIENT_SECRET=...
-NEXT_PUBLIC_CASHFREE_ENVIRONMENT=sandbox
-NEXT_PUBLIC_SITE_URL=http://localhost:3000
+CASHFREE_CLIENT_ID=
+CASHFREE_CLIENT_SECRET=
+CASHFREE_WEBHOOK_SECRET=
+CASHFREE_API_VERSION=2025-01-01
 ```
 
-For a deployed environment, set `CASHFREE_WEBHOOK_URL` to a public HTTPS endpoint such as:
-
-```text
-https://<site>/api/cashfree/webhook
-```
-
-Localhost cannot receive Cashfree's server-to-server webhook directly. The browser return flow still verifies the payment through Cashfree's server API.
+For local development, the Website calls Next.js route handlers directly. Cashfree cannot deliver a server-to-server webhook to localhost, so browser-return verification is used during local sandbox testing; use the deployed webhook endpoint in hosted environments.
 
 ## Failure/pending behavior
 
@@ -70,3 +69,13 @@ Cashfree payment states are mapped as follows:
 - `PENDING`, `NOT_ATTEMPTED` → pending
 
 The customer cart is cleared only after the server confirms a successful payment.
+
+## Backend architecture correction
+
+Cashfree server operations are implemented in Next.js Route Handlers:
+
+- `POST /api/cashfree/create-order`
+- `POST /api/cashfree/complete`
+- `POST /api/cashfree/webhook`
+
+The Website calls these authenticated routes. Firebase Admin SDK is isolated to server-only modules used by these route handlers. Cashfree credentials are server-only environment variables and are never exposed in `NEXT_PUBLIC_*` values.
