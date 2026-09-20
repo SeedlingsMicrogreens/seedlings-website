@@ -10,7 +10,7 @@ import {
   normalizeIndianMobile,
 } from '@/lib/clientOnboarding';
 
-const DEMO_OTP_ENABLED = process.env.NODE_ENV !== 'production' && process.env.NEXT_PUBLIC_ENABLE_DEMO_OTP === 'true';
+const DEMO_OTP_ENABLED = process.env.NEXT_PUBLIC_ENABLE_DEMO_OTP === 'true';
 const DEMO_OTP = process.env.NEXT_PUBLIC_DEMO_OTP || '';
 const OTP_VALIDITY_SECONDS = 60;
 
