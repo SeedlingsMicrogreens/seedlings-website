@@ -16,6 +16,10 @@ export type DeliveryChargeResult = {
   sourceId: string;
   sourceName: string;
   snapshot: Record<string, unknown>;
+  perDeliveryCharge: number;
+  termCharge: number;
+  termSavings: number;
+  deliveriesPerTerm: number;
 };
 
 export type CheckoutDeliveryCharges = {
@@ -38,10 +42,14 @@ export type DeliveryChargeSubscriptionInput = {
  * 1. Geolocation Master is the pincode-specific base charge.
  * 2. Delivery Charges Master is the global fallback when no matching
  *    active geolocation exists.
- * 3. A subscription plan may reduce the subscription base charge. `free`
+ * 3. A subscription plan may reduce the subscription base charge per delivery. `free`
  *    and `included` make it zero; `per_delivery` uses the lower of the
  *    geolocation/global base and the plan amount, so a plan cannot increase
  *    a location's normal subscription delivery charge.
+ * 4. Subscription checkout charges the per-delivery amount across the full
+ *    configured term (`deliveriesPerTerm`). The subscription record keeps the
+ *    per-delivery amount for future fulfilment, while the initial order uses
+ *    the full-term delivery charge.
  */
 export async function calculateCheckoutDeliveryCharges(input: {
   pincode: string;
@@ -88,6 +96,10 @@ export async function calculateCheckoutDeliveryCharges(input: {
         sourceId: geoDoc.id,
         sourceName: clean(geo.locationName) || `Pincode ${pincode}`,
         snapshot: { id: geoDoc.id, locationName: clean(geo.locationName), pincode, oneTimeCharge: nonNegative(geo.oneTimeCharge), subscriptionCharge: nonNegative(geo.subscriptionCharge), active: true },
+        perDeliveryCharge: charge,
+        termCharge: charge,
+        termSavings: 0,
+        deliveriesPerTerm: 1,
       };
     }
     const masterDoc = masterFor(kind);
@@ -103,12 +115,16 @@ export async function calculateCheckoutDeliveryCharges(input: {
         sourceId: masterDoc.id,
         sourceName: clean(master.name) || 'Delivery Charges Master',
         snapshot: { id: masterDoc.id, name: clean(master.name), scope: clean(master.scope), mode: clean(master.mode), amount: charge, active: true },
+        perDeliveryCharge: charge,
+        termCharge: charge,
+        termSavings: 0,
+        deliveriesPerTerm: 1,
       };
     }
-    return { finalCharge: 0, baseCharge: 0, savings: 0, isFree: true, source: 'none', sourceId: '', sourceName: '', snapshot: {} };
+    return { finalCharge: 0, baseCharge: 0, savings: 0, isFree: true, source: 'none', sourceId: '', sourceName: '', snapshot: {}, perDeliveryCharge: 0, termCharge: 0, termSavings: 0, deliveriesPerTerm: 1 };
   };
 
-  const oneTime = input.oneTime ? baseResult('one_time_order') : { finalCharge: 0, baseCharge: 0, savings: 0, isFree: true, source: 'none' as const, sourceId: '', sourceName: '', snapshot: {} };
+  const oneTime = input.oneTime ? baseResult('one_time_order') : { finalCharge: 0, baseCharge: 0, savings: 0, isFree: true, source: 'none' as const, sourceId: '', sourceName: '', snapshot: {}, perDeliveryCharge: 0, termCharge: 0, termSavings: 0, deliveriesPerTerm: 1 };
   const subscriptions = input.subscriptions.map((entry) => {
     const base = baseResult('subscription');
     const planDoc = planSnap.docs.find((d) => d.id === entry.planId);
@@ -116,6 +132,7 @@ export async function calculateCheckoutDeliveryCharges(input: {
     const plan = planDoc.data() || {};
     if (plan.active !== true) throw new Error(`Subscription plan "${entry.planName || plan.name || entry.planId}" is no longer active.`);
     const mode = clean(plan.deliveryChargeMode).toLowerCase();
+    const deliveriesPerTerm = Math.max(1, Number(plan.deliveriesPerTerm) || (clean(plan.frequency).toLowerCase() === 'monthly' ? 4 : clean(plan.frequency).toLowerCase() === 'quarterly' ? 12 : clean(plan.frequency).toLowerCase() === 'half_yearly' ? 24 : clean(plan.frequency).toLowerCase() === 'yearly' ? 48 : 1));
     let final = base.finalCharge;
     let source = base.source;
     let sourceId = base.sourceId;
@@ -133,15 +150,21 @@ export async function calculateCheckoutDeliveryCharges(input: {
         sourceName = clean(plan.name) || entry.planName || 'Subscription plan';
       }
     }
-    const savings = Math.max(0, base.finalCharge - final);
+    const savingsPerDelivery = Math.max(0, base.finalCharge - final);
+    const termCharge = final * deliveriesPerTerm;
+    const termSavings = savingsPerDelivery * deliveriesPerTerm;
     return {
       ...base,
       finalCharge: final,
-      savings,
+      savings: savingsPerDelivery,
       isFree: final === 0,
       source,
       sourceId,
       sourceName,
+      perDeliveryCharge: final,
+      termCharge,
+      termSavings,
+      deliveriesPerTerm,
       planId: entry.planId,
       planName: clean(plan.name) || entry.planName || entry.planId,
       snapshot: {
@@ -150,9 +173,12 @@ export async function calculateCheckoutDeliveryCharges(input: {
         planName: clean(plan.name) || entry.planName || planDoc.id,
         deliveryChargeMode: mode,
         planDeliveryCharge: nonNegative(plan.deliveryCharge),
-        baseCharge: base.finalCharge,
-        finalCharge: final,
-        savings,
+        deliveriesPerTerm,
+        baseChargePerDelivery: base.finalCharge,
+        finalChargePerDelivery: final,
+        termCharge,
+        savingsPerDelivery,
+        termSavings,
       },
     };
   });
@@ -161,8 +187,8 @@ export async function calculateCheckoutDeliveryCharges(input: {
     oneTime,
     subscriptions,
     oneTimeTotal: oneTime.finalCharge,
-    subscriptionTotal: subscriptions.reduce((sum, item) => sum + item.finalCharge, 0),
-    total: oneTime.finalCharge + subscriptions.reduce((sum, item) => sum + item.finalCharge, 0),
-    savingsTotal: subscriptions.reduce((sum, item) => sum + item.savings, 0) + (oneTime.savings || 0),
+    subscriptionTotal: subscriptions.reduce((sum, item) => sum + item.termCharge, 0),
+    total: oneTime.finalCharge + subscriptions.reduce((sum, item) => sum + item.termCharge, 0),
+    savingsTotal: subscriptions.reduce((sum, item) => sum + item.termSavings, 0) + (oneTime.savings || 0),
   };
 }

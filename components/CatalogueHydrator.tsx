@@ -77,7 +77,12 @@ const richTextHtml = (value: string | undefined, fallback = '') => {
   const textNodes: Text[] = [];
   while (walker.nextNode()) textNodes.push(walker.currentNode as Text);
   textNodes.forEach((node) => {
-    node.nodeValue = (node.nodeValue || '').replace(/\[\s*\d+(?:\s*,\s*\d+)*\s*\]/g, '');
+    node.nodeValue = (node.nodeValue || '')
+      .replace(/\[\s*\d+(?:\s*,\s*\d+)*\s*\]/g, '')
+      .replace(/AI\s+can\s+make\s+mistakes,?\s+so\s+double-check\s+responses\.?/gi, '');
+  });
+  template.content.querySelectorAll('p,div,span,blockquote').forEach((element) => {
+    if (!element.textContent?.trim() && !element.querySelector('img,svg,a')) element.remove();
   });
   return template.innerHTML;
 };
@@ -262,8 +267,7 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
 
   const info = root.querySelector('.detail-info');
   if (info) {
-    const descriptionHtml = richTextContent(product.description, 'Freshly grown microgreens, harvested with care and prepared for delivery.');
-    info.innerHTML = `<div><strong>Availability</strong><br><span class="muted">${Number(product.packedStockQuantity ?? 0) > 0 ? 'Available for purchase.' : 'Current packed stock is limited.'}</span></div><div><strong>Purchase</strong><br><span class="muted">${oneTimeAvailable ? 'One-time purchase available.' : 'Purchase unavailable.'}</span></div><div><strong>Delivery</strong><br><span class="muted">Weekend delivery slots.</span></div><div class="detail-description-row"><strong>Product description</strong><div class="rich-text" data-product-description>${descriptionHtml}</div></div>`;
+    info.innerHTML = `<div><strong>Availability</strong><br><span class="muted">${Number(product.packedStockQuantity ?? 0) > 0 ? 'Available for purchase.' : 'Current packed stock is limited.'}</span></div><div><strong>Purchase</strong><br><span class="muted">${oneTimeAvailable ? 'One-time purchase available.' : 'Purchase unavailable.'}</span></div><div><strong>Delivery</strong><br><span class="muted">Weekend delivery slots.</span></div>`;
   }
 
   const actions = root.querySelector('.actions');
@@ -333,13 +337,19 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
       if (!sheet) return;
       const selectedPlan = plans.find((p) => p.id === selectedPlanId) || plans[0];
       selectedPlanId = selectedPlan?.id || '';
+      const nextSaturday = nextWeekSaturday();
+      const requestedStartDate = editStartDate || nextSaturday;
+      const requestedDate = new Date(`${requestedStartDate}T00:00:00`);
+      const validEditStartDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedStartDate) && !Number.isNaN(requestedDate.getTime()) && requestedDate.getDay() === 6 && requestedStartDate >= nextSaturday
+        ? requestedStartDate
+        : nextSaturday;
       sheet.innerHTML = `<div class="subscribe-sheet-handle"></div>
-        <div class="subscribe-sheet-head"><div><span class="eyebrow">Subscribe</span><h2>${esc(product.name)}</h2><p>Set it once and enjoy automatic deliveries.</p></div><button type="button" data-close-subscribe aria-label="Close">×</button></div>
-        <div class="subscribe-product-card"><div class="subscribe-product-thumb" style="${product.imageUrl ? `background-image:url('${esc(product.imageUrl)}')` : ''}"></div><div><strong>${esc(product.name)}</strong><p>${esc(product.type === 'multiple' ? 'Combo' : 'Fresh microgreen')}</p></div><div class="subscribe-product-price">${esc(money(Number(product.sellingPrice ?? 0), product.currency || 'INR'))}</div></div>
+        <div class="subscribe-sheet-head subscribe-product-header"><div class="subscribe-product-header-info"><div class="subscribe-product-thumb" style="${product.imageUrl ? `background-image:url(\'${esc(product.imageUrl)}\')` : ''}"></div><div><span class="eyebrow">Subscribe</span><h2>${esc(product.name)}</h2><p>${esc(product.type === 'multiple' ? 'Combo' : 'Fresh microgreen')} · ${esc(money(Number(product.sellingPrice ?? 0), product.currency || 'INR'))}</p></div></div><button type="button" data-close-subscribe aria-label="Close">×</button></div>
         <div class="subscribe-step"><div class="subscribe-step-title"><span>1</span><div><strong>Select plan</strong><small>Choose how often you want it delivered</small></div></div><div class="subscribe-plan-grid-modal">${plans.map((plan) => `<button type="button" class="subscribe-plan-option ${plan.id === selectedPlanId ? 'active' : ''}" data-modal-plan="${esc(plan.id)}"><strong>${esc(plan.name || subscriptionFrequencyLabel(plan.frequency))}</strong><span>${esc(money(Number(plan.price ?? 0), product.currency || 'INR'))} / term</span><small>${Number(plan.deliveriesPerTerm ?? 0) > 0 ? `${Number(plan.deliveriesPerTerm)} deliveries / term` : 'Ongoing deliveries'} · ${plan.deliveryChargeMode === 'per_delivery' && Number(plan.deliveryCharge ?? 0) > 0 ? `+ ${money(Number(plan.deliveryCharge))} / delivery` : 'Delivery included'}</small></button>`).join('')}</div></div>
-        <div class="subscribe-step"><div class="subscribe-step-title"><span>2</span><div><strong>Quantity</strong><small>Packs per delivery</small></div></div><div class="modal-quantity-control"><button type="button" data-modal-minus>−</button><strong data-modal-qty>${subscriptionQuantity}</strong><button type="button" data-modal-plus>+</button></div></div>
-        <div class="subscribe-step"><div class="subscribe-step-title"><span>3</span><div><strong>Start date</strong><small>Delivery starts from</small></div></div><div class="subscribe-date-row"><input data-modal-start type="date" value="${esc(editStartDate || nextWeekSaturday())}"><span>Saturday delivery</span></div></div>
-        <div class="subscribe-benefit"><strong>Delivery included</strong><span>Delivery address will be selected on the subscription checkout screen.</span></div>
+        <div class="subscribe-options-row">
+          <div class="subscribe-step"><div class="subscribe-step-title"><span>2</span><div><strong>Quantity</strong><small>Packs per delivery</small></div></div><div class="modal-quantity-control"><button type="button" data-modal-minus aria-label="Decrease quantity">−</button><strong data-modal-qty>${subscriptionQuantity}</strong><button type="button" data-modal-plus aria-label="Increase quantity">+</button></div></div>
+          <div class="subscribe-step"><div class="subscribe-step-title"><span>3</span><div><strong>Start date</strong><small>Saturday deliveries only</small></div></div><div class="subscribe-date-row"><input data-modal-start type="date" min="${nextSaturday}" step="7" value="${esc(validEditStartDate)}" aria-label="Subscription start date"><span>Saturday</span></div></div>
+        </div>
         <button class="btn primary subscribe-now-button" data-modal-submit type="button" ${selectedPlanId ? '' : 'disabled'}>Subscribe</button>`;
       sheet.querySelector('[data-close-subscribe]')?.addEventListener('click', closeSheet);
       sheet.querySelectorAll<HTMLButtonElement>('[data-modal-plan]').forEach((button) => button.addEventListener('click', () => {
@@ -350,6 +360,13 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
       sheet.querySelector('[data-modal-plus]')?.addEventListener('click', () => { subscriptionQuantity += 1; const el = sheet.querySelector('[data-modal-qty]'); if (el) el.textContent = String(subscriptionQuantity); });
       sheet.querySelector('[data-modal-submit]')?.addEventListener('click', () => {
         const startDate = (sheet.querySelector('[data-modal-start]') as HTMLInputElement | null)?.value || '';
+        const parsedStartDate = new Date(`${startDate}T00:00:00`);
+        const isSaturday = !Number.isNaN(parsedStartDate.getTime()) && parsedStartDate.getDay() === 6;
+        if (!startDate || startDate < nextSaturday || !isSaturday) {
+          const input = sheet.querySelector('[data-modal-start]') as HTMLInputElement | null;
+          if (input) input.focus();
+          return;
+        }
         if (!selectedPlanId) return;
         const selectedPlan = plans.find((plan) => plan.id === selectedPlanId);
         if (!selectedPlan) return;

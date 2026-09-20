@@ -137,9 +137,10 @@ export async function createCustomerSubscription(input: {
     subscriptions: [{ planId: input.planId, planName: clean(plan.name) || frequency }],
   });
   const delivery = deliveryCharges.subscriptions[0];
-  const deliveryFee = delivery?.finalCharge || 0;
+  const deliveryFee = delivery?.termCharge || 0;
+  const deliveryFeePerDelivery = delivery?.perDeliveryCharge || 0;
   const total = unitPrice * input.quantity;
-  subscription.deliveryFeePerDelivery = deliveryFee;
+  subscription.deliveryFeePerDelivery = deliveryFeePerDelivery;
   subscription.deliveryChargeDetails = delivery?.snapshot || {};
 
   const order = {
@@ -181,6 +182,9 @@ export async function createCustomerSubscription(input: {
     deliveryChargeId: delivery?.sourceId || '',
     deliveryChargeName: delivery?.sourceName || '',
     deliveryChargeSnapshot: deliveryFee,
+    deliveryChargePerDelivery: deliveryFeePerDelivery,
+    deliveryChargeTerm: delivery?.termCharge || 0,
+    deliveryChargeTermSavings: delivery?.termSavings || 0,
     deliveryChargeDetails: delivery?.snapshot || {},
     packingStatus: 'pending',
     requiresCustomerContact: input.shortageDecision === 'contact',
