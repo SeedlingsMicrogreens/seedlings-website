@@ -12,13 +12,11 @@ export async function confirmHarvestShortage(args: {
   const shortage = Math.max(0, Math.floor(args.shortageGrams));
 
   const isSubscription = args.mode === 'subscription';
-  const message = isSubscription
-    ? `Only <strong>${available} gms</strong> will be available for this delivery out of <strong>${requested} gms</strong> requested. The remaining <strong>${shortage} gms</strong> will be covered with your upcoming delivery.`
-    : `Only <strong>${available} gms</strong> will be available for this delivery out of <strong>${requested} gms</strong> requested.`;
+  const message = isSubscription ? `We're experiencing high demand right now. Your order will be fulfilled, and any remaining quantity will be adjusted with your upcoming delivery.` : `We're experiencing high demand right now. Your order will be fulfilled, and any remaining quantity will be adjusted with your upcoming delivery.`;
 
   const result = await Swal.fire({
     icon: 'warning',
-    title: 'Limited harvest available',
+    title: 'Your order is on track!',
     html: `${message}<br><br>Would you like to continue with your order?`,
     showCancelButton: true,
     confirmButtonText: 'Yes, continue',
