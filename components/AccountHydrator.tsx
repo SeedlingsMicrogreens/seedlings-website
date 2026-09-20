@@ -7,7 +7,7 @@ import { collection, getDocsFromServer, query, where } from "firebase/firestore"
 import { getCustomerAccount } from "@/lib/customerAccount";
 import { clearStoredCustomerMobile, ensureClientOnboarding, getStoredCustomerMobile, normalizeIndianMobile } from "@/lib/clientOnboarding";
 
-const DEMO_OTP_ENABLED = process.env.NEXT_PUBLIC_ENABLE_DEMO_OTP === 'true';
+const DEMO_OTP_ENABLED = process.env.NODE_ENV !== 'production' && process.env.NEXT_PUBLIC_ENABLE_DEMO_OTP === 'true';
 const DEMO_OTP = process.env.NEXT_PUBLIC_DEMO_OTP || '';
 
 function formatDate(value: string) {
