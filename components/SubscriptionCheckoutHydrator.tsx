@@ -75,6 +75,11 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
             const decision = await confirmHarvestShortage({ mode: 'subscription', availableGrams: availability.availableGrams, requestedGrams: availability.requestedGrams, shortageGrams: availability.shortageGrams });
             result = await create(decision);
           }
+          if (result.contactRequired) {
+            await showCustomerSuccess('We’ll contact you', 'Your contact request has been saved. Our team will contact you regarding the available quantity.');
+            if (button) { button.disabled = false; button.textContent = 'Subscribe'; }
+            return;
+          }
           await showCustomerSuccess('Subscription created', `${result.subscriptionNumber} is active. Your first delivery is ${result.nextDeliveryDate}.`);
           window.location.href = `/order-detail?order=${encodeURIComponent(result.orderId)}`;
         } catch (error) {

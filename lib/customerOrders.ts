@@ -2,6 +2,7 @@ import { addDoc, collection, doc, getDoc, getDocs, query, serverTimestamp, where
 import { db } from './firebase';
 import { checkProductAvailability, nextWeekSaturday } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
+import { createCustomerContactRequest } from './customerContactRequests';
 
 export type CreateOneTimeOrderInput = {
   mobile: string;
@@ -94,6 +95,26 @@ export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput)
   }));
   const shortage = availabilityResults.filter(Boolean).some((result: any) => result.hasShortage);
   if (shortage && !input.shortageDecision) throw new Error('HARVEST_SHORTAGE_CONFIRMATION_REQUIRED');
+  if (shortage && input.shortageDecision === 'contact') {
+    const contact = await createCustomerContactRequest({
+      mobile,
+      customerName: clean(customer.name),
+      customerMobile: clean(customer.mobileNumber || customer.mobile || mobile),
+      address: address,
+      deliverySlot,
+      reason: 'harvest_shortage',
+      status: 'pending',
+      source: 'customer_checkout',
+      oneTimeItems: input.items,
+      subscriptionItems: [],
+      availability: {
+        requestedGrams: availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.requestedGrams || 0), 0),
+        availableGrams: availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.availableGrams || 0), 0),
+        shortageGrams: availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.shortageGrams || 0), 0),
+      },
+    });
+    return { contactRequired: true, contactRequestId: contact.id, orderId: '', orderNumber: '', paymentStatus: 'not_required', total: 0 };
+  }
   const requestedAvailabilityGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.requestedGrams || 0), 0);
   const availableAvailabilityGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.availableGrams || 0), 0);
   const shortageAvailabilityGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.shortageGrams || 0), 0);

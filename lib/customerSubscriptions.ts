@@ -3,6 +3,7 @@ import { db } from './firebase';
 import { type SalesProduct } from './salesProducts';
 import { checkProductAvailability, nextWeekSaturday } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
+import { createCustomerContactRequest } from './customerContactRequests';
 
 const clean = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 const mobileOf = (value: unknown) => String(value ?? '').replace(/\D/g, '').slice(-10);
@@ -97,6 +98,33 @@ export async function createCustomerSubscription(input: {
   const availability = await checkProductAvailability({ product: input.product, quantity: input.quantity, deliveryDate: firstDelivery });
   if (availability.hasShortage && !input.shortageDecision) {
     throw new Error('HARVEST_SHORTAGE_CONFIRMATION_REQUIRED');
+  }
+  if (availability.hasShortage && input.shortageDecision === 'contact') {
+    const contact = await createCustomerContactRequest({
+      mobile,
+      customerName: clean(customer.name),
+      customerMobile: mobile,
+      address: address,
+      deliverySlot: firstDelivery,
+      reason: 'harvest_shortage',
+      status: 'pending',
+      source: 'customer_checkout',
+      oneTimeItems: [],
+      subscriptionItems: [{
+        productId: input.product.id,
+        productName: clean(input.product.name),
+        quantity: input.quantity,
+        planId: input.planId,
+        planName: clean(plan.name),
+        startDate: input.startDate || firstDelivery,
+      }],
+      availability: {
+        requestedGrams: availability.requestedGrams,
+        availableGrams: availability.availableGrams,
+        shortageGrams: availability.shortageGrams,
+      },
+    });
+    return { contactRequired: true, contactRequestId: contact.id, id: '', subscriptionNumber: '', orderId: '', orderNumber: '', status: 'contact_required', frequency, nextDeliveryDate: firstDelivery };
   }
 
   const subscription: Record<string, unknown> = {
