@@ -9,6 +9,8 @@ import { getActiveSalesProducts, type SalesProduct } from '@/lib/salesProducts';
 import { createCustomerSubscription, loadActiveCustomerSubscriptionPlans, type CustomerSubscriptionPlan } from '@/lib/customerSubscriptions';
 import { confirmHarvestShortage, showCustomerSuccess } from '@/lib/customerAlerts';
 import { nextWeekSaturday } from '@/lib/customerOrderAvailability';
+import { createCashfreeOrder } from '@/lib/cashfreeFunctions';
+import { openCashfreeCheckout } from '@/lib/cashfreeClient';
 
 const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]!));
 const money = (v: number, currency='INR') => { try { return new Intl.NumberFormat('en-IN', { style:'currency', currency, maximumFractionDigits:0 }).format(v); } catch { return `₹${v}`; } };
@@ -80,8 +82,18 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
             if (button) { button.disabled = false; button.textContent = 'Subscribe'; }
             return;
           }
-          await showCustomerSuccess('Subscription created', `${result.subscriptionNumber} is active. Your first delivery is ${result.nextDeliveryDate}.`);
-          window.location.href = `/order-detail?order=${encodeURIComponent(result.orderId)}`;
+          if (!result.paymentOrderIds?.length) throw new Error('Unable to prepare the subscription payment.');
+          if (button) button.textContent = 'Preparing Payment…';
+          const payment = await createCashfreeOrder(result.paymentOrderIds, mobile);
+          sessionStorage.setItem('seedlings_last_order', JSON.stringify({
+            orderId: result.orderId,
+            orderNumber: result.orderNumber,
+            paymentStatus: 'pending',
+            cashfreeOrderId: payment.cashfreeOrderId,
+            total: payment.amount,
+          }));
+          if (button) button.textContent = 'Opening Payment…';
+          await openCashfreeCheckout(payment.paymentSessionId);
         } catch (error) {
           renderMessage(error instanceof Error ? error.message : 'Unable to create subscription.', true);
           if (button) { button.disabled = false; button.textContent = 'Subscribe'; }

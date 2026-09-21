@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
-    "test:e2e:report": "playwright show-report playwright-report"
+    "test:e2e:report": "playwright show-report playwright-report",
+    "test:payment:static": "node scripts/payment-lifecycle-static-check.mjs"
   },
   "dependencies": {
     "firebase": "^12.2.1",

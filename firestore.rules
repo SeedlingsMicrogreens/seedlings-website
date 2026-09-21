@@ -1,0 +1,141 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownAuthUid(data) {
+      return signedIn() && data.authUid == request.auth.uid;
+    }
+
+    function pendingOrder(data) {
+      return data.paymentStatus == 'pending'
+        && data.status == 'pending_payment';
+    }
+
+    function pendingSubscription(data) {
+      return data.paymentStatus == 'pending'
+        && data.status == 'pending_payment';
+    }
+
+    // Customer-facing catalogue/configuration is readable by signed-in customers.
+    // Admin writes remain possible through Firebase Admin SDK/server processes.
+    match /salesProducts/{id} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+    match /products/{id} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+    match /subscriptionPlans/{id} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+    match /geolocations/{id} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+    match /deliveryCharges/{id} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+    match /growingBatches/{id} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    // Customers remain readable/updatable by the authenticated customer session.
+    // The application currently uses an anonymous Firebase session, so mobile-number
+    // ownership cannot be proven by Firestore rules alone. Sensitive payment/order
+    // collections below therefore additionally require the per-session authUid.
+    match /customers/{mobile} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.mobile == mobile;
+      allow update: if signedIn()
+        && resource.data.mobile == mobile
+        && request.resource.data.mobile == resource.data.mobile;
+      allow delete: if false;
+    }
+
+    // Customers may create only their own pending checkout records. They cannot
+    // mark anything paid/confirmed, alter an existing payment, or delete orders.
+    match /orders/{orderId} {
+      allow read: if signedIn() && ownAuthUid(resource.data);
+      allow create: if signedIn()
+        && ownAuthUid(request.resource.data)
+        && pendingOrder(request.resource.data)
+        && request.resource.data.paymentStatus != 'paid'
+        && request.resource.data.status != 'confirmed'
+        && request.resource.data.status != 'active';
+      allow update: if signedIn()
+        && ownAuthUid(resource.data)
+        && ownAuthUid(request.resource.data)
+        && pendingOrder(resource.data)
+        && request.resource.data.paymentStatus == 'pending'
+        && request.resource.data.status == 'pending_payment'
+        && request.resource.data.authUid == resource.data.authUid
+        && request.resource.data.customerId == resource.data.customerId
+        && request.resource.data.total == resource.data.total
+        && request.resource.data.items == resource.data.items;
+      allow delete: if false;
+    }
+
+    match /subscriptions/{subscriptionId} {
+      allow read: if signedIn() && ownAuthUid(resource.data);
+      allow create: if signedIn()
+        && ownAuthUid(request.resource.data)
+        && pendingSubscription(request.resource.data)
+        && request.resource.data.paymentStatus != 'paid'
+        && request.resource.data.status != 'active';
+      allow update: if signedIn()
+        && ownAuthUid(resource.data)
+        && ownAuthUid(request.resource.data)
+        && request.resource.data.authUid == resource.data.authUid
+        && request.resource.data.customerId == resource.data.customerId
+        && (
+          (resource.data.paymentStatus == 'pending'
+            && request.resource.data.paymentStatus == 'pending'
+            && request.resource.data.status == 'pending_payment')
+          ||
+          (resource.data.paymentStatus == 'paid'
+            && resource.data.status == 'active'
+            && request.resource.data.paymentStatus == 'paid'
+            && request.resource.data.status in ['active', 'paused', 'cancelled'])
+        );
+      allow delete: if false;
+    }
+
+    // Contact requests may be created by the signed-in checkout session only.
+    match /customerContactRequests/{requestId} {
+      allow create: if signedIn()
+        && ownAuthUid(request.resource.data)
+        && request.resource.data.status == 'pending'
+        && request.resource.data.reason == 'harvest_shortage';
+      allow read: if signedIn() && ownAuthUid(resource.data);
+      allow update, delete: if false;
+    }
+
+    // These are server-controlled financial/audit collections.
+    match /paymentAttempts/{id} {
+      allow read, write: if false;
+    }
+    match /paymentTransactions/{id} {
+      allow read, write: if false;
+    }
+    match /paymentFinalizationLocks/{id} {
+      allow read, write: if false;
+    }
+    match /paymentCreationLocks/{id} {
+      allow read, write: if false;
+    }
+
+    // Everything else is denied by default. Admin SDK is not subject to these rules.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

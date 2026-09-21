@@ -1,5 +1,5 @@
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
-import { db } from './firebase';
+import { db, auth } from './firebase';
 
 export type CustomerContactRequest = {
   mobile: string;
@@ -20,8 +20,11 @@ export type CustomerContactRequest = {
 };
 
 export async function createCustomerContactRequest(input: CustomerContactRequest) {
+  const authUid = auth.currentUser?.uid;
+  if (!authUid) throw new Error('Your login session expired. Please sign in again.');
   const ref = await addDoc(collection(db, 'customerContactRequests'), {
     ...input,
+    authUid,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });

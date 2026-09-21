@@ -1,5 +1,5 @@
 import { collection, doc, getDoc, getDocs, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
-import { db } from './firebase';
+import { db, auth } from './firebase';
 import { type SalesProduct } from './salesProducts';
 import { checkProductAvailability, nextWeekSaturday } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
@@ -45,6 +45,8 @@ export async function createCustomerSubscription(input: {
   startDate?: string;
   shortageDecision?: 'continue' | 'contact';
 }) {
+  const authUid = auth.currentUser?.uid;
+  if (!authUid) throw new Error('Your login session expired. Please sign in again.');
   const mobile = mobileOf(input.mobile);
   if (mobile.length !== 10) throw new Error('Invalid customer mobile number.');
   if (input.product.active !== true) throw new Error('This product is not currently available for subscription.');
@@ -124,10 +126,11 @@ export async function createCustomerSubscription(input: {
         shortageGrams: availability.shortageGrams,
       },
     });
-    return { contactRequired: true, contactRequestId: contact.id, id: '', subscriptionNumber: '', orderId: '', orderNumber: '', status: 'contact_required', frequency, nextDeliveryDate: firstDelivery };
+    return { contactRequired: true, contactRequestId: contact.id, id: '', subscriptionNumber: '', orderId: '', orderNumber: '', status: 'contact_required', paymentStatus: 'not_required', paymentOrderIds: [], frequency, nextDeliveryDate: firstDelivery };
   }
 
   const subscription: Record<string, unknown> = {
+    authUid,
     subscriptionNumber,
     customerId: mobile,
     customerName: clean(customer.name) || 'Unnamed customer',
@@ -154,7 +157,8 @@ export async function createCustomerSubscription(input: {
     availabilityShortageGrams: availability.shortageGrams,
     carryForwardQuantityGrams: availability.shortageGrams,
     availabilityDecision: input.shortageDecision || 'continue',
-    status: 'active',
+    status: 'pending_payment',
+    paymentStatus: 'pending',
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
@@ -172,6 +176,7 @@ export async function createCustomerSubscription(input: {
   subscription.deliveryChargeDetails = delivery?.snapshot || {};
 
   const order = {
+    authUid,
     orderNumber,
     customerId: mobile,
     customerName: clean(customer.name),
@@ -196,7 +201,7 @@ export async function createCustomerSubscription(input: {
     currency: 'INR',
     paymentStatus: 'pending',
     paymentMethod: 'online',
-    status: 'active',
+    status: 'pending_payment',
     deliveryAddress: address,
     scheduledDeliveryDate: firstDelivery,
     deliveryDate: firstDelivery,
@@ -230,7 +235,7 @@ export async function createCustomerSubscription(input: {
   batch.set(orderRef, order);
   await batch.commit();
 
-  return { id: subscriptionRef.id, subscriptionNumber, orderId: orderRef.id, orderNumber, status: 'active', frequency, nextDeliveryDate: firstDelivery };
+  return { id: subscriptionRef.id, subscriptionNumber, orderId: orderRef.id, orderNumber, status: 'pending_payment', paymentStatus: 'pending', paymentOrderIds: [orderRef.id], frequency, nextDeliveryDate: firstDelivery };
 }
 
 export async function updateCustomerSubscriptionStatus(mobileInput: string, id: string, status: 'active' | 'paused' | 'cancelled') {

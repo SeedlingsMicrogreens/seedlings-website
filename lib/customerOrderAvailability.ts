@@ -92,7 +92,7 @@ export async function checkProductAvailability(args: {
   const [productsSnap, batchesSnap, subscriptionsSnap, ordersSnap, salesProductsSnap] = await Promise.all([
     getDocs(collection(db, 'products')),
     getDocs(collection(db, 'growingBatches')),
-    getDocs(query(collection(db, 'subscriptions'), where('status', '==', 'active'))),
+    getDocs(query(collection(db, 'subscriptions'), where('status', '==', 'active'), where('paymentStatus', '==', 'paid'))),
     getDocs(query(collection(db, 'orders'), where('scheduledDeliveryDate', '==', deliveryDate))),
     getDocs(query(collection(db, 'salesProducts'), where('active', '==', true))),
   ]);
@@ -134,6 +134,9 @@ export async function checkProductAvailability(args: {
 
   for (const doc of ordersSnap.docs) {
     const order = doc.data() || {};
+    // Only successfully paid one-time orders commit inventory. Pending, failed,
+    // abandoned and cancelled payments must never reduce availability.
+    if (normalize(order.paymentStatus).toLowerCase() !== 'paid') continue;
     if (orderIsCancelled(order)) continue;
     const requirements = itemProductionRequirements(order, salesProducts);
     // Subscription demand is sourced from active subscriptions above so the
