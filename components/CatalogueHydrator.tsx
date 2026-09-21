@@ -187,8 +187,8 @@ type SubscriptionPlan = {
   active?: boolean;
 };
 
-async function loadActiveSubscriptionPlans(): Promise<SubscriptionPlan[]> {
-  const plans = await loadActiveCustomerSubscriptionPlans();
+async function loadActiveSubscriptionPlans(productId?: string): Promise<SubscriptionPlan[]> {
+  const plans = await loadActiveCustomerSubscriptionPlans(productId);
   return plans
     .filter((plan) => plan.active === true && Number(plan.price ?? 0) >= 0)
     .map((plan) => ({ ...plan }) as SubscriptionPlan);
@@ -258,7 +258,7 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
   const chips = root.querySelector('.chips');
   const choose = chips?.previousElementSibling;
   let plans: SubscriptionPlan[] = [];
-  try { plans = await loadActiveSubscriptionPlans(); }
+  try { plans = await loadActiveSubscriptionPlans(product.id); }
   catch (error) { console.warn('Subscription plans could not be loaded from website Firebase', error); }
   const subscriptionAvailable = product.active === true && plans.length > 0;
   const oneTimeAvailable = Boolean(product.oneTimePurchase);

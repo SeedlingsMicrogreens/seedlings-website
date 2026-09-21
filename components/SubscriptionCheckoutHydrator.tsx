@@ -110,7 +110,7 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
       const mobile = getStoredCustomerMobile();
       if (!productId || !planId || !mobile) { renderMissing('The subscription selection is incomplete. Please return to the product and choose Subscribe again.'); return; }
       try {
-        const [products, plans, account] = await Promise.all([getActiveSalesProducts(), loadActiveCustomerSubscriptionPlans(), getCustomerAccount(mobile)]);
+        const [products, plans, account] = await Promise.all([getActiveSalesProducts(), loadActiveCustomerSubscriptionPlans(productId), getCustomerAccount(mobile)]);
         const product = products.find((item) => item.id === productId);
         const plan = plans.find((item) => item.id === planId);
         if (!product) { renderMissing('This product is no longer available.'); return; }

@@ -20,6 +20,8 @@ export type CustomerSubscriptionPlan = {
   active?: boolean;
   productIds?: string[];
   salesProductIds?: string[];
+  salableProductId?: string;
+  salableProductName?: string;
 };
 
 function dateOnly(date: Date) {
@@ -28,12 +30,13 @@ function dateOnly(date: Date) {
 
 function nextSaturday(_startDate?: string) { return nextWeekSaturday(); }
 
-export async function loadActiveCustomerSubscriptionPlans(_productId?: string): Promise<CustomerSubscriptionPlan[]> {
+export async function loadActiveCustomerSubscriptionPlans(productId?: string): Promise<CustomerSubscriptionPlan[]> {
   const snapshot = await getDocs(query(collection(db, 'subscriptionPlans'), where('active', '==', true)));
-  // Admin subscription plans are global masters, not product-wise assignments.
+  const normalizedProductId = clean(productId);
   return snapshot.docs
     .map((item) => ({ id: item.id, ...(item.data() as Record<string, unknown>) }) as CustomerSubscriptionPlan)
-    .filter((plan) => Number(plan.price ?? 0) >= 0);
+    .filter((plan) => Number(plan.price ?? 0) >= 0)
+    .filter((plan) => !normalizedProductId || clean(plan.salableProductId) === normalizedProductId);
 }
 
 export async function createCustomerSubscription(input: {
@@ -63,6 +66,9 @@ export async function createCustomerSubscription(input: {
   if (!planSnap.exists()) throw new Error('Selected subscription plan was not found.');
 
   const plan = planSnap.data() || {};
+  if (clean(plan.salableProductId) !== clean(input.product.id)) {
+    throw new Error('This subscription plan is not available for the selected product.');
+  }
   const frequency = clean(plan.frequency).toLowerCase();
   if (plan.active !== true || !['monthly', 'quarterly', 'half_yearly', 'yearly'].includes(frequency)) throw new Error('This subscription plan is not active.');
 

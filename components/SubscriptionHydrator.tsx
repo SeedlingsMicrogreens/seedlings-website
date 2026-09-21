@@ -68,7 +68,7 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
         ]);
         if (dead) return;
 
-        const plans = plansSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })).filter((p: any) => p.active === true && Number(p.price ?? 0) >= 0);
+        let plans = plansSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })).filter((p: any) => p.active === true && Number(p.price ?? 0) >= 0);
         const subs = subsSnapshot.docs
           .map((doc) => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) }))
           .filter((subscription: any) => String(subscription.customerId ?? '').replace(/\D/g, '') === mobile) as any[];
@@ -85,6 +85,9 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
           }
         }
 
+        if (selectedProduct) {
+          plans = plans.filter((plan: any) => String(plan.salableProductId ?? '') === String(selectedProduct.productId));
+        }
         const selectedPlanId = sessionStorage.getItem("seedlings_subscription_plan") || "";
         const active = (subs.find((s) => s.status === "active") || undefined) as any;
         const m = main();
