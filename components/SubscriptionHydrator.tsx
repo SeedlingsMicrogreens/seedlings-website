@@ -62,15 +62,24 @@ function localDateOnly(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function upcomingSaturdays(currentDate: string, endDate?: string) {
-  const current = new Date(`${currentDate}T00:00:00`);
-  if (Number.isNaN(current.getTime())) return [] as string[];
-  const dates: string[] = [];
+function upcomingSaturdays(currentDeliveryDate: string, endDate?: string) {
+  const currentDelivery = new Date(`${currentDeliveryDate}T00:00:00`);
+  if (Number.isNaN(currentDelivery.getTime())) return [] as string[];
+
+  // Rescheduling is allowed only to future Saturdays. Start from the later of
+  // today and the current delivery date so a stale/past delivery can never
+  // expose past Saturdays in the picker. Show only the next two valid dates.
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(Math.max(today.getTime(), currentDelivery.getTime()));
   const limit = endDate ? new Date(`${endDate}T00:00:00`) : null;
-  for (let i = 1; i <= 16 && dates.length < 8; i += 1) {
-    const d = new Date(current);
+  const dates: string[] = [];
+
+  for (let i = 1; i <= 21 && dates.length < 2; i += 1) {
+    const d = new Date(start);
     d.setDate(d.getDate() + i);
     if (d.getDay() !== 6) continue;
+    if (d <= today) continue;
     if (limit && d > limit) break;
     dates.push(localDateOnly(d));
   }
@@ -139,9 +148,31 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
             query(collection(db, "subscriptionDeliveries"), where("subscriptionId", "==", String(active.id)))
           );
           const deliveries = deliverySnapshot.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) })) as any[];
-          latestDeliveryAction = deliveries
-            .filter((delivery) => ["skipped", "rescheduled"].includes(String(delivery.status || "").toLowerCase()))
-            .sort((a, b) => String(b.updatedAt?.toDate?.() || b.updatedAt || "").localeCompare(String(a.updatedAt?.toDate?.() || a.updatedAt || "")))[0] || null;
+          const currentNextDate = String(active.nextDeliveryDate || "");
+          const generatedCount = Math.max(0, Number(active.deliveriesGenerated || 0));
+
+          // Customer action state is persisted in subscriptionDeliveries. A
+          // reschedule is represented by TWO records: the original record is
+          // `rescheduled` and points to the new `upcoming` record. Require the
+          // linked upcoming record as well so the UI cannot show an incorrect
+          // action state from a partial/stale record.
+          const rescheduledDelivery = deliveries.find((delivery) => {
+            if (String(delivery.status || "").toLowerCase() !== "rescheduled") return false;
+            if (String(delivery.rescheduledToDate || "") !== currentNextDate) return false;
+            const targetId = String(delivery.rescheduledToDeliveryId || "");
+            if (!targetId) return false;
+            const target = deliveries.find((item) => String(item.id) === targetId);
+            return String(target?.status || "").toLowerCase() === "upcoming" &&
+              String(target?.deliveryDate || "") === currentNextDate &&
+              String(target?.rescheduledFromDeliveryId || "") === String(delivery.id);
+          });
+
+          const skippedDelivery = deliveries.find((delivery) =>
+            String(delivery.status || "").toLowerCase() === "skipped" &&
+            Number(delivery.deliveryNumber || 0) === generatedCount
+          );
+
+          latestDeliveryAction = rescheduledDelivery || skippedDelivery || null;
         }
         const m = main();
         if (!m) return;
@@ -188,13 +219,15 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
             </div>
             <div class="subscription-delivery-actions">
               ${latestDeliveryAction?.status === "skipped"
-                ? `<button class="subscription-action subscription-action--primary" type="button" data-delivery-action="skip" data-id="${esc(active.id)}" disabled aria-disabled="true">↗ <span>Skip delivery</span></button>`
+                ? `<button class="subscription-action subscription-action--primary" type="button" disabled aria-disabled="true">↗ <span>Skip delivery</span></button>`
                 : latestDeliveryAction?.status === "rescheduled"
-                  ? `<button class="subscription-action" type="button" data-delivery-action="reschedule" data-id="${esc(active.id)}" disabled aria-disabled="true">▣ <span>Reschedule</span></button>`
+                  ? `<button class="subscription-action" type="button" disabled aria-disabled="true">▣ <span>Reschedule</span></button>`
                   : `<button class="subscription-action subscription-action--primary" type="button" data-delivery-action="skip" data-id="${esc(active.id)}">↗ <span>Skip delivery</span></button>`}
-              ${latestDeliveryAction?.status !== "rescheduled" && latestDeliveryAction?.status !== "skipped"
-                ? `<button class="subscription-action" type="button" data-delivery-action="reschedule" data-id="${esc(active.id)}">▣ <span>Reschedule</span></button>`
-                : ""}
+              ${latestDeliveryAction?.status === "skipped"
+                ? ""
+                : latestDeliveryAction?.status === "rescheduled"
+                  ? ""
+                  : `<button class="subscription-action" type="button" data-delivery-action="reschedule" data-id="${esc(active.id)}">▣ <span>Reschedule</span></button>`}
               ${active.status === "active" ? `<button class="subscription-action" type="button" data-status="paused" data-id="${esc(active.id)}">⏸ <span>Pause subscription</span></button>` : ""}
               ${active.status === "paused" ? `<button class="subscription-action subscription-action--primary" type="button" data-status="active" data-id="${esc(active.id)}">▶ <span>Resume subscription</span></button>` : ""}
               ${["active", "paused"].includes(String(active.status)) ? `<button class="subscription-action" type="button" data-status="cancelled" data-id="${esc(active.id)}">× <span>Cancel subscription</span></button>` : ""}
