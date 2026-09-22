@@ -1,0 +1,13 @@
+{
+  "git_preserved": true,
+  "delivery_slot_ui_removed": true,
+  "payment_method_ui_removed": true,
+  "saturday_internal": true,
+  "online_internal": true,
+  "waiver_ui": true,
+  "effective_total": true,
+  "server_saturday_default": true,
+  "server_online_forced": true,
+  "server_waiver": true,
+  "server_audit": true
+}

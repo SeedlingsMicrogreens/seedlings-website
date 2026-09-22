@@ -1,3 +1,2 @@
-import CmsPrototypePage from '@/components/CmsPrototypePage';
-
-export default function Page() { return <CmsPrototypePage page="journey" />; }
+import JourneyPage from '@/components/pages/JourneyPage';
+export default function Page() { return <JourneyPage />; }

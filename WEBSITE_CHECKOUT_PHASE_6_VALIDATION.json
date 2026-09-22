@@ -1,0 +1,11 @@
+{
+  "git_preserved": true,
+  "checkout_route": true,
+  "checkout_hydrator": true,
+  "address_manager": true,
+  "phase_5_doc": true,
+  "cashfree_reference_present": true,
+  "address_update_reference": true,
+  "customer_name_reference": true,
+  "dangerous_payment_status_mutation_absent": true
+}

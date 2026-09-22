@@ -1,0 +1,12 @@
+{
+  "git_preserved": true,
+  "checkout_prototype_removed": true,
+  "address_list_has_three_limit": true,
+  "address_list_has_show_more": true,
+  "address_list_has_add": true,
+  "delivery_instructions_removed": true,
+  "address_cards_not_card_styled": true,
+  "header_initial_count_state": true,
+  "header_cart_event_listener": true,
+  "header_dynamic_count": true
+}

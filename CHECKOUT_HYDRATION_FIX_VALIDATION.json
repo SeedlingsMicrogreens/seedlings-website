@@ -1,0 +1,8 @@
+{
+  "git_preserved": true,
+  "cart_count_nullable": true,
+  "local_storage_only_after_effect": true,
+  "initial_count_empty": true,
+  "aria_label_not_present_initially": true,
+  "hydration_warning_suppressed_for_dynamic_sup_only": true
+}

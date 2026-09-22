@@ -1,3 +1,5 @@
-import CmsPrototypePage from '@/components/CmsPrototypePage';
+import HomePage from '@/components/HomePage';
 
-export default function Page() { return <CmsPrototypePage page="home" />; }
+export default function Page() {
+  return <HomePage />;
+}

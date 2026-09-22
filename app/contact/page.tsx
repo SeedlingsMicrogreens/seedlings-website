@@ -1,3 +1,2 @@
-import CmsPrototypePage from '@/components/CmsPrototypePage';
-
-export default function Page() { return <CmsPrototypePage page="contact" />; }
+import ContactPage from '@/components/pages/ContactPage';
+export default function Page() { return <ContactPage />; }

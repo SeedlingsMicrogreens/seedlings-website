@@ -1,0 +1,9 @@
+{
+  "git_preserved": true,
+  "duplicate_title_removed": true,
+  "dialog_labelled_by_visible_title": true,
+  "modal_fixed": true,
+  "modal_scroll_locked": true,
+  "header_below_modal": true,
+  "footer_below_modal": true
+}

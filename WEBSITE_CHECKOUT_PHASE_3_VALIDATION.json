@@ -1,0 +1,11 @@
+{
+  "git_preserved": true,
+  "popup_dialog": true,
+  "edit_title": true,
+  "add_title": true,
+  "existing_save_callback": true,
+  "cancel_action": true,
+  "escape_close": true,
+  "delivery_instructions_absent": true,
+  "address_services_untouched": true
+}

@@ -1,7 +1,10 @@
-import PrototypePage from '@/components/PrototypePage';
-import CatalogueHydrator from '@/components/CatalogueHydrator';
+import ProductDetailPage from "@/components/ProductDetailPage";
 
-export default async function ProductPage({ params }: { params: Promise<{ slug: string }> }) {
+export default async function ProductPage({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}) {
   const { slug } = await params;
-  return <CatalogueHydrator page="product" slug={slug}><PrototypePage page="product" /></CatalogueHydrator>;
+  return <ProductDetailPage slug={slug} />;
 }

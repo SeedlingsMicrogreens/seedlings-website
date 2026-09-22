@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import CmsHydrator from './CmsHydrator';
 import type { Page } from './CmsHydrator';
+import Header from './layout/Header';
+import Footer from './layout/Footer';
+import CheckoutLoadingSkeleton from './checkout/CheckoutLoadingSkeleton';
 
 const pages: Record<string,string> = {
   home: 'index.html', microgreens: 'microgreens.html', product: 'product.html', journey: 'journey.html',
@@ -24,6 +27,25 @@ function rewriteLinks(html: string) {
 }
 
 export default function PrototypePage({ page }: { page: keyof typeof pages }) {
+  if (page === 'checkout') {
+    return (
+      <CmsHydrator page="checkout">
+        <Header />
+        <main className="checkout-page">
+          <section className="page-hero">
+            <div className="container">
+              <div className="breadcrumbs"><a href="/cart">Cart</a> / Checkout</div>
+              <h1>Checkout</h1>
+              <p>Confirm your delivery details.</p>
+            </div>
+          </section>
+          <div data-checkout-root><CheckoutLoadingSkeleton /></div>
+        </main>
+        <Footer />
+      </CmsHydrator>
+    );
+  }
+
   const file = path.join(process.cwd(), 'public', 'prototype', pages[page]);
   const source = fs.readFileSync(file, 'utf8');
   const body = source.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] ?? source;

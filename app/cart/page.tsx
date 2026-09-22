@@ -1,6 +1,5 @@
-import PrototypePage from '@/components/PrototypePage';
-import CartHydrator from '@/components/CartHydrator';
+import CartPage from "@/components/CartPage";
 
-export default function CartPage() {
-  return <CartHydrator><PrototypePage page="cart" /></CartHydrator>;
+export default function Page() {
+  return <CartPage />;
 }
