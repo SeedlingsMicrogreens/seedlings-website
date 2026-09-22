@@ -43,6 +43,7 @@ export type SubscriptionDeliveryAction = 'skip' | 'reschedule';
 export async function applySubscriptionDeliveryAction(args: {
   subscriptionId: string;
   action: SubscriptionDeliveryAction;
+  deliveryDate?: string;
   newDate?: string;
   authUid: string;
 }) {
@@ -69,12 +70,39 @@ export async function applySubscriptionDeliveryAction(args: {
     const deliveryQuerySnap = await transaction.get(deliveryQuery);
     const deliveryDocs = deliveryQuerySnap.docs;
 
-    // Only the single current upcoming delivery is customer-manageable.
-    // Once it is skipped or rescheduled, no second customer action is allowed.
+    // The selected calendar date is the delivery being acted on. A delivery
+    // record may not exist yet because future subscription deliveries are
+    // represented virtually until a customer takes an action.
     const currentDate = dateOnly(subscription.nextDeliveryDate);
-    if (!currentDate) throw new HttpError(409, 'There are no upcoming deliveries left to change.');
+    const targetDate = dateOnly(args.deliveryDate) || currentDate;
+    if (!targetDate) throw new HttpError(409, 'There are no upcoming deliveries left to change.');
+    if (targetDate < today) throw new HttpError(400, 'Past deliveries cannot be changed.');
 
-    const deliveryNumber = generated + 1;
+    const targetDateObj = parseDate(targetDate);
+    if (!targetDateObj || targetDateObj.getDay() !== 6) {
+      throw new HttpError(400, 'Delivery actions are available only for Saturday deliveries.');
+    }
+
+    const endDate = dateOnly(subscription.endDate);
+    if (endDate && targetDate > endDate) throw new HttpError(400, 'Choose a date within your subscription period.');
+
+    // Future virtual deliveries follow the subscription's weekly Saturday
+    // schedule. Reject dates that are not part of that schedule.
+    if (currentDate) {
+      const currentDateObj = parseDate(currentDate);
+      const targetDateObj = parseDate(targetDate);
+      if (currentDateObj && targetDateObj) {
+        const diffDays = Math.round((targetDateObj.getTime() - currentDateObj.getTime()) / 86400000);
+        if (diffDays < 0 || diffDays % 7 !== 0) {
+          throw new HttpError(409, 'The selected date is not a scheduled subscription delivery.');
+        }
+      }
+    }
+
+    const weeksFromCurrent = currentDate && targetDate >= currentDate
+      ? Math.round((parseDate(targetDate)!.getTime() - parseDate(currentDate)!.getTime()) / (7 * 86400000))
+      : 0;
+    const deliveryNumber = generated + 1 + weeksFromCurrent;
     if (totalDeliveries > 0 && deliveryNumber > totalDeliveries) {
       throw new HttpError(409, 'There are no upcoming deliveries left to change.');
     }
@@ -82,16 +110,16 @@ export async function applySubscriptionDeliveryAction(args: {
     const deterministicId = deliveryId(subscriptionId, deliveryNumber);
     const deterministicRef = collectionRef.doc(deterministicId);
     const deterministicSnap = await transaction.get(deterministicRef);
-    const currentEntry = deliveryDocs.map((doc) => ({ id: doc.id, ref: doc, data: doc.data() || {} })).find((entry) => {
-      return dateOnly(entry.data.deliveryDate) === currentDate && clean(entry.data.status).toLowerCase() === 'upcoming';
+    const targetEntry = deliveryDocs.map((doc) => ({ id: doc.id, data: doc.data() || {} })).find((entry) => {
+      return dateOnly(entry.data.deliveryDate) === targetDate;
     });
-    const oldId = currentEntry?.id || deterministicId;
-    const oldRef = currentEntry?.ref || deterministicRef;
-    const oldExists = Boolean(currentEntry) || deterministicSnap.exists;
+    const oldId = targetEntry?.id || deterministicId;
+    const oldRef = targetEntry ? collectionRef.doc(targetEntry.id) : deterministicRef;
+    const oldExists = Boolean(targetEntry) || deterministicSnap.exists;
 
     if (args.action === 'skip') {
       if (oldExists) {
-        const existing = currentEntry?.data || deterministicSnap.data() || {};
+        const existing = targetEntry?.data || deterministicSnap.data() || {};
         if (clean(existing.status).toLowerCase() !== 'upcoming') {
           throw new HttpError(409, 'This delivery has already been processed.');
         }
@@ -113,7 +141,7 @@ export async function applySubscriptionDeliveryAction(args: {
           salableProductId: clean(subscription.salableProductId),
           productId: clean(subscription.productId),
           productName: clean(subscription.productName),
-          deliveryDate: currentDate,
+          deliveryDate: targetDate,
           status: 'skipped',
           deliveryAddress: subscription.deliveryAddress || null,
           skippedAt: FieldValue.serverTimestamp(),
@@ -123,20 +151,22 @@ export async function applySubscriptionDeliveryAction(args: {
         });
       }
 
-      const nextDate = nextSaturdayAfter(currentDate);
+      const nextDate = nextSaturdayAfter(targetDate);
       const endDate = dateOnly(subscription.endDate);
       const hasNext = nextDate && (!endDate || nextDate <= endDate) && (!totalDeliveries || deliveryNumber < totalDeliveries);
-      transaction.update(subscriptionRef, {
-        deliveriesGenerated: deliveryNumber,
-        nextDeliveryDate: hasNext ? nextDate : '',
-        lastDeliveryId: oldId,
-        lastDeliveryNumber: deliveryNumber,
-        lastDeliveryDate: currentDate,
-        lastDeliveryStatus: 'skipped',
-        updatedAt: FieldValue.serverTimestamp(),
-      });
+      if (targetDate === currentDate) {
+        transaction.update(subscriptionRef, {
+          deliveriesGenerated: deliveryNumber,
+          nextDeliveryDate: hasNext ? nextDate : '',
+          lastDeliveryId: oldId,
+          lastDeliveryNumber: deliveryNumber,
+          lastDeliveryDate: targetDate,
+          lastDeliveryStatus: 'skipped',
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
 
-      return { action: 'skip' as const, deliveryId: oldId, deliveryDate: currentDate, nextDeliveryDate: hasNext ? nextDate : '' };
+      return { action: 'skip' as const, deliveryId: oldId, deliveryDate: targetDate, nextDeliveryDate: targetDate === currentDate ? (hasNext ? nextDate : '') : currentDate };
     }
 
     const newDate = dateOnly(args.newDate);
@@ -144,10 +174,10 @@ export async function applySubscriptionDeliveryAction(args: {
     const newDateObj = parseDate(newDate);
     const currentDateObj = parseDate(currentDate);
     if (!newDateObj || !currentDateObj) throw new HttpError(400, 'Invalid delivery date.');
-    if (newDate <= currentDate || newDate <= today) throw new HttpError(400, 'Choose a future Saturday after the current delivery date.');
+    if (newDate <= targetDate || newDate <= today) throw new HttpError(400, 'Choose a future Saturday after the selected delivery date.');
     if (newDateObj.getDay() !== 6) throw new HttpError(400, 'Delivery can only be rescheduled to a Saturday.');
-    const endDate = dateOnly(subscription.endDate);
-    if (endDate && newDate > endDate) throw new HttpError(400, 'Choose a date within your subscription period.');
+    const rescheduleEndDate = dateOnly(subscription.endDate);
+    if (rescheduleEndDate && newDate > rescheduleEndDate) throw new HttpError(400, 'Choose a date within your subscription period.');
 
     const newId = replacementDeliveryId(subscriptionId, deliveryNumber, newDate);
     const newRef = collectionRef.doc(newId);
@@ -155,7 +185,7 @@ export async function applySubscriptionDeliveryAction(args: {
     if (newSnap.exists) throw new HttpError(409, 'Unable to create the rescheduled delivery. Please try again.');
 
     if (oldExists) {
-      const existing = currentEntry?.data || deterministicSnap.data() || {};
+      const existing = targetEntry?.data || deterministicSnap.data() || {};
       const existingStatus = clean(existing.status).toLowerCase();
       if (existingStatus !== 'upcoming') {
         throw new HttpError(409, 'This delivery has already been processed.');
@@ -179,7 +209,7 @@ export async function applySubscriptionDeliveryAction(args: {
         salableProductId: clean(subscription.salableProductId),
         productId: clean(subscription.productId),
         productName: clean(subscription.productName),
-        deliveryDate: currentDate,
+        deliveryDate: targetDate,
         status: 'rescheduled',
         deliveryAddress: subscription.deliveryAddress || null,
         rescheduledToDeliveryId: newId,
@@ -205,21 +235,22 @@ export async function applySubscriptionDeliveryAction(args: {
       status: 'upcoming',
       deliveryAddress: subscription.deliveryAddress || null,
       rescheduledFromDeliveryId: oldId,
-      rescheduledFromDate: currentDate,
+      rescheduledFromDate: targetDate,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       lastUpdatedByUid: args.authUid,
     });
 
-    transaction.update(subscriptionRef, {
-      nextDeliveryDate: newDate,
-      lastDeliveryId: newId,
-      lastDeliveryNumber: deliveryNumber,
-      lastDeliveryDate: newDate,
-      lastDeliveryStatus: 'upcoming',
-      updatedAt: FieldValue.serverTimestamp(),
-    });
+    if (targetDate === currentDate) {
+      transaction.update(subscriptionRef, {
+        nextDeliveryDate: newDate,
+        // Rescheduling does not mean the delivery was completed. Keep the
+        // existing last-delivery fields unchanged; only the future delivery
+        // date moves to the newly scheduled date.
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
 
-    return { action: 'reschedule' as const, oldDeliveryId: oldId, newDeliveryId: newId, oldDeliveryDate: currentDate, newDeliveryDate: newDate };
+    return { action: 'reschedule' as const, oldDeliveryId: oldId, newDeliveryId: newId, oldDeliveryDate: targetDate, newDeliveryDate: newDate };
   });
 }
