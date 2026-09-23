@@ -1,5 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap');
 
+@tailwind utilities;
+
 :root {
   --paper: #FAF7F1;
   --panel: #FFF;
@@ -1924,9 +1926,6 @@ select:focus {
   box-shadow: 6px 22px 22px rgba(71, 47, 22, .06)
 }
 
-.mood-card {
-  cursor: pointer
-}
 
 /* Product detail: no decorative fake-green after-effect; action buttons stay compact beside subscription controls. */
 

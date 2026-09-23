@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from 'react';
-import { getActiveSalesProducts, refreshActiveSalesProducts, productMoods, productSlug, type SalesProduct } from '@/lib/salesProducts';
+import { getActiveSalesProducts, refreshActiveSalesProducts, productSlug, type SalesProduct } from '@/lib/salesProducts';
 import { addToCart, addSubscriptionToCart, getCart, removeSubscriptionFromCart, setCartQuantity } from '@/lib/cart';
 import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
 import { createCustomerSubscription, loadActiveCustomerSubscriptionPlans } from '@/lib/customerSubscriptions';
@@ -115,40 +115,11 @@ function renderEmpty(root: HTMLElement) {
   if (cards) cards.innerHTML = '<div class="card" style="grid-column:1/-1;padding:28px"><div class="product-body"><h3>No salable products are currently available</h3><p>Please check back soon.</p></div></div>';
 }
 
-function moodMarkup(products: SalesProduct[]) {
-  const counts = new Map<string, number>();
-  for (const product of products) for (const mood of productMoods(product)) counts.set(mood, (counts.get(mood) || 0) + 1);
-  const moods = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
-  if (!moods.length) return '';
-  return moods.map(([mood, count], i) => `<article class="card mood-card" data-mood="${esc(mood)}"><div class="product-art"><span class="badge">${i === 0 ? 'Popular' : 'Explore'}</span></div><div class="product-body"><h3>${esc(mood)}</h3><p>${count} ${count === 1 ? 'product' : 'products'} to explore.</p></div></article>`).join('');
-}
-
-function applyMoods(root: HTMLElement, products: SalesProduct[]) {
-  const section = root.querySelectorAll('.section')[0];
-  const track = section?.querySelector('.carousel-track');
-  if (!section || !track) return;
-  const markup = moodMarkup(products);
-  if (!markup) { (section as HTMLElement).hidden = true; return; }
-  (section as HTMLElement).hidden = false;
-  track.innerHTML = markup;
-  track.querySelectorAll<HTMLElement>('[data-mood]').forEach((card) => {
-    card.addEventListener('click', () => {
-      const mood = card.dataset.mood || '';
-      const url = new URL(window.location.href);
-      if (mood) url.searchParams.set('mood', mood); else url.searchParams.delete('mood');
-      window.history.replaceState(null, '', url.toString());
-      renderProductCards(root, products, mood);
-      root.querySelectorAll('.filter').forEach((el) => el.classList.remove('active'));
-    });
-  });
-}
-
-function renderProductCards(root: HTMLElement, products: SalesProduct[], mood = '') {
+function renderProductCards(root: HTMLElement, products: SalesProduct[]) {
   const cards = root.querySelector('.cards');
   if (!cards) return;
-  const filtered = mood ? products.filter((p) => productMoods(p).some((value) => value.toLowerCase() === mood.toLowerCase())) : products;
-  if (!filtered.length) { renderEmpty(root); return; }
-  cards.innerHTML = filtered.map(card).join('');
+  if (!products.length) { renderEmpty(root); return; }
+  cards.innerHTML = products.map(card).join('');
 }
 
 function showCataloguePlaceholder(root: HTMLElement) {
@@ -159,22 +130,21 @@ function showCataloguePlaceholder(root: HTMLElement) {
 }
 
 function applyMicrogreens(root: HTMLElement, products: SalesProduct[]) {
-  applyMoods(root, products);
-  const mood = new URLSearchParams(window.location.search).get('mood') || '';
-  renderProductCards(root, products, mood);
+  // The Microgreens page no longer has a mood carousel. Keep this hydrator
+  // compatible with the legacy route while rendering the normal product list.
+  renderProductCards(root, products);
   const filters = root.querySelector('.filters');
-  if (filters) {
-    const categories = [...new Set(products.map((p) => String(p.category || '').trim()).filter(Boolean))].slice(0, 5);
-    filters.innerHTML = `<button class="filter active" data-filter="">All</button>${categories.map((c) => `<button class="filter" data-filter="${esc(c)}">${esc(c)}</button>`).join('')}`;
-    filters.querySelectorAll<HTMLButtonElement>('[data-filter]').forEach((button) => button.addEventListener('click', () => {
-      filters.querySelectorAll('.filter').forEach((el) => el.classList.remove('active'));
-      button.classList.add('active');
-      const value = button.dataset.filter || '';
-      const filtered = value ? products.filter((p) => String(p.category || '').toLowerCase() === value.toLowerCase()) : products;
-      renderProductCards(root, filtered, '');
-    }));
-  }
+  if (!filters) return;
+  const categories = [...new Set(products.map((p) => String(p.category || '').trim()).filter(Boolean))].slice(0, 5);
+  filters.innerHTML = `<button class="filter active" data-filter="">All</button>${categories.map((c) => `<button class="filter" data-filter="${esc(c)}">${esc(c)}</button>`).join('')}`;
+  filters.querySelectorAll<HTMLButtonElement>('[data-filter]').forEach((button) => button.addEventListener('click', () => {
+    filters.querySelectorAll('.filter').forEach((el) => el.classList.remove('active'));
+    button.classList.add('active');
+    const value = button.dataset.filter || '';
+    renderProductCards(root, value ? products.filter((p) => String(p.category || '').toLowerCase() === value.toLowerCase()) : products);
+  }));
 }
+
 type SubscriptionPlan = {
   id: string;
   name?: string;

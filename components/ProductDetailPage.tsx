@@ -190,13 +190,13 @@ function Price({ product }: { product: SalesProduct }) {
   const currency = product.currency || "INR";
 
   return (
-    <span className="price-stack">
+    <span className="flex flex-wrap items-baseline gap-2.5">
       {Number.isFinite(mrp) && mrp > sale && sale >= 0 ? (
-        <span className="price-mrp">MRP {money(mrp, currency)}</span>
+        <span className="text-sm text-[#8a7967]">MRP {money(mrp, currency)}</span>
       ) : null}
-      <strong className="price-sale">{money(sale, currency)}</strong>
+      <strong className="text-3xl font-bold tracking-tight text-[#6fa82e] sm:text-[34px]">{money(sale, currency)}</strong>
       {Number.isFinite(mrp) && mrp > sale && sale >= 0 ? (
-        <span className="price-saving">
+        <span className="rounded-full bg-[#edf6de] px-2.5 py-1 text-xs font-bold text-[#6fa82e]">
           Save {money(mrp - sale, currency)}
         </span>
       ) : null}
@@ -231,24 +231,37 @@ function ProductImage({ product }: { product: SalesProduct }) {
   const image = product.imageUrl?.trim();
 
   return (
-    <div
-      className="detail-art"
-      style={
-        image
-          ? {
-              backgroundImage: `url("${image.replace(/"/g, "%22")}")`,
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-              minHeight: "560px",
-            }
-          : { minHeight: "560px" }
-      }
-    >
-      {image ? (
-        <span className="detail-image-badge">Fresh product</span>
-      ) : (
-        <span className="detail-image-placeholder">Product image</span>
-      )}
+    <div className="space-y-4">
+      <div className="relative aspect-[4/3] overflow-hidden rounded-[28px] border border-[#e7dfd0] bg-[#f3efe3] shadow-[0_18px_45px_rgba(71,47,22,0.08)] sm:aspect-[5/4] lg:aspect-[1/1]">
+        {image ? (
+          <img
+            src={image}
+            alt={product.name}
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <div className="grid h-full place-items-center text-sm text-[#6b5b48]">
+            Product image
+          </div>
+        )}
+        <span className="absolute left-5 top-5 rounded-full bg-[#6fa82e] px-3.5 py-2 text-xs font-bold text-white shadow-lg">
+          Fresh product
+        </span>
+        <span
+          className="absolute right-5 top-5 grid h-10 w-10 place-items-center rounded-full bg-white/90 text-lg text-[#6c4824] shadow-md backdrop-blur"
+          aria-hidden="true"
+        >
+          ♡
+        </span>
+      </div>
+
+      <div className="flex gap-3 overflow-x-auto pb-1" aria-label="Product images">
+        <div className="h-20 w-20 shrink-0 overflow-hidden rounded-2xl border-2 border-[#6fa82e] bg-[#f3efe3] p-0.5 shadow-sm">
+          {image ? (
+            <img src={image} alt="" className="h-full w-full rounded-[13px] object-cover" />
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
@@ -556,6 +569,7 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
   const [subscribeOpen, setSubscribeOpen] = useState(false);
   const [navItems, setNavItems] = useState<NavItem[]>([]);
   const [settings, setSettings] = useState<SiteSettings | null>(null);
+  const [activeProductTab, setActiveProductTab] = useState("description");
 
   const decodedSlug = useMemo(() => {
     try {
@@ -701,110 +715,85 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
     <>
       <Header navItems={nav} />
 
-      <main>
-        <section className="section">
-          <div className="container">
-            <div className="breadcrumbs">
-              <a href="/">Home</a> /{" "}
-              <a href="/microgreens">Microgreens</a> /{" "}
-              {product?.name || (loading ? "Loading product…" : "Product")}
+      <main className="bg-[#faf7f1]">
+        <section className="px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
+          <div className="mx-auto max-w-[1180px]">
+            <div className="mb-6 flex flex-wrap items-center gap-2 text-sm text-[#6b5b48]">
+              <a href="/" className="transition hover:text-[#6fa82e]">Home</a>
+              <span aria-hidden="true">/</span>
+              <a href="/microgreens" className="transition hover:text-[#6fa82e]">Microgreens</a>
+              <span aria-hidden="true">/</span>
+              <span className="font-medium text-[#2b2016]">{product?.name || (loading ? "Loading product…" : "Product")}</span>
             </div>
 
-            <div className="product-detail" style={{ marginTop: 25 }}>
+            <div className="grid gap-8 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)] lg:gap-12">
               {loading ? (
                 <>
-                  <div className="detail-art">
-                    <span className="detail-image-placeholder">
-                      Product image
-                    </span>
-                  </div>
-                  <div className="detail">
-                    <span className="tag">Loading product</span>
-                    <h1>Loading product…</h1>
-                    <div className="rating">Product details</div>
-                    <div className="detail-short-description rich-text">
-                      Loading current product information.
-                    </div>
-                    <div className="detail-price">—</div>
-                    <strong className="purchase-heading">
-                      Purchase options
-                    </strong>
-                    <div className="actions" />
-                    <div className="detail-info">
-                      <div>
-                        <strong>Availability</strong>
-                        <br />
-                        <span className="muted">Loading…</span>
-                      </div>
-                      <div>
-                        <strong>Purchase</strong>
-                        <br />
-                        <span className="muted">Loading…</span>
-                      </div>
-                      <div>
-                        <strong>Delivery</strong>
-                        <br />
-                        <span className="muted">Saturday delivery.</span>
-                      </div>
-                    </div>
+                  <div className="aspect-[4/3] animate-pulse rounded-[28px] bg-[#eee7da] lg:aspect-square" />
+                  <div className="space-y-5 py-2">
+                    <div className="h-6 w-32 animate-pulse rounded-full bg-[#eee7da]" />
+                    <div className="h-14 w-4/5 animate-pulse rounded-xl bg-[#eee7da]" />
+                    <div className="h-5 w-2/3 animate-pulse rounded bg-[#eee7da]" />
+                    <div className="h-28 animate-pulse rounded-2xl bg-[#eee7da]" />
+                    <div className="h-10 w-48 animate-pulse rounded bg-[#eee7da]" />
                   </div>
                 </>
               ) : unavailable ? (
                 <>
-                  <div className="detail-art">
-                    <span className="detail-image-placeholder">
-                      Product image
-                    </span>
+                  <div className="grid aspect-[4/3] place-items-center rounded-[28px] bg-[#f3efe3] text-sm text-[#6b5b48] lg:aspect-square">
+                    Product image
                   </div>
-                  <div className="detail">
-                    <span className="tag">Product unavailable</span>
-                    <h1>Product unavailable</h1>
-                    <div className="rating">Product details</div>
-                    <p className="muted">
-                      This product could not be loaded right now.
-                    </p>
+                  <div className="py-4">
+                    <span className="inline-flex rounded-full bg-[#fcebd4] px-3 py-1.5 text-xs font-bold text-[#c36f1a]">Product unavailable</span>
+                    <h1 className="mt-4 font-serif text-4xl font-bold tracking-tight text-[#2b2016] sm:text-5xl">Product unavailable</h1>
+                    <p className="mt-4 max-w-xl text-[#6b5b48]">This product could not be loaded right now.</p>
                   </div>
                 </>
               ) : product ? (
                 <>
                   <ProductImage product={product} />
 
-                  <div className="detail">
-                    <span className="tag">
-                      {product.type === "multiple"
-                        ? "Salable combo"
-                        : "Fresh microgreen"}
+                  <div className="flex flex-col lg:py-2">
+                    <span className="inline-flex w-fit rounded-full bg-[#edf6de] px-3.5 py-2 text-xs font-bold uppercase tracking-[0.12em] text-[#6fa82e]">
+                      {product.type === "multiple" ? "Salable combo" : "Fresh microgreen"}
                     </span>
-
-                    <h1>{product.name}</h1>
-
-                    <div className="rating">
-                      {product.featured
-                        ? "Featured · Fresh availability"
-                        : "Fresh availability"}
+                    <h1 className="mt-4 font-serif text-4xl font-bold leading-[1.05] tracking-tight text-[#2b2016] sm:text-5xl lg:text-[54px]">
+                      {product.name}
+                    </h1>
+                    <p className="mt-4 max-w-xl text-base leading-7 text-[#6b5b48]">
+                      {product.type === "multiple"
+                        ? "A fresh blend of microgreens, grown and prepared with care."
+                        : "Freshly grown microgreens, harvested with care."}
+                    </p>
+                    <div className="mt-4 flex items-center gap-3 text-sm font-semibold text-[#6fa82e]">
+                      <span className="tracking-[0.12em] text-[#ef9b2f]">★★★★★</span>
+                      <span>Fresh quality</span>
                     </div>
 
                     <RichText
                       value={product.shortDescription}
-                      className="detail-short-description rich-text"
+                      className="mt-5 text-[15px] leading-7 text-[#6b5b48] [&_p]:mb-3 [&_p:last-child]:mb-0"
                     />
 
-                    <div className="detail-price">
+                    <div className="mt-6 flex flex-wrap items-end gap-3">
                       <Price product={product} />
                     </div>
 
-                    <strong className="purchase-heading">Purchase</strong>
+                    <div className="mt-7 rounded-3xl border border-[#e7dfd0] bg-white p-5 shadow-[0_12px_35px_rgba(71,47,22,0.06)]">
+                      <div className="mb-4 flex items-center justify-between">
+                        <strong className="text-sm font-bold uppercase tracking-[0.1em] text-[#2b2016]">Purchase</strong>
+                        <span className="text-xs text-[#6b5b48]">Fresh delivery</span>
+                      </div>
 
-                    <div className="actions">
                       {product.oneTimePurchase ? (
-                        <div className="one-time-purchase">
-                          <div className="purchase-heading">
-                            One-time purchase
-                          </div>
+                        <div>
+                          <div className="mb-2 text-xs font-bold text-[#6b5b48]">One-time purchase</div>
+                          {/* CartControl is intentionally unchanged. */}
                           <CartControl product={product} />
                         </div>
                       ) : null}
 
+                      {/* Subscription trigger is intentionally unchanged. */}
                       {product.active && plans.length > 0 ? (
                         <button
                           className="sticky-subscribe-trigger"
@@ -823,31 +812,21 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
                       ) : null}
                     </div>
 
-                    <div className="detail-info">
-                      <div>
-                        <strong>Availability</strong>
-                        <br />
-                        <span className="muted">
-                          {Number(product.packedStockQuantity ?? 0) > 0
-                            ? "Available for purchase."
-                            : "Current packed stock is limited."}
-                        </span>
+                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-2xl bg-[#edf6de] p-4">
+                        <div className="text-xl text-[#6fa82e]">✓</div>
+                        <strong className="mt-2 block text-sm text-[#2b2016]">Freshly grown</strong>
+                        <span className="mt-1 block text-xs leading-5 text-[#6b5b48]">Grown with care for freshness.</span>
                       </div>
-                      <div>
-                        <strong>Purchase</strong>
-                        <br />
-                        <span className="muted">
-                          {product.oneTimePurchase
-                            ? "One-time purchase available."
-                            : "Purchase unavailable."}
-                        </span>
+                      <div className="rounded-2xl bg-[#fff5e7] p-4">
+                        <div className="text-xl text-[#ef8f2a]">✦</div>
+                        <strong className="mt-2 block text-sm text-[#2b2016]">Premium quality</strong>
+                        <span className="mt-1 block text-xs leading-5 text-[#6b5b48]">Handpicked and packed carefully.</span>
                       </div>
-                      <div>
-                        <strong>Delivery</strong>
-                        <br />
-                        <span className="muted">
-                          Weekend delivery slots.
-                        </span>
+                      <div className="rounded-2xl bg-[#f3efe3] p-4">
+                        <div className="text-xl text-[#6c4824]">⌁</div>
+                        <strong className="mt-2 block text-sm text-[#2b2016]">Saturday delivery</strong>
+                        <span className="mt-1 block text-xs leading-5 text-[#6b5b48]">Fresh delivery every Saturday.</span>
                       </div>
                     </div>
                   </div>
@@ -856,17 +835,141 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
             </div>
 
             {product ? (
-              <section className="product-description-section">
-                <div className="product-description-head">
-                  <span className="eyebrow">Product details</span>
-                  <h2>Product description</h2>
-                </div>
-                <RichText
-                  value={product.description}
-                  fallback="Freshly grown microgreens, harvested with care and prepared for delivery."
-                  className="rich-text product-description-content"
-                />
-              </section>
+              <>
+                <section className="mt-12 grid overflow-hidden rounded-3xl border border-[#e7dfd0] bg-white sm:grid-cols-2 lg:grid-cols-4" aria-label="Product benefits">
+                  {[
+                    ["◉", "Locally Grown", "Freshly grown with care"],
+                    ["✦", "Premium Quality", "Handpicked and packed"],
+                    ["❄", "Freshly Harvested", "Prepared before delivery"],
+                    ["♡", "Great Taste", "Freshness you can taste"],
+                  ].map(([icon, title, text], index) => (
+                    <div key={title} className={`flex items-center gap-4 p-5 ${index > 0 ? "border-t border-[#eee5d7] sm:border-l sm:border-t-0" : ""}`}>
+                      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#edf6de] text-lg text-[#6fa82e]">{icon}</span>
+                      <span>
+                        <strong className="block text-sm text-[#2b2016]">{title}</strong>
+                        <small className="mt-1 block text-xs text-[#6b5b48]">{text}</small>
+                      </span>
+                    </div>
+                  ))}
+                </section>
+
+                <section className="mt-12 overflow-hidden rounded-3xl border border-[#e7dfd0] bg-white shadow-[0_12px_35px_rgba(71,47,22,0.05)]">
+                  <div className="flex gap-1 overflow-x-auto border-b border-[#eee5d7] px-4 pt-2 sm:px-6" role="tablist" aria-label="Product information">
+                    {[
+                      ["description", "Product Details"],
+                      ["nutrition", "Nutrition Facts"],
+                      ["use", "How to Use"],
+                      ["delivery", "Delivery Info"],
+                      ["reviews", "Reviews"],
+                    ].map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        role="tab"
+                        aria-selected={activeProductTab === id}
+                        className={`shrink-0 border-b-2 px-3 py-4 text-sm font-bold transition ${activeProductTab === id ? "border-[#6fa82e] text-[#6fa82e]" : "border-transparent text-[#6b5b48] hover:text-[#2b2016]"}`}
+                        onClick={() => setActiveProductTab(id)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="p-6 sm:p-8 lg:p-10">
+                    {activeProductTab === "description" ? (
+                      <div className="grid gap-8 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
+                        <div>
+                          <span className="text-xs font-bold uppercase tracking-[0.14em] text-[#6fa82e]">Product details</span>
+                          <h2 className="mt-2 font-serif text-3xl font-bold text-[#2b2016]">Product description</h2>
+                          <RichText
+                            value={product.description}
+                            fallback="Freshly grown microgreens, harvested with care and prepared for delivery."
+                            className="mt-5 text-[15px] leading-7 text-[#6b5b48] [&_p]:mb-4 [&_p:last-child]:mb-0 [&_h2]:mb-3 [&_h2]:font-serif [&_h2]:text-xl [&_h2]:font-bold [&_h2]:text-[#2b2016] [&_h3]:mb-2 [&_h3]:font-bold [&_h3]:text-[#2b2016] [&_ul]:mb-4 [&_ul]:list-disc [&_ul]:pl-5"
+                          />
+                        </div>
+
+                        {product.type === "multiple" && Array.isArray(product.components) && product.components.length > 0 ? (
+                          <div className="rounded-3xl bg-[#f3f7eb] p-6">
+                            <span className="text-xs font-bold uppercase tracking-[0.14em] text-[#6fa82e]">Inside this combo</span>
+                            <h3 className="mt-2 font-serif text-2xl font-bold text-[#2b2016]">What’s in this combo?</h3>
+                            <div className="mt-5 space-y-3">
+                              {product.components.map((component) => (
+                                <div key={`${component.productId}-${component.productName}`} className="flex items-center gap-3 rounded-2xl bg-white p-3">
+                                  <span className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-xl bg-[#edf6de]">
+                                    {product.imageUrl ? <img src={product.imageUrl} alt="" className="h-full w-full object-cover" /> : "✦"}
+                                  </span>
+                                  <span className="min-w-0">
+                                    <strong className="block truncate text-sm text-[#2b2016]">{component.productName}</strong>
+                                    <small className="mt-1 block text-xs text-[#6b5b48]">{Number(component.quantityGrams || 0)}g</small>
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="mx-auto flex min-h-[240px] max-w-xl flex-col items-center justify-center text-center">
+                        <div className="grid h-14 w-14 place-items-center rounded-full bg-[#edf6de] text-xl text-[#6fa82e]">✦</div>
+                        <h2 className="mt-5 font-serif text-2xl font-bold text-[#2b2016]">
+                          {activeProductTab === "nutrition"
+                            ? "Nutrition information is coming soon"
+                            : activeProductTab === "use"
+                              ? "Usage tips are coming soon"
+                              : activeProductTab === "delivery"
+                                ? "Delivery information is coming soon"
+                                : "Reviews are coming soon"}
+                        </h2>
+                        <p className="mt-2 text-sm leading-6 text-[#6b5b48]">We’re preparing this information for you. Please check back soon.</p>
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="mt-12" aria-label="All products">
+                  <div className="mb-5 flex items-end justify-between gap-4">
+                    <div>
+                      <span className="text-xs font-bold uppercase tracking-[0.14em] text-[#6fa82e]">Explore our range</span>
+                      <h2 className="mt-1 font-serif text-3xl font-bold text-[#2b2016]">All Products</h2>
+                    </div>
+                    <a href="/microgreens" className="shrink-0 text-sm font-bold text-[#6fa82e] hover:text-[#6c4824]">View all →</a>
+                  </div>
+
+                  <div className="-mx-1 flex snap-x gap-4 overflow-x-auto px-1 pb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {products.map((item) => {
+                      const imageUrl = item.imageUrl?.trim();
+                      const price = Number(item.sellingPrice ?? 0);
+                      const mrp = Number(item.mrp ?? price);
+                      return (
+                        <a
+                          className="group w-[250px] shrink-0 snap-start overflow-hidden rounded-3xl border border-[#e7dfd0] bg-white shadow-[0_10px_28px_rgba(71,47,22,0.05)] transition duration-200 hover:-translate-y-1 hover:shadow-[0_16px_35px_rgba(71,47,22,0.10)]"
+                          href={`/product/${encodeURIComponent(productSlug(item))}`}
+                          key={item.id}
+                          aria-label={`View ${item.name}`}
+                        >
+                          <div className="relative aspect-[4/3] overflow-hidden bg-[#f3efe3]">
+                            {imageUrl ? (
+                              <img src={imageUrl} alt={item.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-105" />
+                            ) : (
+                              <span className="grid h-full place-items-center text-xs text-[#6b5b48]">Fresh product</span>
+                            )}
+                            <span className="absolute left-3 top-3 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold text-[#6fa82e] shadow-sm backdrop-blur">
+                              {item.type === "multiple" ? "Salable combo" : "Microgreen"}
+                            </span>
+                          </div>
+                          <div className="p-4">
+                            <h3 className="line-clamp-2 min-h-[48px] text-base font-bold leading-6 text-[#2b2016]">{item.name}</h3>
+                            <div className="mt-3 flex items-center gap-2">
+                              {mrp > price ? <del className="text-xs text-[#8a7967]">{money(mrp, item.currency || "INR")}</del> : null}
+                              <strong className="text-lg text-[#6fa82e]">{money(price, item.currency || "INR")}</strong>
+                            </div>
+                          </div>
+                        </a>
+                      );
+                    })}
+                  </div>
+                </section>
+              </>
             ) : null}
           </div>
         </section>
