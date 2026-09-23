@@ -5,6 +5,7 @@ import { cmsCollections, getDocById, getPublishedCollection } from '@/lib/cms';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import { getActiveSalesProducts, refreshActiveSalesProducts, productSlug, type SalesProduct } from '@/lib/salesProducts';
+import heroBannerImage from '@/public/assets/microgreens-hero-banner.png';
 
 const money = (value: number, currency = 'INR') => {
   try {
@@ -204,7 +205,7 @@ export default function CataloguePage() {
         <section className="relative overflow-hidden border-b border-[var(--line)] bg-[#eef3d9]">
           <div className="relative mx-auto w-full max-w-[1440px]">
             <img
-              src="/assets/microgreens-hero-banner.png"
+              src={heroBannerImage.src}
               alt="Fresh microgreens with the message Small Greens, Big Benefits"
               className="block h-auto min-h-[235px] w-full object-cover object-center"
             />
