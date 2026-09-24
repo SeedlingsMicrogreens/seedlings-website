@@ -24,9 +24,10 @@ function formatLongDate(value: string) {
   return new Intl.DateTimeFormat("en-IN", { weekday: "long", day: "numeric", month: "long" }).format(date);
 }
 
-function packLabel(weightGrams: number, quantity: number) {
+function packLabel(weightGrams: number, quantity: number, packaging?: number) {
   if (!Number.isFinite(weightGrams) || !Number.isFinite(quantity) || quantity < 1) return "";
-  const weight = weightGrams >= 1000 && weightGrams % 1000 === 0 ? `${weightGrams / 1000}kg` : `${weightGrams}g`;
+  const pack = Number(packaging) > 0 ? Number(packaging) : weightGrams;
+  const weight = pack >= 1000 && pack % 1000 === 0 ? `${pack / 1000}kg` : `${pack}g`;
   return `${weight} × ${quantity}`;
 }
 
@@ -168,7 +169,7 @@ export default function AccountHydrator({ children }: { children: ReactNode }) {
           activeSubscriptionCount: activeSubscriptions.length,
           pastOrderCount: orders.length,
           currentSubscription: upcoming,
-          upcomingDelivery: upcoming ? { date: dateValue(upcoming.nextDeliveryDate), productName: upcoming.productName, weightGrams: Number(upcoming.weightGrams || 0), quantity: Number(upcoming.quantity || 0), deliveryAddress: upcoming.deliveryAddress || null } : null,
+          upcomingDelivery: upcoming ? { date: dateValue(upcoming.nextDeliveryDate), productName: upcoming.productName, packaging: Number(upcoming.packaging || 0), weightGrams: Number(upcoming.weightGrams || 0), quantity: Number(upcoming.quantity || 0), deliveryAddress: upcoming.deliveryAddress || null } : null,
         };
 
         const customerName = data.customer?.name || "Customer";
@@ -197,7 +198,7 @@ export default function AccountHydrator({ children }: { children: ReactNode }) {
           const meta = row?.querySelector(".order-meta");
           const status = row?.querySelector(".status");
           if (current) {
-            if (strong) strong.textContent = `${current.productName || "Subscription"} · ${packLabel(Number(current.weightGrams), Number(current.quantity))}`;
+            if (strong) strong.textContent = `${current.productName || "Subscription"} · ${packLabel(Number(current.weightGrams), Number(current.quantity), Number(current.packaging))}`;
             if (meta) meta.textContent = `${String(current.frequency || "").replace(/_/g, " ")} · ${Number(current.totalDeliveries || 0)} deliveries · Saturday delivery`;
             if (status) status.textContent = String(current.status || "ACTIVE").toUpperCase();
           } else {
@@ -215,7 +216,7 @@ export default function AccountHydrator({ children }: { children: ReactNode }) {
           const delivery = data.upcomingDelivery;
           if (delivery) {
             if (strong) strong.textContent = formatLongDate(delivery.date);
-            if (meta) meta.textContent = `${packLabel(Number(delivery.weightGrams), Number(delivery.quantity)) || "Upcoming delivery"} · Home address`;
+            if (meta) meta.textContent = `${packLabel(Number(delivery.weightGrams), Number(delivery.quantity), Number(delivery.packaging)) || "Upcoming delivery"} · Home address`;
             if (status) status.textContent = "UPCOMING";
           } else {
             if (strong) strong.textContent = "No upcoming delivery";

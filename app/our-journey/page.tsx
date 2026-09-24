@@ -1,2 +1,3 @@
 import JourneyPage from '@/components/pages/JourneyPage';
-export default function Page() { return <JourneyPage />; }
+import CmsHydrator from '@/components/CmsHydrator';
+export default function Page() { return <CmsHydrator page="journey"><JourneyPage /></CmsHydrator>; }

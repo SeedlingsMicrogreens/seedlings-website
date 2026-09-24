@@ -195,7 +195,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           const cartNow = getUnifiedCart();
           const products = await getActiveSalesProducts();
           const checks = [...cartNow.oneTimeItems.map(i => ({ i, p: products.find(x => x.id === i.productId), date: nextWeekSaturday() })), ...cartNow.subscriptionItems.map(i => ({ i, p: products.find(x => x.id === i.productId), date: i.startDate }))];
-          const results = await Promise.all(checks.map(async x => { if (!x.p) throw new Error(`Product "${x.i.name}" is no longer available.`); return checkProductAvailability({ product: x.p, quantity: x.i.quantity, deliveryDate: x.date }); }));
+          const results = await Promise.all(checks.map(async x => { if (!x.p) throw new Error(`Product "${x.i.name}" is no longer available.`); return checkProductAvailability({ product: x.p, quantity: x.i.quantity, packagingGrams: x.i.packaging, deliveryDate: x.date }); }));
           let shortageDecision: any;
           if (results.some(r => r.hasShortage)) { const requested = results.reduce((s, r) => s + r.requestedGrams, 0), available = results.reduce((s, r) => s + r.availableGrams, 0), shortage = results.reduce((s, r) => s + r.shortageGrams, 0); shortageDecision = await confirmHarvestShortage({ mode: 'one-time', availableGrams: available, requestedGrams: requested, shortageGrams: shortage }); }
           if (button) button.textContent = 'Preparing Payment…';

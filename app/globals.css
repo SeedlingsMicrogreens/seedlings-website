@@ -3837,10 +3837,11 @@ body:has(.floating-cart) .footer {
   }
 }
 
-/* Checkout address modal layering — keep site Header/Footer fixed beneath modal */
+/* Checkout address modal layering — keep site Header/Footer beneath modal while preserving sticky header behavior */
 .header {
-  position: relative;
-  z-index: 20;
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
 
 .footer,
@@ -4367,5 +4368,107 @@ body:has(.floating-cart) .footer {
     max-height: calc(100vh - 24px);
     border-radius: 18px;
     padding: 18px;
+  }
+}
+
+/* Targeted product-detail packaging layout */
+.product-price-packaging-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.product-price-panel,
+.product-packaging-panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+  padding: 16px;
+}
+
+.product-price-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.product-packaging-panel {
+  box-shadow: 0 12px 35px rgba(71,47,22,0.06);
+}
+
+.product-purchase-control {
+  min-width: 0;
+}
+
+.product-price-panel .text-3xl {
+  font-size: 30px;
+}
+
+.subscribe-options-row-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.subscribe-options-row-three .subscribe-step {
+  min-width: 0;
+}
+
+@media (max-width: 700px) {
+  .product-price-packaging-row {
+    grid-template-columns: 1fr;
+  }
+
+  .subscribe-options-row-three {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Journey CMS banner */
+.journey-page-hero {
+  min-height: 280px;
+}
+
+.journey-page-hero-media {
+  position: absolute;
+  inset: 0 0 0 48%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.journey-banner-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center;
+  opacity: .88;
+}
+
+.journey-page-hero-media::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(90deg, var(--brown-dark) 0%, rgba(72, 43, 18, .82) 18%, rgba(72, 43, 18, .08) 100%);
+}
+
+.journey-page-hero-content {
+  position: relative;
+  z-index: 2;
+}
+
+@media (max-width: 700px) {
+  .journey-page-hero {
+    min-height: 300px;
+  }
+
+  .journey-page-hero-media {
+    inset: 0;
+    opacity: .32;
+  }
+
+  .journey-page-hero-media::before {
+    background: linear-gradient(90deg, var(--brown-dark) 0%, rgba(72, 43, 18, .72) 100%);
   }
 }

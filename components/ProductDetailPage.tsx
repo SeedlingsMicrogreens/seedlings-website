@@ -15,11 +15,13 @@ import {
   addSubscriptionToCart,
   getCart,
   setCartQuantity,
+  setCartPackaging,
 } from "@/lib/cart";
 import {
   loadActiveCustomerSubscriptionPlans,
 } from "@/lib/customerSubscriptions";
 import { nextWeekSaturday } from "@/lib/customerOrderAvailability";
+import { PACKAGING_OPTIONS, packagingLabel } from "@/lib/packaging";
 import {
   cmsCollections,
   getDocById,
@@ -271,14 +273,23 @@ function CartControl({
 }: {
   product: SalesProduct;
 }) {
-  const [quantity, setQuantity] = useState(
-    () => getCart().find((item) => item.productId === product.id)?.quantity || 0,
-  );
+  const existing = getCart().find((item) => item.productId === product.id);
+  const [quantity, setQuantity] = useState(existing?.quantity || 0);
+  const [packaging, setPackaging] = useState(existing?.packaging || 100);
 
-  const refreshQuantity = () => {
-    setQuantity(
-      getCart().find((item) => item.productId === product.id)?.quantity || 0,
-    );
+  const refreshCartState = () => {
+    const current = getCart().find((item) => item.productId === product.id);
+    setQuantity(current?.quantity || 0);
+    setPackaging(current?.packaging || 100);
+  };
+
+  const changePackaging = (value: number) => {
+    const next = Number(value) || 100;
+    setPackaging(next);
+    if (getCart().some((item) => item.productId === product.id)) {
+      setCartPackaging(product.id, next);
+      refreshCartState();
+    }
   };
 
   const add = () => {
@@ -291,6 +302,7 @@ function CartControl({
         mrp: Number(product.mrp ?? product.sellingPrice ?? 0),
         currency: product.currency || "INR",
         imageUrl: product.imageUrl,
+        packaging,
       },
       1,
     );
@@ -300,54 +312,67 @@ function CartControl({
   const decrease = () => {
     const current = getCart().find((item) => item.productId === product.id);
     if (current) setCartQuantity(product.id, current.quantity - 1);
-    refreshQuantity();
+    refreshCartState();
   };
 
   const increase = () => {
     const current = getCart().find((item) => item.productId === product.id);
     if (current) setCartQuantity(product.id, current.quantity + 1);
-    refreshQuantity();
+    refreshCartState();
   };
 
-  if (!quantity) {
-    return (
-      <div className="product-cart-control">
-        <button className="btn primary cart-add-button" type="button" onClick={add}>
-          Add
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <div className="product-cart-control">
-      <div className="cart-quantity-control">
-        <button
-          className={`cart-quantity-btn${quantity === 1 ? " remove" : ""}`}
-          type="button"
-          aria-label={quantity === 1 ? "Remove from cart" : "Decrease quantity"}
-          onClick={decrease}
+    <div className="product-purchase-control">
+      <div>
+        <label
+          className="block text-xs font-bold text-[#6b5b48]"
+          htmlFor={`packaging-${product.id}`}
         >
-          {quantity === 1 ? (
-            <svg className="cart-trash-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 7h16" />
-              <path d="M9 7V4h6v3" />
-              <path d="M7 7l1 13h8l1-13" />
-              <path d="M10 11v5M14 11v5" />
-            </svg>
-          ) : (
-            "−"
-          )}
-        </button>
-        <strong>{quantity}</strong>
-        <button
-          className="cart-quantity-btn"
-          type="button"
-          aria-label="Increase quantity"
-          onClick={increase}
+          Packaging
+        </label>
+        <select
+          id={`packaging-${product.id}`}
+          value={packaging}
+          onChange={(event) => changePackaging(Number(event.target.value))}
+          className="mt-1 w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2.5 text-sm font-semibold text-[#2b2016] outline-none focus:border-[#6fa82e]"
         >
-          +
-        </button>
+          {PACKAGING_OPTIONS.map((grams) => (
+            <option key={grams} value={grams}>
+              {packagingLabel(grams)}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-2 text-xs font-bold text-[#6b5b48]">One-time purchase</div>
+        {!quantity ? (
+          <button className="btn primary cart-add-button" type="button" onClick={add}>
+            Add
+          </button>
+        ) : (
+          <div className="cart-quantity-control">
+            <button
+              className={`cart-quantity-btn${quantity === 1 ? " remove" : ""}`}
+              type="button"
+              aria-label={quantity === 1 ? "Remove from cart" : "Decrease quantity"}
+              onClick={decrease}
+            >
+              {quantity === 1 ? (
+                <svg className="cart-trash-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h16" />
+                  <path d="M9 7V4h6v3" />
+                  <path d="M7 7l1 13h8l1-13" />
+                  <path d="M10 11v5M14 11v5" />
+                </svg>
+              ) : "−"}
+            </button>
+            <strong>{quantity}</strong>
+            <button className="cart-quantity-btn" type="button" aria-label="Increase quantity" onClick={increase}>
+              +
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -359,6 +384,7 @@ function SubscriptionSheet({
   initialPlanId,
   initialStartDate,
   initialQuantity,
+  initialPackaging,
   onClose,
 }: {
   product: SalesProduct;
@@ -366,6 +392,7 @@ function SubscriptionSheet({
   initialPlanId: string;
   initialStartDate: string;
   initialQuantity: number;
+  initialPackaging: number;
   onClose: () => void;
 }) {
   const nextSaturday = nextWeekSaturday();
@@ -383,6 +410,7 @@ function SubscriptionSheet({
       : plans[0]?.id || "",
   );
   const [quantity, setQuantity] = useState(Math.max(1, initialQuantity));
+  const [packaging, setPackaging] = useState(Math.max(100, initialPackaging || 100));
   const [startDate, setStartDate] = useState(validInitialDate);
 
   const submit = () => {
@@ -405,6 +433,7 @@ function SubscriptionSheet({
         mrp: Number(selectedPlan.price ?? 0),
         currency: product.currency || "INR",
         imageUrl: product.imageUrl,
+        packaging,
         planId: selectedPlan.id,
         planName:
           selectedPlan.name ||
@@ -496,10 +525,30 @@ function SubscriptionSheet({
           </div>
         </div>
 
-        <div className="subscribe-options-row">
+        <div className="subscribe-options-row subscribe-options-row-three">
           <div className="subscribe-step">
             <div className="subscribe-step-title">
               <span>2</span>
+              <div>
+                <strong>Packaging</strong>
+                <small>Choose pack size</small>
+              </div>
+            </div>
+            <select
+              value={packaging}
+              onChange={(event) => setPackaging(Number(event.target.value))}
+              aria-label="Packaging"
+              className="w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2.5 text-sm font-semibold text-[#2b2016]"
+            >
+              {PACKAGING_OPTIONS.map((grams) => (
+                <option key={grams} value={grams}>{packagingLabel(grams)}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="subscribe-step">
+            <div className="subscribe-step-title">
+              <span>3</span>
               <div>
                 <strong>Quantity</strong>
                 <small>Packs per delivery</small>
@@ -527,10 +576,10 @@ function SubscriptionSheet({
 
           <div className="subscribe-step">
             <div className="subscribe-step-title">
-              <span>3</span>
+              <span>4</span>
               <div>
                 <strong>Start date</strong>
-                <small>Saturday deliveries only</small>
+                <small>Saturday only</small>
               </div>
             </div>
 
@@ -582,6 +631,7 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
   const [editPlanId, setEditPlanId] = useState("");
   const [editStartDate, setEditStartDate] = useState("");
   const [editQuantity, setEditQuantity] = useState(1);
+  const [editPackaging, setEditPackaging] = useState(100);
 
   const product = useMemo(() => {
     const normalized = slugify(decodedSlug);
@@ -600,6 +650,7 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
     setEditQuantity(
       Math.max(1, Math.floor(Number(params.get("editQuantity") || "1")) || 1),
     );
+    setEditPackaging(Math.max(100, Math.floor(Number(params.get("editPackaging") || "100")) || 100));
   }, []);
 
   useEffect(() => {
@@ -760,57 +811,37 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
                     <h1 className="mt-4 font-serif text-4xl font-bold leading-[1.05] tracking-tight text-[#2b2016] sm:text-5xl lg:text-[54px]">
                       {product.name}
                     </h1>
-                    <p className="mt-4 max-w-xl text-base leading-7 text-[#6b5b48]">
-                      {product.type === "multiple"
-                        ? "A fresh blend of microgreens, grown and prepared with care."
-                        : "Freshly grown microgreens, harvested with care."}
-                    </p>
                     <div className="mt-4 flex items-center gap-3 text-sm font-semibold text-[#6fa82e]">
                       <span className="tracking-[0.12em] text-[#ef9b2f]">★★★★★</span>
                       <span>Fresh quality</span>
                     </div>
 
-                    <RichText
-                      value={product.shortDescription}
-                      className="mt-5 text-[15px] leading-7 text-[#6b5b48] [&_p]:mb-3 [&_p:last-child]:mb-0"
-                    />
-
-                    <div className="mt-6 flex flex-wrap items-end gap-3">
-                      <Price product={product} />
-                    </div>
-
-                    <div className="mt-7 rounded-3xl border border-[#e7dfd0] bg-white p-5 shadow-[0_12px_35px_rgba(71,47,22,0.06)]">
-                      <div className="mb-4 flex items-center justify-between">
-                        <strong className="text-sm font-bold uppercase tracking-[0.1em] text-[#2b2016]">Purchase</strong>
-                        <span className="text-xs text-[#6b5b48]">Fresh delivery</span>
+                    <div className="mt-6 product-price-packaging-row">
+                      <div className="product-price-panel">
+                        <span className="block text-xs font-bold uppercase tracking-[0.1em] text-[#6b5b48]">Price</span>
+                        <div className="mt-1"><Price product={product} /></div>
                       </div>
-
-                      {product.oneTimePurchase ? (
-                        <div>
-                          <div className="mb-2 text-xs font-bold text-[#6b5b48]">One-time purchase</div>
-                          {/* CartControl is intentionally unchanged. */}
-                          <CartControl product={product} />
-                        </div>
-                      ) : null}
-
-                      {/* Subscription trigger is intentionally unchanged. */}
-                      {product.active && plans.length > 0 ? (
-                        <button
-                          className="sticky-subscribe-trigger"
-                          type="button"
-                          onClick={() => setSubscribeOpen(true)}
-                        >
-                          <span className="sticky-subscribe-icon">▣</span>
-                          <span>
-                            <strong>Subscribe</strong>
-                            <small>
-                              Set it once and enjoy automatic deliveries
-                            </small>
-                          </span>
-                          <span className="sticky-subscribe-arrow">›</span>
-                        </button>
-                      ) : null}
+                      {product.oneTimePurchase ? <div className="product-packaging-panel">
+                        <CartControl product={product} />
+                      </div> : null}
                     </div>
+
+                    {product.active && plans.length > 0 ? (
+                      <button
+                        className="sticky-subscribe-trigger"
+                        type="button"
+                        onClick={() => setSubscribeOpen(true)}
+                      >
+                        <span className="sticky-subscribe-icon">▣</span>
+                        <span>
+                          <strong>Subscribe</strong>
+                          <small>
+                            Set it once and enjoy automatic deliveries
+                          </small>
+                        </span>
+                        <span className="sticky-subscribe-arrow">›</span>
+                      </button>
+                    ) : null}
 
                     <div className="mt-5 grid gap-3 sm:grid-cols-3">
                       <div className="rounded-2xl bg-[#edf6de] p-4">
@@ -984,6 +1015,7 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
           initialPlanId={editPlanId}
           initialStartDate={editStartDate}
           initialQuantity={editQuantity}
+          initialPackaging={editPackaging}
           onClose={() => setSubscribeOpen(false)}
         />
       ) : null}

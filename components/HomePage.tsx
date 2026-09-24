@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { cmsCollections, getDocById, getPublishedCollection } from '@/lib/cms';
 import { getFeaturedProducts, type FeaturedProduct } from '@/lib/products';
-import { refreshActiveSalesProducts } from '@/lib/salesProducts';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import ProductCard from '@/components/business/ProductCard';
@@ -66,9 +65,9 @@ function getNavLabel(items: NavItem[], key: string, fallback: string) {
 
 function FeaturedProducts({ products, loading }: { products: FeaturedProduct[]; loading: boolean }) {
   return <section className={`section featured-products-section${loading ? ' is-loading' : ''}`} hidden={!loading && products.length === 0}>
-    <div className="container"><div className="section-head"><div><span className="eyebrow">Fresh from Seedlings</span><h2>Featured Microgreens</h2></div><a className="btn outline" href="/microgreens">View all</a></div>
+    <div className="container"><div className="section-head"><div><span className="eyebrow">Fresh from Seedlings</span><h2>Featured Microgreens</h2></div><a className="inline-flex items-center gap-2 rounded-xl border border-[#6fa82e]/35 bg-white px-4 py-2.5 text-sm font-semibold text-[#6fa82e] shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-[#6fa82e] hover:bg-[#edf6de] hover:shadow-md focus:outline-none focus:ring-2 focus:ring-[#6fa82e]/30" href="/microgreens">View all <span aria-hidden="true" className="text-base leading-none">→</span></a></div>
       <div className="cards">
-        {loading ? Array.from({ length: 4 }, (_, index) => <article className="card product-placeholder" aria-hidden="true" key={index}><div className="product-art"><span className="placeholder-product-image" /></div><div className="product-body"><span className="placeholder-line placeholder-tag" /><span className="placeholder-line placeholder-product-title" /><span className="placeholder-line placeholder-product-text" /><span className="placeholder-line placeholder-product-text short" /></div></article>) : products.map((product) => <ProductCard product={product} key={product.id} />)}
+        {loading ? Array.from({ length: 4 }, (_, index) => <article className="card product-placeholder" aria-hidden="true" key={index}><div className="product-art"><span className="placeholder-product-image" /></div><div className="product-body"><span className="placeholder-line placeholder-tag" /><span className="placeholder-line placeholder-product-title" /></div></article>) : products.map((product) => <ProductCard product={product} showDescription={false} key={product.id} />)}
       </div>
     </div>
   </section>;
@@ -144,7 +143,6 @@ export default function HomePage() {
         const nextFaq = freshFaq.length ? sortByOrder(freshFaq).map((item) => ({ question: asText(item.question), answer: asText(item.answer), sortOrder: Number(item.sortOrder ?? 0) })) : STATIC_FAQS.map((item, index) => ({ ...item, sortOrder: index }));
         setTestimonials(nextTestimonials); setTestimonialsLoading(false); setFaqItems(nextFaq); setFaqLoading(false);
         try { window.localStorage.setItem('seedlings-cms-testimonials-v1', JSON.stringify(freshTestimonials)); window.localStorage.setItem('seedlings-cms-faq-v1', JSON.stringify(freshFaq)); } catch {}
-        void refreshActiveSalesProducts().then((fresh) => { if (active && fresh.length) setFeaturedProducts(fresh.filter((product) => product.featured === true)); }).catch((error) => console.warn('Featured products background refresh failed', error));
       } catch (error) {
         console.error('Home content load failed', error);
         if (active) { setProductsLoading(false); setTestimonialsLoading(false); setFaqLoading(false); }

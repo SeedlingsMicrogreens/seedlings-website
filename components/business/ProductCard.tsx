@@ -8,9 +8,9 @@ const money = (value: number, currency = 'INR') => {
   catch { return `₹${value}`; }
 };
 
-export type ProductCardProps = { product: FeaturedProduct };
+export type ProductCardProps = { product: FeaturedProduct; showDescription?: boolean };
 
-export default function ProductCard({ product }: ProductCardProps) {
+export default function ProductCard({ product, showDescription = true }: ProductCardProps) {
   const imageUrl = text(product.imageUrl);
   const price = Number(product.sellingPrice ?? 0);
   const mrp = Number(product.mrp ?? price);
@@ -24,7 +24,7 @@ export default function ProductCard({ product }: ProductCardProps) {
     <div className="product-body">
       <span className="tag">{product.category || (product.type === 'multiple' ? 'Salable combo' : 'Microgreen')}</span>
       <h3>{product.name}</h3>
-      <div className="product-card-description rich-text">{stripRichText(product.shortDescription || product.description)}</div>
+      {showDescription && <div className="product-card-description rich-text">{stripRichText(product.shortDescription || product.description)}</div>}
       <div className="product-foot"><span className="price"><span className="price-stack">
         {Number.isFinite(price) && price > 0 && mrp > price && <span className="price-mrp">MRP {money(mrp, currency)}</span>}
         {Number.isFinite(price) && price > 0 ? <strong className="price-sale">{money(price, currency)}</strong> : 'Freshly grown'}

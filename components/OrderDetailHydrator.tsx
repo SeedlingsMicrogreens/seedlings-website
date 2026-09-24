@@ -9,6 +9,7 @@ import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
 type OrderItem = {
   productName?: string;
   sellingOptionLabel?: string;
+  packaging?: number;
   weightGrams?: number;
   quantity?: number;
   mrp?: number;
@@ -148,7 +149,7 @@ function renderOrder(panel: HTMLElement, order: Order, transaction?: PaymentTran
   const total = Number(order.total ?? subtotal + deliveryFee);
 
   const itemRows = items.length ? items.map(item => {
-    const details = [item.sellingOptionLabel, item.weightGrams ? `${item.weightGrams}g` : '', `× ${Number(item.quantity || 0)}`].filter(Boolean).join(' · ');
+    const pack = Number(item.packaging || 0); const packLabel = pack >= 1000 && pack % 1000 === 0 ? `${pack / 1000}kg` : pack > 0 ? `${pack}g` : ''; const details = [item.sellingOptionLabel, packLabel ? `${packLabel} pack` : (item.weightGrams ? `${item.weightGrams}g` : ''), `× ${Number(item.quantity || 0)}`].filter(Boolean).join(' · ');
     const image = item.imageUrl ? `<img src="${esc(item.imageUrl)}" alt="${esc(item.productName || 'Product')}" style="width:52px;height:52px;object-fit:cover;border-radius:12px;margin-right:12px">` : '';
     return `<div class="order-row"><div style="display:flex;align-items:center;min-width:0">${image}<div><strong>${esc(item.productName || 'Product')}</strong><div class="order-meta">${esc(details || 'Item')}</div></div></div><strong>${money(item.lineTotal, currency)}</strong><span>${money(item.unitPrice, currency)} each</span></div>`;
   }).join('') : `<p class="muted">No items were recorded for this order.</p>`;

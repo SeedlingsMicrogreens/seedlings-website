@@ -35,7 +35,8 @@ export type SalesProduct = {
   sortOrder?: number;
 };
 
-const SALES_PRODUCTS_CACHE_KEY = 'seedlings-sales-products-v2';
+const SALES_PRODUCTS_CACHE_KEY = 'seedlings-sales-products-v3';
+const SALES_PRODUCTS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function normalize(products: SalesProduct[]) {
   return products
@@ -52,8 +53,17 @@ function readCached(): SalesProduct[] | null {
   try {
     const cached = window.localStorage.getItem(SALES_PRODUCTS_CACHE_KEY);
     if (!cached) return null;
-    const parsed = JSON.parse(cached);
-    return Array.isArray(parsed) ? normalize(parsed as SalesProduct[]) : null;
+
+    const parsed = JSON.parse(cached) as { products?: unknown; cachedAt?: unknown };
+    const cachedAt = Number(parsed?.cachedAt);
+    if (!Array.isArray(parsed?.products) || !Number.isFinite(cachedAt)) return null;
+
+    if (Date.now() - cachedAt >= SALES_PRODUCTS_CACHE_TTL_MS) {
+      window.localStorage.removeItem(SALES_PRODUCTS_CACHE_KEY);
+      return null;
+    }
+
+    return normalize(parsed.products as SalesProduct[]);
   } catch (error) {
     console.warn('Sales products cache read failed', error);
     return null;
@@ -62,8 +72,14 @@ function readCached(): SalesProduct[] | null {
 
 function writeCached(products: SalesProduct[]) {
   if (typeof window === 'undefined') return;
-  try { window.localStorage.setItem(SALES_PRODUCTS_CACHE_KEY, JSON.stringify(products)); }
-  catch (error) { console.warn('Sales products cache write failed', error); }
+  try {
+    window.localStorage.setItem(
+      SALES_PRODUCTS_CACHE_KEY,
+      JSON.stringify({ products, cachedAt: Date.now() }),
+    );
+  } catch (error) {
+    console.warn('Sales products cache write failed', error);
+  }
 }
 
 export async function refreshActiveSalesProducts(): Promise<SalesProduct[]> {
@@ -73,7 +89,7 @@ export async function refreshActiveSalesProducts(): Promise<SalesProduct[]> {
   return products;
 }
 
-/** Cache-first. A fresh server refresh can be requested separately by the page and rendered in the background. */
+/** Cache-first with a 24-hour browser cache. Expired/missing cache falls back to Firestore. */
 export async function getActiveSalesProducts(): Promise<SalesProduct[]> {
   const cached = readCached();
   if (cached) return cached;

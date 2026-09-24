@@ -438,7 +438,11 @@ export default function DeliveryCalendarPage() {
 
             {isFuture && selectedStatus === 'upcoming' && <div className="delivery-action-message"><span>🌱</span><div><strong>Need to skip or reschedule?</strong><p>You can skip this delivery or choose a new date from upcoming Saturdays.</p></div></div>}
 
-            {isFuture && (isUpcomingFuture || skipDisabled) && <button className="calendar-action-button calendar-action-button--primary" type="button" disabled={!canSkip || Boolean(busyAction)} onClick={() => void handleSkip()} title={!canSkip && isUpcomingFuture ? 'Only the current next delivery can be changed.' : undefined}>{busyAction === 'skip' ? 'Skipping…' : '⚒ Skip delivery'}</button>}
+            {/*
+              Temporarily disabled: Skip Delivery UI control.
+              The existing handleSkip functionality remains unchanged.
+              Re-enable this JSX block when the Skip control should return.
+            */}
             {isFuture && (isUpcomingFuture || rescheduleDisabled) && <button className="calendar-action-button" type="button" disabled={!canReschedule || Boolean(busyAction)} onClick={() => void handleReschedule()} title={!canReschedule && isUpcomingFuture ? 'Only the current next delivery can be changed.' : undefined}>{busyAction === 'reschedule' ? 'Rescheduling…' : '▣ Reschedule delivery'}</button>}
           </> : <div className="delivery-details-empty"><strong>No delivery scheduled</strong><p className="muted">There is no subscription delivery scheduled for this date.</p></div>}
         </div>

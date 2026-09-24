@@ -353,8 +353,43 @@ async function applyPage(root: HTMLElement, page: Page) {
     text(root.querySelector('.page-hero h1'),x.title);text(root.querySelector('.page-hero p'),x.body);image(root.querySelector('.page-hero img'),x.imageUrl);applySeo(x.seoTitle,x.seoDescription); const mood=root.querySelectorAll('.section')[0];text(mood?.querySelector('.eyebrow'),x.moodEyebrow);text(mood?.querySelector('h2'),x.moodTitle);const cards=Array.from(mood?.querySelectorAll('.card')??[]);[[x.everydayTitle,x.everydayText],[x.colourTitle,x.colourText],[x.chefTitle,x.chefText]].forEach((v,i)=>{text(cards[i]?.querySelector('h3'),v[0]);text(cards[i]?.querySelector('p'),v[1]);}); return;
   }
   if (page === 'journey') {
-    const [hero,spark,process]=await Promise.all([getPublishedByField<Record<string,unknown>>(cmsCollections.journey,'blockKey','hero'),getPublishedByField<Record<string,unknown>>(cmsCollections.journey,'blockKey','spark'),getPublishedByField<Record<string,unknown>>(cmsCollections.journey,'blockKey','process')]);
-    const h=hero[0],s=spark[0],p=process[0]; if(h){text(root.querySelector('.page-hero h1'),h.title);text(root.querySelector('.page-hero p'),h.body);image(root.querySelector('.page-hero img'),h.imageUrl);} const split=root.querySelector('.split');if(s&&split){text(split.querySelector('.eyebrow'),s.eyebrow);text(split.querySelector('h2'),s.title);const ps=split.querySelectorAll('p.muted');text(ps[0],s.paragraph1);text(ps[1],s.paragraph2);const fs=split.querySelectorAll('.feature');text(fs[0]?.querySelector('h3'),s.chooseTitle);text(fs[0]?.querySelector('p'),s.chooseText);text(fs[1]?.querySelector('h3'),s.growTitle);text(fs[1]?.querySelector('p'),s.growText);} const center=root.querySelectorAll('.center')[0];if(p&&center){text(center.querySelector('.eyebrow'),p.eyebrow);text(center.querySelector('h2'),p.title);text(center.querySelector('p.muted'),p.body);const steps=root.querySelectorAll('.step');[[p.seedTitle,p.seedText],[p.growTitle,p.growText],[p.harvestTitle,p.harvestText],[p.deliverTitle,p.deliverText]].forEach((v,i)=>{text(steps[i]?.querySelector('h3'),v[0]);text(steps[i]?.querySelector('p'),v[1]);});} return;
+    const [legacyContent,hero,spark,process]=await Promise.all([
+      getDocById<Record<string,unknown>>('journey_page','content'),
+      getPublishedByField<Record<string,unknown>>(cmsCollections.journey,'blockKey','hero'),
+      getPublishedByField<Record<string,unknown>>(cmsCollections.journey,'blockKey','spark'),
+      getPublishedByField<Record<string,unknown>>(cmsCollections.journey,'blockKey','process')
+    ]);
+    const h=hero[0],s=spark[0],p=process[0];
+    if(h){
+      text(root.querySelector('.page-hero h1'),h.title);
+      text(root.querySelector('.page-hero p'),h.body);
+      image(root.querySelector('.page-hero img'),h.imageUrl);
+    }
+    // The current Admin/CMS document stores the Journey banner at journey_page/content.bannerImage.
+    // Keep support for the newer websiteJourneyContent blocks while using the existing source-of-truth document.
+    if(legacyContent){
+      const bannerImage=String(legacyContent.bannerImage ?? '').trim();
+      const bannerTitle=String(legacyContent.bannerTitle ?? '').trim();
+      if(bannerImage) image(root.querySelector('.journey-banner-image'),bannerImage);
+      if(bannerTitle) text(root.querySelector('.page-hero h1'),bannerTitle);
+    }
+    const split=root.querySelector('.split');
+    if(s&&split){
+      text(split.querySelector('.eyebrow'),s.eyebrow);
+      text(split.querySelector('h2'),s.title);
+      const ps=split.querySelectorAll('p.muted');
+      text(ps[0],s.paragraph1); text(ps[1],s.paragraph2);
+      const fs=split.querySelectorAll('.feature');
+      text(fs[0]?.querySelector('h3'),s.chooseTitle); text(fs[0]?.querySelector('p'),s.chooseText);
+      text(fs[1]?.querySelector('h3'),s.growTitle); text(fs[1]?.querySelector('p'),s.growText);
+    }
+    const center=root.querySelectorAll('.center')[0];
+    if(p&&center){
+      text(center.querySelector('.eyebrow'),p.eyebrow); text(center.querySelector('h2'),p.title); text(center.querySelector('p.muted'),p.body);
+      const steps=root.querySelectorAll('.step');
+      [[p.seedTitle,p.seedText],[p.growTitle,p.growText],[p.harvestTitle,p.harvestText],[p.deliverTitle,p.deliverText]].forEach((v,i)=>{text(steps[i]?.querySelector('h3'),v[0]); text(steps[i]?.querySelector('p'),v[1]);});
+    }
+    return;
   }
   if (page === 'contact') { const rows=await getPublishedByField<Record<string,unknown>>(cmsCollections.websitePages,'pageKey','contact');const x=rows[0];if(!x)return;text(root.querySelector('.page-hero h1'),x.title);text(root.querySelector('.page-hero p'),x.body);image(root.querySelector('.page-hero img'),x.imageUrl);applySeo(x.seoTitle,x.seoDescription);const g=root.querySelector('.contact-grid');if(g){text(g.querySelector('.eyebrow'),x.eyebrow);text(g.querySelector('h2'),x.title);const fs=g.querySelectorAll('.feature');[[x.callTitle,x.callText],[x.emailTitle,x.emailText],[x.serviceTitle,x.serviceText]].forEach((v,i)=>{text(fs[i]?.querySelector('h3'),v[0]);text(fs[i]?.querySelector('p'),v[1]);});} }
 }

@@ -4,6 +4,7 @@ import { type SalesProduct } from './salesProducts';
 import { checkProductAvailability, nextWeekSaturday } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
 import { createCustomerContactRequest } from './customerContactRequests';
+import { PACKAGING_OPTIONS } from './packaging';
 
 const clean = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 const mobileOf = (value: unknown) => String(value ?? '').replace(/\D/g, '').slice(-10);
@@ -45,6 +46,7 @@ export async function createCustomerSubscription(input: {
   planId: string;
   addressId: string;
   quantity: number;
+  packaging?: number;
   startDate?: string;
   shortageDecision?: 'continue' | 'contact';
 }) {
@@ -86,8 +88,11 @@ export async function createCustomerSubscription(input: {
   // quantity is the pack size used for fulfilment. A legacy production
   // `sellingOptions` entry is not required because the Admin master can contain
   // production products without those legacy options.
-  const weightGrams = Number(component.quantityGrams);
-  if (!Number.isFinite(weightGrams) || weightGrams <= 0) {
+  const baseWeightGrams = Number(component.quantityGrams);
+  const packaging = Math.max(1, Math.floor(Number(input.packaging) || baseWeightGrams || 100));
+  if (!PACKAGING_OPTIONS.includes(packaging as any)) throw new Error('Selected packaging is invalid.');
+  const weightGrams = packaging * input.quantity;
+  if (!Number.isFinite(packaging) || packaging <= 0 || !Number.isFinite(weightGrams) || weightGrams <= 0) {
     throw new Error('This Salable Product has an invalid pack quantity.');
   }
 
@@ -101,9 +106,9 @@ export async function createCustomerSubscription(input: {
   const subscriptionNumber = `SUB-${subscriptionRef.id.slice(0, 8).toUpperCase()}`;
   const orderNumber = `ORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
   const unitPrice = Number(plan.price || input.product.sellingPrice || 0);
-  const sellingOptionLabel = weightGrams >= 1000 && weightGrams % 1000 === 0 ? `${weightGrams / 1000}kg box` : `${weightGrams}g box`;
+  const sellingOptionLabel = packaging >= 1000 && packaging % 1000 === 0 ? `${packaging / 1000}kg box` : `${packaging}g box`;
 
-  const availability = await checkProductAvailability({ product: input.product, quantity: input.quantity, deliveryDate: firstDelivery });
+  const availability = await checkProductAvailability({ product: input.product, quantity: input.quantity, packagingGrams: packaging, deliveryDate: firstDelivery });
   if (availability.hasShortage && !input.shortageDecision) {
     throw new Error('HARVEST_SHORTAGE_CONFIRMATION_REQUIRED');
   }
@@ -121,6 +126,8 @@ export async function createCustomerSubscription(input: {
       subscriptionItems: [{
         productId: input.product.id,
         productName: clean(input.product.name),
+        packaging,
+        weightGrams,
         quantity: input.quantity,
         planId: input.planId,
         planName: clean(plan.name),
@@ -146,6 +153,7 @@ export async function createCustomerSubscription(input: {
     productName: clean(production.name) || clean(input.product.name),
     sellingOptionId: '',
     sellingOptionLabel,
+    packaging,
     weightGrams,
     unitPrice,
     quantity: input.quantity,
@@ -194,6 +202,7 @@ export async function createCustomerSubscription(input: {
       productName: clean(production.name) || clean(input.product.name),
       sellingOptionId: '',
       sellingOptionLabel,
+      packaging,
       weightGrams,
       quantity: input.quantity,
       unitPrice,

@@ -41,7 +41,7 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
     const renderMissing = (message: string) => {
       root.innerHTML = `<section class="auth-wrap"><div class="auth-card"><span class="eyebrow">Subscription checkout</span><h1>Unable to continue</h1><p>${esc(message)}</p><a class="btn outline" href="/microgreens">Back to Microgreens</a></div></section>`;
     };
-    const render = (mobile: string, account: CustomerAccount, product: SalesProduct, plan: CustomerSubscriptionPlan, quantity: number, startDate: string) => {
+    const render = (mobile: string, account: CustomerAccount, product: SalesProduct, plan: CustomerSubscriptionPlan, quantity: number, packaging: number, startDate: string) => {
       const addresses = account.addresses || [];
       const selectedId = addresses[0]?.id || '';
       root.innerHTML = `<section class="section"><div class="container subscription-checkout-grid">
@@ -68,12 +68,12 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
         if (!mobile) { renderMessage('Your customer session could not be found. Please sign in again.', true); return; }
         if (button) { button.disabled = true; button.textContent = 'Checking availability…'; }
         try {
-          const create = async (shortageDecision?: 'continue' | 'contact') => createCustomerSubscription({ mobile, product, planId: plan.id, addressId, quantity, startDate, shortageDecision });
+          const create = async (shortageDecision?: 'continue' | 'contact') => createCustomerSubscription({ mobile, product, planId: plan.id, addressId, quantity, packaging, startDate, shortageDecision });
           let result;
           try { result = await create(); }
           catch (error) {
             if (!(error instanceof Error) || error.message !== 'HARVEST_SHORTAGE_CONFIRMATION_REQUIRED') throw error;
-            const availability = await import('@/lib/customerOrderAvailability').then((m) => m.checkProductAvailability({ product, quantity, deliveryDate: startDate || nextWeekSaturday() }));
+            const availability = await import('@/lib/customerOrderAvailability').then((m) => m.checkProductAvailability({ product, quantity, packagingGrams: packaging, deliveryDate: startDate || nextWeekSaturday() }));
             const decision = await confirmHarvestShortage({ mode: 'subscription', availableGrams: availability.availableGrams, requestedGrams: availability.requestedGrams, shortageGrams: availability.shortageGrams });
             result = await create(decision);
           }
@@ -106,6 +106,7 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
       const productId = params.get('product') || '';
       const planId = params.get('plan') || '';
       const quantity = Math.max(1, Math.floor(Number(params.get('quantity') || '1')) || 1);
+      const packaging = Math.max(100, Math.floor(Number(params.get('packaging') || '100')) || 100);
       const startDate = params.get('startDate') || nextWeekSaturday();
       const mobile = getStoredCustomerMobile();
       if (!productId || !planId || !mobile) { renderMissing('The subscription selection is incomplete. Please return to the product and choose Subscribe again.'); return; }
@@ -116,7 +117,7 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
         if (!product) { renderMissing('This product is no longer available.'); return; }
         if (!plan) { renderMissing('This subscription plan is no longer active.'); return; }
         if (!account) { renderMissing('Customer account not found.'); return; }
-        if (!disposed) render(mobile, account, product, plan, quantity, startDate);
+        if (!disposed) render(mobile, account, product, plan, quantity, packaging, startDate);
       } catch (error) { if (!disposed) renderMissing(error instanceof Error ? error.message : 'Unable to load subscription checkout.'); }
     };
     renderLoading();

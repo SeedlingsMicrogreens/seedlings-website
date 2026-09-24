@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { cmsCollections, getDocById, getPublishedCollection } from '@/lib/cms';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
-import { getActiveSalesProducts, refreshActiveSalesProducts, productSlug, type SalesProduct } from '@/lib/salesProducts';
+import { getActiveSalesProducts, productSlug, type SalesProduct } from '@/lib/salesProducts';
 import heroBannerImage from '@/public/assets/microgreens-hero-banner.png';
 
 const money = (value: number, currency = 'INR') => {
@@ -153,25 +153,22 @@ export default function CataloguePage() {
     let active = true;
     const load = async () => {
       try {
-        const [nav, site, cached] = await Promise.all([
-          getPublishedCollection<Record<string, unknown>>(cmsCollections.navigation),
-          getDocById<Record<string, unknown>>(cmsCollections.siteSettings, 'site'),
-          getActiveSalesProducts(),
-        ]);
+        const productsPromise = getActiveSalesProducts();
+        const navPromise = getPublishedCollection<Record<string, unknown>>(cmsCollections.navigation);
+        const sitePromise = getDocById<Record<string, unknown>>(cmsCollections.siteSettings, 'site');
+
+        const cached = await productsPromise;
         if (!active) return;
 
-        setNavItems(nav);
-        setSettings(site);
         setProducts(cached);
         setLoading(false);
         setError(false);
 
-        try {
-          const fresh = await refreshActiveSalesProducts();
-          if (active) setProducts(fresh);
-        } catch (refreshError) {
-          console.warn('Salable Products background refresh failed', refreshError);
-        }
+        const [nav, site] = await Promise.all([navPromise, sitePromise]);
+        if (!active) return;
+        setNavItems(nav);
+        setSettings(site);
+
       } catch (loadError) {
         console.error('Salable Products load failed', loadError);
         if (active) {

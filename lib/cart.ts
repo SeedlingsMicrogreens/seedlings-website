@@ -11,7 +11,7 @@ function activeCartStorageKey(): string {
 }
 
 export type CartItem = {
-  productId: string; slug: string; name: string; price: number; mrp?: number; currency: string; imageUrl?: string; quantity: number;
+  productId: string; slug: string; name: string; price: number; mrp?: number; currency: string; imageUrl?: string; quantity: number; packaging: number; weightGrams: number;
 };
 
 export type SubscriptionCartItem = CartItem & {
@@ -29,6 +29,8 @@ const cleanCartItem = (item: any): CartItem | null => {
     price: Number(item.price || 0), mrp: Number.isFinite(Number(item.mrp)) && Number(item.mrp) > 0 ? Number(item.mrp) : undefined,
     currency: String(item.currency || 'INR'), imageUrl: item.imageUrl ? String(item.imageUrl) : undefined,
     quantity: Math.max(1, Math.floor(Number(item.quantity))),
+    packaging: Math.max(1, Math.floor(Number(item.packaging) || 100)),
+    weightGrams: Math.max(1, Math.floor(Number(item.packaging) || 100)) * Math.max(1, Math.floor(Number(item.quantity))),
   };
 };
 
@@ -107,28 +109,58 @@ function saveUnifiedCart(cart: StoredCart) {
 export function getCart(): CartItem[] { return getUnifiedCart().oneTimeItems; }
 export function saveCart(items: CartItem[]) { const cart = getUnifiedCart(); saveUnifiedCart({ ...cart, oneTimeItems: items }); }
 
-export function addToCart(item: Omit<CartItem, 'quantity'>, quantity = 1) {
+export function addToCart(item: Omit<CartItem, 'quantity' | 'weightGrams'>, quantity = 1) {
   const cart = getUnifiedCart(); const items = [...cart.oneTimeItems]; const existing = items.find((x) => x.productId === item.productId);
-  if (existing) existing.quantity += Math.max(1, Math.floor(quantity)); else items.push({ ...item, quantity: Math.max(1, Math.floor(quantity)) });
+  const nextQuantity = Math.max(1, Math.floor(quantity));
+  const packaging = Math.max(1, Math.floor(Number(item.packaging) || 100));
+  if (existing) {
+    existing.quantity += nextQuantity;
+    existing.packaging = packaging;
+    existing.weightGrams = packaging * existing.quantity;
+  } else {
+    items.push({ ...item, quantity: nextQuantity, packaging, weightGrams: packaging * nextQuantity });
+  }
   saveUnifiedCart({ ...cart, oneTimeItems: items });
 }
 
-export function addSubscriptionToCart(item: Omit<SubscriptionCartItem, 'quantity'>, quantity = 1) {
+export function setCartPackaging(productId: string, packaging: number) {
+  const cart = getUnifiedCart();
+  const nextPackaging = Math.max(1, Math.floor(Number(packaging) || 100));
+  const next = cart.oneTimeItems.map((item) => item.productId === productId ? { ...item, packaging: nextPackaging, weightGrams: nextPackaging * item.quantity } : item);
+  saveUnifiedCart({ ...cart, oneTimeItems: next });
+}
+
+export function addSubscriptionToCart(item: Omit<SubscriptionCartItem, 'quantity' | 'weightGrams'>, quantity = 1) {
   const cart = getUnifiedCart(); const items = [...cart.subscriptionItems];
   const existing = items.find((x) => x.productId === item.productId && x.planId === item.planId && x.startDate === item.startDate);
-  if (existing) existing.quantity += Math.max(1, Math.floor(quantity)); else items.push({ ...item, quantity: Math.max(1, Math.floor(quantity)) });
+  const nextQuantity = Math.max(1, Math.floor(quantity));
+  const packaging = Math.max(1, Math.floor(Number(item.packaging) || 100));
+  if (existing) {
+    existing.quantity += nextQuantity;
+    existing.packaging = packaging;
+    existing.weightGrams = packaging * existing.quantity;
+  } else {
+    items.push({ ...item, quantity: nextQuantity, packaging, weightGrams: packaging * nextQuantity });
+  }
   saveUnifiedCart({ ...cart, subscriptionItems: items });
+}
+
+export function setSubscriptionCartPackaging(productId: string, planId: string, startDate: string, packaging: number) {
+  const cart = getUnifiedCart();
+  const nextPackaging = Math.max(1, Math.floor(Number(packaging) || 100));
+  const next = cart.subscriptionItems.map((item) => item.productId === productId && item.planId === planId && item.startDate === startDate ? { ...item, packaging: nextPackaging, weightGrams: nextPackaging * item.quantity } : item);
+  saveUnifiedCart({ ...cart, subscriptionItems: next });
 }
 
 export function setCartQuantity(productId: string, quantity: number) {
   const cart = getUnifiedCart();
-  const next = cart.oneTimeItems.map((item) => item.productId === productId ? { ...item, quantity: Math.max(0, Math.floor(quantity)) } : item).filter((item) => item.quantity > 0);
+  const next = cart.oneTimeItems.map((item) => { const nextQuantity = Math.max(0, Math.floor(quantity)); return item.productId === productId ? { ...item, quantity: nextQuantity, weightGrams: item.packaging * nextQuantity } : item; }).filter((item) => item.quantity > 0);
   saveUnifiedCart({ ...cart, oneTimeItems: next });
 }
 
 export function setSubscriptionCartQuantity(productId: string, planId: string, startDate: string, quantity: number) {
   const cart = getUnifiedCart();
-  const next = cart.subscriptionItems.map((item) => item.productId === productId && item.planId === planId && item.startDate === startDate ? { ...item, quantity: Math.max(0, Math.floor(quantity)) } : item).filter((item) => item.quantity > 0);
+  const next = cart.subscriptionItems.map((item) => { const nextQuantity = Math.max(0, Math.floor(quantity)); return item.productId === productId && item.planId === planId && item.startDate === startDate ? { ...item, quantity: nextQuantity, weightGrams: item.packaging * nextQuantity } : item; }).filter((item) => item.quantity > 0);
   saveUnifiedCart({ ...cart, subscriptionItems: next });
 }
 

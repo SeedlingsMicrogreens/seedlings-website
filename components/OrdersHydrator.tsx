@@ -9,6 +9,7 @@ import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
 type OrderItem = {
   productName?: string;
   quantity?: number;
+  packaging?: number;
   weightGrams?: number;
 };
 

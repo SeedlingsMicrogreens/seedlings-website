@@ -7,6 +7,7 @@ import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
 import { getCustomerAccount, type CustomerAddress } from "@/lib/customerAccount";
 import { getActiveSalesProducts } from "@/lib/salesProducts";
 import { createCustomerSubscription, updateCustomerSubscriptionStatus } from "@/lib/customerSubscriptions";
+import { PACKAGING_OPTIONS, packagingLabel } from "@/lib/packaging";
 import { createCashfreeOrder } from "@/lib/cashfreeFunctions";
 import { openCashfreeCheckout } from "@/lib/cashfreeClient";
 import { checkProductAvailability, nextWeekSaturday } from "@/lib/customerOrderAvailability";
@@ -218,19 +219,27 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
                      <a href="/delivery-calendar?subscriptionId=${encodeURIComponent(String(active.id))}">View all deliveries →</a>`}
             </div>
             <div class="subscription-delivery-actions">
-              ${latestDeliveryAction?.status === "skipped"
-                ? `<button class="subscription-action subscription-action--primary" type="button" disabled aria-disabled="true">↗ <span>Skip delivery</span></button>`
-                : latestDeliveryAction?.status === "rescheduled"
-                  ? `<button class="subscription-action" type="button" disabled aria-disabled="true">▣ <span>Reschedule</span></button>`
-                  : `<button class="subscription-action subscription-action--primary" type="button" data-delivery-action="skip" data-id="${esc(active.id)}">↗ <span>Skip delivery</span></button>`}
+              ${/*
+                Temporarily disabled: Skip Delivery UI control.
+                The existing skip functionality and event handling remain unchanged.
+                Re-enable this expression when the UI control should return.
+              */ ""}
               ${latestDeliveryAction?.status === "skipped"
                 ? ""
                 : latestDeliveryAction?.status === "rescheduled"
                   ? ""
                   : `<button class="subscription-action" type="button" data-delivery-action="reschedule" data-id="${esc(active.id)}">▣ <span>Reschedule</span></button>`}
-              ${active.status === "active" ? `<button class="subscription-action" type="button" data-status="paused" data-id="${esc(active.id)}">⏸ <span>Pause subscription</span></button>` : ""}
+              ${/*
+                Temporarily disabled: Pause Subscription UI control.
+                The existing pause/resume functionality remains unchanged.
+                Re-enable this expression when the Pause control should return.
+              */ ""}
               ${active.status === "paused" ? `<button class="subscription-action subscription-action--primary" type="button" data-status="active" data-id="${esc(active.id)}">▶ <span>Resume subscription</span></button>` : ""}
-              ${["active", "paused"].includes(String(active.status)) ? `<button class="subscription-action" type="button" data-status="cancelled" data-id="${esc(active.id)}">× <span>Cancel subscription</span></button>` : ""}
+              ${/*
+                Temporarily disabled: Cancel Subscription UI control.
+                The existing cancel functionality remains unchanged.
+                Re-enable this expression when the Cancel control should return.
+              */ ""}
             </div>
           </div>
         </section>` : `<section class="subscription-overview">
@@ -240,6 +249,7 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
 
         const startHtml = selectedProduct ? `<div class="panel"><h3>Start subscription</h3><p class="muted">Product: <strong>${esc(selectedProduct.name || selectedProduct.productName)}</strong></p>
           ${addresses.length ? `<label>Delivery address<select data-address>${addresses.map((a: any) => `<option value="${esc(a.id || "")}">${esc(a.label || "Address")} — ${esc(addressText(a))}</option>`).join("")}</select></label>` : `<p class="muted">Add a delivery address before creating a subscription.</p>`}
+          <label style="margin-top:12px">Packaging<select data-packaging>${PACKAGING_OPTIONS.map((grams) => `<option value="${grams}">${packagingLabel(grams)}</option>`).join("")}</select></label>
           <label style="margin-top:12px">Packs per delivery<input data-quantity type="number" min="1" step="1" value="${Math.max(1, Number(selectedProduct.quantity || 1))}"></label>
           <label style="margin-top:12px">Start date<input data-start type="date" value="${new Date().toISOString().slice(0,10)}"></label>
           <p class="muted" style="font-size:12px;margin-top:10px">Delivery is Saturday (${nextWeekSaturday()}). Subscription plans and pricing are configured in the Subscription Plan Master.</p>
@@ -329,7 +339,7 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
         }));
         host.querySelectorAll("[data-status]").forEach((b) => b.addEventListener("click", async () => { const el = b as HTMLButtonElement; const nextStatus = el.dataset.status as "active" | "paused" | "cancelled"; el.disabled = true; try { await updateCustomerSubscriptionStatus(mobile, el.dataset.id || "", nextStatus); await load(); } catch (e) { showMessage(e instanceof Error ? e.message : "Unable to update subscription.", true); el.disabled = false; } }));
         const create = host.querySelector("[data-create]") as HTMLButtonElement | null;
-        create?.addEventListener("click", async () => { const addressId = (host.querySelector("[data-address]") as HTMLSelectElement | null)?.value || ""; const quantity = Number((host.querySelector("[data-quantity]") as HTMLInputElement | null)?.value || 1); const startDate = (host.querySelector("[data-start]") as HTMLInputElement | null)?.value || ""; if (!selectedProduct || !selectedPlanId || !addressId) { showMessage("Choose a subscription plan and delivery address before continuing.", true); return; } create.disabled = true; try { const product = salesProducts.find((p) => p.id === String(selectedProduct.productId)); if (!product) throw new Error("The selected product is no longer available."); const targetDate = nextWeekSaturday(); const availability = await checkProductAvailability({ product, quantity, deliveryDate: targetDate }); let shortageDecision: 'continue' | 'contact' | undefined; if (availability.hasShortage) { shortageDecision = await confirmHarvestShortage({ mode: 'subscription', availableGrams: availability.availableGrams, requestedGrams: availability.requestedGrams, shortageGrams: availability.shortageGrams }); } const data = await createCustomerSubscription({ mobile, product, planId: selectedPlanId, addressId, quantity, startDate, shortageDecision }); if (data.contactRequired) { await showCustomerSuccess('We’ll contact you', 'Your contact request has been saved. Our team will contact you regarding the available quantity.'); create.disabled = false; return; } sessionStorage.removeItem("seedlings_subscription_product"); sessionStorage.removeItem("seedlings_subscription_plan"); if (!data.paymentOrderIds?.length) throw new Error('Unable to prepare the subscription payment.'); sessionStorage.removeItem("seedlings_subscription_product"); sessionStorage.removeItem("seedlings_subscription_plan"); const payment = await createCashfreeOrder(data.paymentOrderIds, mobile); sessionStorage.setItem('seedlings_last_order', JSON.stringify({ orderId: data.orderId, orderNumber: data.orderNumber, paymentStatus: 'pending', cashfreeOrderId: payment.cashfreeOrderId, total: payment.amount })); await openCashfreeCheckout(payment.paymentSessionId); } catch (e) { showMessage(e instanceof Error ? e.message : "Unable to create subscription.", true); create.disabled = false; } });
+        create?.addEventListener("click", async () => { const addressId = (host.querySelector("[data-address]") as HTMLSelectElement | null)?.value || ""; const quantity = Number((host.querySelector("[data-quantity]") as HTMLInputElement | null)?.value || 1); const packaging = Number((host.querySelector("[data-packaging]") as HTMLSelectElement | null)?.value || 100); const startDate = (host.querySelector("[data-start]") as HTMLInputElement | null)?.value || ""; if (!selectedProduct || !selectedPlanId || !addressId) { showMessage("Choose a subscription plan and delivery address before continuing.", true); return; } create.disabled = true; try { const product = salesProducts.find((p) => p.id === String(selectedProduct.productId)); if (!product) throw new Error("The selected product is no longer available."); const targetDate = nextWeekSaturday(); const availability = await checkProductAvailability({ product, quantity, packagingGrams: packaging, deliveryDate: targetDate }); let shortageDecision: 'continue' | 'contact' | undefined; if (availability.hasShortage) { shortageDecision = await confirmHarvestShortage({ mode: 'subscription', availableGrams: availability.availableGrams, requestedGrams: availability.requestedGrams, shortageGrams: availability.shortageGrams }); } const data = await createCustomerSubscription({ mobile, product, planId: selectedPlanId, addressId, quantity, packaging, startDate, shortageDecision }); if (data.contactRequired) { await showCustomerSuccess('We’ll contact you', 'Your contact request has been saved. Our team will contact you regarding the available quantity.'); create.disabled = false; return; } sessionStorage.removeItem("seedlings_subscription_product"); sessionStorage.removeItem("seedlings_subscription_plan"); if (!data.paymentOrderIds?.length) throw new Error('Unable to prepare the subscription payment.'); sessionStorage.removeItem("seedlings_subscription_product"); sessionStorage.removeItem("seedlings_subscription_plan"); const payment = await createCashfreeOrder(data.paymentOrderIds, mobile); sessionStorage.setItem('seedlings_last_order', JSON.stringify({ orderId: data.orderId, orderNumber: data.orderNumber, paymentStatus: 'pending', cashfreeOrderId: payment.cashfreeOrderId, total: payment.amount })); await openCashfreeCheckout(payment.paymentSessionId); } catch (e) { showMessage(e instanceof Error ? e.message : "Unable to create subscription.", true); create.disabled = false; } });
       } catch (e) {
         if (!dead) renderError(e instanceof Error ? e.message : "Unable to load your subscription.");
       }

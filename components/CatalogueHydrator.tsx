@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, type ReactNode } from 'react';
 import { getActiveSalesProducts, refreshActiveSalesProducts, productSlug, type SalesProduct } from '@/lib/salesProducts';
-import { addToCart, addSubscriptionToCart, getCart, removeSubscriptionFromCart, setCartQuantity } from '@/lib/cart';
+import { addToCart, addSubscriptionToCart, getCart, removeSubscriptionFromCart, setCartQuantity, setCartPackaging } from '@/lib/cart';
+import { PACKAGING_OPTIONS, packagingLabel } from '@/lib/packaging';
 import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
 import { createCustomerSubscription, loadActiveCustomerSubscriptionPlans } from '@/lib/customerSubscriptions';
 import { nextWeekSaturday } from '@/lib/customerOrderAvailability';
@@ -247,6 +248,7 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
     actions.innerHTML = `
       ${oneTimeAvailable ? `<div class="one-time-purchase">
         <div class="purchase-heading">One-time purchase</div>
+        <label class="block text-xs font-bold text-[#6b5b48]">Packaging<select data-cart-packaging class="mt-1 w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2 text-sm font-semibold text-[#2b2016]">${PACKAGING_OPTIONS.map((grams) => `<option value="${grams}">${packagingLabel(grams)}</option>`).join('')}</select></label>
         <div class="product-cart-control" data-cart-control>
           <button class="btn primary cart-add-button" data-cart-add type="button">Add</button>
         </div>
@@ -269,11 +271,15 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
       cartControl.innerHTML = `<div class="cart-quantity-control"><button class="cart-quantity-btn ${quantity === 1 ? 'remove' : ''}" data-cart-decrease type="button" aria-label="${quantity === 1 ? 'Remove from cart' : 'Decrease quantity'}">${leftControl}</button><strong>${quantity}</strong><button class="cart-quantity-btn" data-cart-increase type="button" aria-label="Increase quantity">+</button></div>`;
     };
     renderCartControl();
+    const packagingSelect = actions.querySelector('[data-cart-packaging]') as HTMLSelectElement | null;
+    const syncPackaging = () => { const current = getCart().find((item) => item.productId === product.id); if (packagingSelect) packagingSelect.value = String(current?.packaging || 100); };
+    syncPackaging();
+    packagingSelect?.addEventListener('change', () => { const current = getCart().find((item) => item.productId === product.id); if (current) setCartPackaging(product.id, Number(packagingSelect.value)); });
 
     cartControl?.addEventListener('click', (event) => {
       const target = event.target as HTMLElement;
       if (target.closest('[data-cart-add]')) {
-        addToCart({ productId: product.id, slug: slugFor(product), name: product.name, price: Number(product.sellingPrice ?? 0), mrp: Number(product.mrp ?? product.sellingPrice ?? 0), currency: product.currency || 'INR', imageUrl: product.imageUrl }, 1);
+        addToCart({ productId: product.id, slug: slugFor(product), name: product.name, price: Number(product.sellingPrice ?? 0), mrp: Number(product.mrp ?? product.sellingPrice ?? 0), currency: product.currency || 'INR', imageUrl: product.imageUrl, packaging: Number(packagingSelect?.value || 100) }, 1);
         window.location.href = '/cart';
       } else if (target.closest('[data-cart-decrease]')) {
         const current = getCart().find((item) => item.productId === product.id);
@@ -292,8 +298,10 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
     const editPlanId = editParams.get('editPlan') || '';
     const editStartDate = editParams.get('editStartDate') || '';
     const editQuantity = Math.max(1, Math.floor(Number(editParams.get('editQuantity') || '1')) || 1);
+    const editPackaging = Math.max(100, Math.floor(Number(editParams.get('editPackaging') || '100')) || 100);
     let selectedPlanId = plans.some((plan) => plan.id === editPlanId) ? editPlanId : (plans[0]?.id || '');
     let subscriptionQuantity = editParams.has('editQuantity') ? editQuantity : 1;
+    let subscriptionPackaging = editParams.has('editPackaging') ? editPackaging : 100;
 
     const closeSheet = () => {
       if (!sheet || !backdrop) return;
@@ -316,9 +324,10 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
       sheet.innerHTML = `<div class="subscribe-sheet-handle"></div>
         <div class="subscribe-sheet-head subscribe-product-header"><div class="subscribe-product-header-info"><div class="subscribe-product-thumb" style="${product.imageUrl ? `background-image:url(\'${esc(product.imageUrl)}\')` : ''}"></div><div><span class="eyebrow">Subscribe</span><h2>${esc(product.name)}</h2><p>${esc(product.type === 'multiple' ? 'Combo' : 'Fresh microgreen')} · ${esc(money(Number(product.sellingPrice ?? 0), product.currency || 'INR'))}</p></div></div><button type="button" data-close-subscribe aria-label="Close">×</button></div>
         <div class="subscribe-step"><div class="subscribe-step-title"><span>1</span><div><strong>Select plan</strong><small>Choose how often you want it delivered</small></div></div><div class="subscribe-plan-grid-modal">${plans.map((plan) => `<button type="button" class="subscribe-plan-option ${plan.id === selectedPlanId ? 'active' : ''}" data-modal-plan="${esc(plan.id)}"><strong>${esc(plan.name || subscriptionFrequencyLabel(plan.frequency))}</strong><span>${esc(money(Number(plan.price ?? 0), product.currency || 'INR'))} / term</span><small>${Number(plan.deliveriesPerTerm ?? 0) > 0 ? `${Number(plan.deliveriesPerTerm)} deliveries / term` : 'Ongoing deliveries'} · ${plan.deliveryChargeMode === 'per_delivery' && Number(plan.deliveryCharge ?? 0) > 0 ? `+ ${money(Number(plan.deliveryCharge))} / delivery` : 'Delivery included'}</small></button>`).join('')}</div></div>
+        <div class="subscribe-step"><div class="subscribe-step-title"><span>2</span><div><strong>Packaging</strong><small>Choose pack size</small></div></div><select data-modal-packaging class="mt-3 w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2 text-sm font-semibold text-[#2b2016]">${PACKAGING_OPTIONS.map((grams) => `<option value="${grams}" ${grams===subscriptionPackaging?'selected':''}>${packagingLabel(grams)}</option>`).join('')}</select></div>
         <div class="subscribe-options-row">
-          <div class="subscribe-step"><div class="subscribe-step-title"><span>2</span><div><strong>Quantity</strong><small>Packs per delivery</small></div></div><div class="modal-quantity-control"><button type="button" data-modal-minus aria-label="Decrease quantity">−</button><strong data-modal-qty>${subscriptionQuantity}</strong><button type="button" data-modal-plus aria-label="Increase quantity">+</button></div></div>
-          <div class="subscribe-step"><div class="subscribe-step-title"><span>3</span><div><strong>Start date</strong><small>Saturday deliveries only</small></div></div><div class="subscribe-date-row"><input data-modal-start type="date" min="${nextSaturday}" step="7" value="${esc(validEditStartDate)}" aria-label="Subscription start date"><span>Saturday</span></div></div>
+          <div class="subscribe-step"><div class="subscribe-step-title"><span>3</span><div><strong>Quantity</strong><small>Packs per delivery</small></div></div><div class="modal-quantity-control"><button type="button" data-modal-minus aria-label="Decrease quantity">−</button><strong data-modal-qty>${subscriptionQuantity}</strong><button type="button" data-modal-plus aria-label="Increase quantity">+</button></div></div>
+          <div class="subscribe-step"><div class="subscribe-step-title"><span>4</span><div><strong>Start date</strong><small>Saturday deliveries only</small></div></div><div class="subscribe-date-row"><input data-modal-start type="date" min="${nextSaturday}" step="7" value="${esc(validEditStartDate)}" aria-label="Subscription start date"><span>Saturday</span></div></div>
         </div>
         <button class="btn primary subscribe-now-button" data-modal-submit type="button" ${selectedPlanId ? '' : 'disabled'}>Subscribe</button>`;
       sheet.querySelector('[data-close-subscribe]')?.addEventListener('click', closeSheet);
@@ -327,6 +336,7 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
         sheet.querySelectorAll('[data-modal-plan]').forEach((el) => el.classList.toggle('active', (el as HTMLElement).dataset.modalPlan === selectedPlanId));
       }));
       sheet.querySelector('[data-modal-minus]')?.addEventListener('click', () => { subscriptionQuantity = Math.max(1, subscriptionQuantity - 1); const el = sheet.querySelector('[data-modal-qty]'); if (el) el.textContent = String(subscriptionQuantity); });
+      sheet.querySelector('[data-modal-packaging]')?.addEventListener('change', (event) => { subscriptionPackaging = Number((event.target as HTMLSelectElement).value) || 100; });
       sheet.querySelector('[data-modal-plus]')?.addEventListener('click', () => { subscriptionQuantity += 1; const el = sheet.querySelector('[data-modal-qty]'); if (el) el.textContent = String(subscriptionQuantity); });
       sheet.querySelector('[data-modal-submit]')?.addEventListener('click', () => {
         const startDate = (sheet.querySelector('[data-modal-start]') as HTMLInputElement | null)?.value || '';
@@ -348,6 +358,7 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
           mrp: Number(selectedPlan.price ?? 0),
           currency: product.currency || 'INR',
           imageUrl: product.imageUrl,
+          packaging: subscriptionPackaging,
           planId: selectedPlan.id,
           planName: selectedPlan.name || subscriptionFrequencyLabel(selectedPlan.frequency),
           frequency: selectedPlan.frequency,

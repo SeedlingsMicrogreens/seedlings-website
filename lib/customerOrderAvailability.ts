@@ -55,8 +55,12 @@ function itemProductionRequirements(order: Record<string, unknown>, salesProduct
     const salableId = normalize(item.salableProductId);
     const salesProduct = salableId ? salesProducts.find(p => p.id === salableId) : null;
     if (salesProduct?.components?.length) {
+      const itemPackaging = number(item.packaging);
+      const baseTotal = salesProduct.components.reduce((sum, component) => sum + number(component.quantityGrams), 0);
       for (const component of salesProduct.components) {
-        const grams = number(component.quantityGrams) * quantity;
+        const baseComponentGrams = number(component.quantityGrams);
+        const perPack = itemPackaging > 0 && baseTotal > 0 ? itemPackaging * (baseComponentGrams / baseTotal) : baseComponentGrams;
+        const grams = perPack * quantity;
         if (component.productId && grams > 0) result[component.productId] = (result[component.productId] || 0) + grams;
       }
       continue;
@@ -79,13 +83,19 @@ function itemProductionRequirements(order: Record<string, unknown>, salesProduct
 export async function checkProductAvailability(args: {
   product: SalesProduct;
   quantity: number;
+  packagingGrams?: number;
   deliveryDate?: string;
 }): Promise<AvailabilityResult> {
   const deliveryDate = args.deliveryDate || nextWeekSaturday();
   const components = Array.isArray(args.product.components) ? args.product.components : [];
   const requested: Record<string, number> = {};
+  const quantity = Math.max(1, Math.floor(args.quantity));
+  const packaging = number(args.packagingGrams);
+  const baseTotal = components.reduce((sum, component) => sum + number(component.quantityGrams), 0);
   for (const component of components) {
-    const grams = number(component.quantityGrams) * Math.max(1, Math.floor(args.quantity));
+    const baseComponentGrams = number(component.quantityGrams);
+    const perPack = packaging > 0 && baseTotal > 0 ? packaging * (baseComponentGrams / baseTotal) : baseComponentGrams;
+    const grams = perPack * quantity;
     if (component.productId && grams > 0) requested[component.productId] = (requested[component.productId] || 0) + grams;
   }
 
@@ -128,7 +138,7 @@ export async function checkProductAvailability(args: {
     const subscription = doc.data() || {};
     if (normalize(subscription.nextDeliveryDate) !== deliveryDate) continue;
     const productId = normalize(subscription.productId);
-    const grams = number(subscription.weightGrams) * number(subscription.quantity);
+    const grams = number(subscription.packaging) > 0 ? number(subscription.weightGrams) : number(subscription.weightGrams) * number(subscription.quantity);
     if (productId && grams > 0) subscriptionCommitted[productId] = (subscriptionCommitted[productId] || 0) + grams;
   }
 
