@@ -78,17 +78,16 @@ export async function createCustomerSubscription(input: {
   const address = addresses.find((item: Record<string, unknown>) => String(item?.id ?? '') === input.addressId);
   if (!address) throw new Error('Selected delivery address was not found.');
 
-  const component = Array.isArray(input.product.components) ? input.product.components[0] : null;
-  if (!component?.productId) throw new Error('This Salable Product has no production product component.');
-  const productionSnap = await getDoc(doc(db, 'products', String(component.productId)));
-  if (!productionSnap.exists()) throw new Error('The underlying production product was not found.');
-  const production = productionSnap.data() || {};
+  const components = Array.isArray(input.product.components) ? input.product.components : [];
+  if (!components.length || components.some((component: any) => !component?.productId)) {
+    throw new Error('This Salable Product has no production product component.');
+  }
 
   // The Salable Product is the customer-facing commerce definition. Its component
   // quantity is the pack size used for fulfilment. A legacy production
   // `sellingOptions` entry is not required because the Admin master can contain
   // production products without those legacy options.
-  const baseWeightGrams = Number(component.quantityGrams);
+  const baseWeightGrams = components.reduce((sum: number, component: any) => sum + Number(component.quantityGrams || 0), 0);
   const packaging = Math.max(1, Math.floor(Number(input.packaging) || baseWeightGrams || 100));
   if (!PACKAGING_OPTIONS.includes(packaging as any)) throw new Error('Selected packaging is invalid.');
   const weightGrams = packaging * input.quantity;
@@ -149,8 +148,8 @@ export async function createCustomerSubscription(input: {
     customerName: clean(customer.name) || 'Unnamed customer',
     customerMobile: mobile,
     salableProductId: input.product.id,
-    productId: String(component.productId),
-    productName: clean(production.name) || clean(input.product.name),
+    productId: input.product.id,
+    productName: clean(input.product.name),
     sellingOptionId: '',
     sellingOptionLabel,
     packaging,
@@ -198,8 +197,8 @@ export async function createCustomerSubscription(input: {
     items: [{
       salableProductId: input.product.id,
       salableProductType: input.product.type === 'multiple' ? 'multiple' : 'single',
-      productId: String(component.productId),
-      productName: clean(production.name) || clean(input.product.name),
+      productId: input.product.id,
+      productName: clean(input.product.name),
       sellingOptionId: '',
       sellingOptionLabel,
       packaging,

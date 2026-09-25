@@ -137,9 +137,38 @@ export async function checkProductAvailability(args: {
   for (const doc of subscriptionsSnap.docs) {
     const subscription = doc.data() || {};
     if (normalize(subscription.nextDeliveryDate) !== deliveryDate) continue;
-    const productId = normalize(subscription.productId);
-    const grams = number(subscription.packaging) > 0 ? number(subscription.weightGrams) : number(subscription.weightGrams) * number(subscription.quantity);
-    if (productId && grams > 0) subscriptionCommitted[productId] = (subscriptionCommitted[productId] || 0) + grams;
+
+    // Subscription `productId` identifies the customer-facing Salable Product.
+    // Its Microgreen components are the production/inventory requirements.
+    // Keep a legacy fallback for older subscriptions that stored the first
+    // production component in `productId`.
+    const salableId = normalize(subscription.salableProductId);
+    const salesProduct = salableId ? salesProducts.find((product) => product.id === salableId) : null;
+    const quantity = number(subscription.quantity) || 1;
+    const packaging = number(subscription.packaging);
+
+    if (salesProduct?.components?.length) {
+      const baseTotal = salesProduct.components.reduce((sum, component) => sum + number(component.quantityGrams), 0);
+      for (const component of salesProduct.components) {
+        const baseComponentGrams = number(component.quantityGrams);
+        const perPack = packaging > 0 && baseTotal > 0
+          ? packaging * (baseComponentGrams / baseTotal)
+          : baseComponentGrams;
+        const grams = perPack * quantity;
+        if (component.productId && grams > 0) {
+          subscriptionCommitted[component.productId] = (subscriptionCommitted[component.productId] || 0) + grams;
+        }
+      }
+      continue;
+    }
+
+    const legacyProductionId = normalize(subscription.productId);
+    const grams = number(subscription.weightGrams) > 0
+      ? number(subscription.weightGrams)
+      : number(subscription.weightGrams) * quantity;
+    if (legacyProductionId && grams > 0) {
+      subscriptionCommitted[legacyProductionId] = (subscriptionCommitted[legacyProductionId] || 0) + grams;
+    }
   }
 
   for (const doc of ordersSnap.docs) {
