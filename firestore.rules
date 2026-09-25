@@ -42,6 +42,10 @@ service cloud.firestore {
       allow read: if signedIn();
       allow write: if false;
     }
+    match /offers/{id} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
     match /growingBatches/{id} {
       allow read: if signedIn();
       allow write: if false;

@@ -56,3 +56,20 @@ export async function confirmCustomerAddressDelete(addressLabel: string) {
   });
   return result.isConfirmed;
 }
+
+
+export async function confirmPincodeUnavailable() {
+  const { default: Swal } = await import('sweetalert2');
+  const result = await Swal.fire({
+    icon: 'info',
+    title: 'Delivery is not available here yet',
+    text: 'We are currently not available in this area. We are working on it and would be happy to contact you.',
+    showCancelButton: true,
+    confirmButtonText: 'Yes, send an enquiry',
+    cancelButtonText: 'Continue shopping',
+    reverseButtons: true,
+    allowOutsideClick: false,
+  });
+  if (result.isConfirmed) window.location.href = '/contact';
+  return result.isConfirmed;
+}

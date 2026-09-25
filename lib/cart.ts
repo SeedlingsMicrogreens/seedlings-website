@@ -11,7 +11,7 @@ function activeCartStorageKey(): string {
 }
 
 export type CartItem = {
-  productId: string; slug: string; name: string; price: number; mrp?: number; currency: string; imageUrl?: string; quantity: number; packaging: number; weightGrams: number;
+  productId: string; slug: string; name: string; price: number; mrp?: number; currency: string; imageUrl?: string; quantity: number; packaging: number; weightGrams: number; sellingOptionId?: string; sellingOptionLabel?: string;
 };
 
 export type SubscriptionCartItem = CartItem & {
@@ -31,6 +31,8 @@ const cleanCartItem = (item: any): CartItem | null => {
     quantity: Math.max(1, Math.floor(Number(item.quantity))),
     packaging: Math.max(1, Math.floor(Number(item.packaging) || 100)),
     weightGrams: Math.max(1, Math.floor(Number(item.packaging) || 100)) * Math.max(1, Math.floor(Number(item.quantity))),
+    sellingOptionId: item.sellingOptionId ? String(item.sellingOptionId) : undefined,
+    sellingOptionLabel: item.sellingOptionLabel ? String(item.sellingOptionLabel) : undefined,
   };
 };
 
@@ -123,10 +125,10 @@ export function addToCart(item: Omit<CartItem, 'quantity' | 'weightGrams'>, quan
   saveUnifiedCart({ ...cart, oneTimeItems: items });
 }
 
-export function setCartPackaging(productId: string, packaging: number) {
+export function setCartPackaging(productId: string, packaging: number, price?: number, mrp?: number, sellingOptionId?: string, sellingOptionLabel?: string) {
   const cart = getUnifiedCart();
   const nextPackaging = Math.max(1, Math.floor(Number(packaging) || 100));
-  const next = cart.oneTimeItems.map((item) => item.productId === productId ? { ...item, packaging: nextPackaging, weightGrams: nextPackaging * item.quantity } : item);
+  const next = cart.oneTimeItems.map((item) => item.productId === productId ? { ...item, packaging: nextPackaging, weightGrams: nextPackaging * item.quantity, ...(price !== undefined ? { price: Number(price) } : {}), ...(mrp !== undefined ? { mrp: Number(mrp) } : {}), sellingOptionId, sellingOptionLabel } : item);
   saveUnifiedCart({ ...cart, oneTimeItems: next });
 }
 

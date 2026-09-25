@@ -22,6 +22,7 @@ import {
 } from "@/lib/customerSubscriptions";
 import { nextWeekSaturday } from "@/lib/customerOrderAvailability";
 import { PACKAGING_OPTIONS, packagingLabel } from "@/lib/packaging";
+import type { SalesProductSellingOption } from "@/lib/salesProducts";
 import {
   cmsCollections,
   getDocById,
@@ -268,26 +269,46 @@ function ProductImage({ product }: { product: SalesProduct }) {
   );
 }
 
+function activeSellingOptions(product: SalesProduct): SalesProductSellingOption[] {
+  return (Array.isArray(product.sellingOptions) ? product.sellingOptions : [])
+    .filter((option) => option?.active !== false && Number(option?.weightGrams) > 0)
+    .map((option) => ({
+      ...option,
+      weightGrams: Number(option.weightGrams),
+      mrp: Number(option.mrp ?? product.mrp ?? product.sellingPrice ?? 0),
+      price: Number(option.price ?? product.sellingPrice ?? 0),
+      active: option.active !== false,
+    }))
+    .filter((option) => Number.isFinite(option.weightGrams) && option.weightGrams > 0 && Number.isFinite(option.price) && option.price >= 0);
+}
+
 function CartControl({
   product,
 }: {
   product: SalesProduct;
 }) {
+  const options = activeSellingOptions(product);
   const existing = getCart().find((item) => item.productId === product.id);
+  const initialPackaging = (existing?.packaging && (!options.length || options.some((option) => option.weightGrams === existing.packaging))) ? existing.packaging : (options[0]?.weightGrams || 100);
   const [quantity, setQuantity] = useState(existing?.quantity || 0);
-  const [packaging, setPackaging] = useState(existing?.packaging || 100);
+  const [packaging, setPackaging] = useState(initialPackaging);
+
+  const selectedOption = options.find((option) => option.weightGrams === packaging);
+  const selectedPrice = selectedOption?.price ?? Number(product.sellingPrice ?? 0);
+  const selectedMrp = selectedOption?.mrp ?? Number(product.mrp ?? selectedPrice);
 
   const refreshCartState = () => {
     const current = getCart().find((item) => item.productId === product.id);
     setQuantity(current?.quantity || 0);
-    setPackaging(current?.packaging || 100);
+    setPackaging(current?.packaging || options[0]?.weightGrams || 100);
   };
 
   const changePackaging = (value: number) => {
-    const next = Number(value) || 100;
+    const next = Number(value) || options[0]?.weightGrams || 100;
     setPackaging(next);
     if (getCart().some((item) => item.productId === product.id)) {
-      setCartPackaging(product.id, next);
+      const option = options.find((entry) => entry.weightGrams === next);
+      setCartPackaging(product.id, next, option?.price ?? Number(product.sellingPrice ?? 0), option?.mrp ?? Number(product.mrp ?? product.sellingPrice ?? 0), option?.id, option ? packagingLabel(option.weightGrams) : undefined);
       refreshCartState();
     }
   };
@@ -298,11 +319,13 @@ function CartControl({
         productId: product.id,
         slug: productSlug(product),
         name: product.name,
-        price: Number(product.sellingPrice ?? 0),
-        mrp: Number(product.mrp ?? product.sellingPrice ?? 0),
+        price: selectedPrice,
+        mrp: selectedMrp,
         currency: product.currency || "INR",
         imageUrl: product.imageUrl,
         packaging,
+        sellingOptionId: selectedOption?.id,
+        sellingOptionLabel: selectedOption ? packagingLabel(selectedOption.weightGrams) : undefined,
       },
       1,
     );
@@ -324,10 +347,7 @@ function CartControl({
   return (
     <div className="product-purchase-control">
       <div>
-        <label
-          className="block text-xs font-bold text-[#6b5b48]"
-          htmlFor={`packaging-${product.id}`}
-        >
+        <label className="block text-xs font-bold text-[#6b5b48]" htmlFor={`packaging-${product.id}`}>
           Packaging
         </label>
         <select
@@ -336,41 +356,29 @@ function CartControl({
           onChange={(event) => changePackaging(Number(event.target.value))}
           className="mt-1 w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2.5 text-sm font-semibold text-[#2b2016] outline-none focus:border-[#6fa82e]"
         >
-          {PACKAGING_OPTIONS.map((grams) => (
-            <option key={grams} value={grams}>
-              {packagingLabel(grams)}
-            </option>
+          {(options.length ? options.map((option) => option.weightGrams) : PACKAGING_OPTIONS).map((grams) => (
+            <option key={grams} value={grams}>{packagingLabel(grams)}</option>
           ))}
         </select>
+        <div className="mt-2 flex items-baseline gap-2">
+          {selectedMrp > selectedPrice ? <span className="text-xs text-[#8a7967] line-through">MRP {money(selectedMrp, product.currency || "INR")}</span> : null}
+          <strong className="text-lg font-bold text-[#6fa82e]">{money(selectedPrice, product.currency || "INR")}</strong>
+        </div>
       </div>
 
       <div className="mt-4">
         <div className="mb-2 text-xs font-bold text-[#6b5b48]">One-time purchase</div>
         {!quantity ? (
-          <button className="btn primary cart-add-button" type="button" onClick={add}>
-            Add
-          </button>
+          <button className="btn primary cart-add-button" type="button" onClick={add}>Add</button>
         ) : (
           <div className="cart-quantity-control">
-            <button
-              className={`cart-quantity-btn${quantity === 1 ? " remove" : ""}`}
-              type="button"
-              aria-label={quantity === 1 ? "Remove from cart" : "Decrease quantity"}
-              onClick={decrease}
-            >
+            <button className={`cart-quantity-btn${quantity === 1 ? " remove" : ""}`} type="button" aria-label={quantity === 1 ? "Remove from cart" : "Decrease quantity"} onClick={decrease}>
               {quantity === 1 ? (
-                <svg className="cart-trash-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M4 7h16" />
-                  <path d="M9 7V4h6v3" />
-                  <path d="M7 7l1 13h8l1-13" />
-                  <path d="M10 11v5M14 11v5" />
-                </svg>
+                <svg className="cart-trash-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="M7 7l1 13h8l1-13" /><path d="M10 11v5M14 11v5" /></svg>
               ) : "−"}
             </button>
             <strong>{quantity}</strong>
-            <button className="cart-quantity-btn" type="button" aria-label="Increase quantity" onClick={increase}>
-              +
-            </button>
+            <button className="cart-quantity-btn" type="button" aria-label="Increase quantity" onClick={increase}>+</button>
           </div>
         )}
       </div>
@@ -409,8 +417,16 @@ function SubscriptionSheet({
       ? initialPlanId
       : plans[0]?.id || "",
   );
+  const sellingOptions = activeSellingOptions(product);
+  const hasSellingOptions = sellingOptions.length > 0;
+  const defaultSellingOption = sellingOptions[0];
+  const resolvedInitialPackaging = hasSellingOptions
+    ? (sellingOptions.some((option) => option.weightGrams === Number(initialPackaging))
+        ? Number(initialPackaging)
+        : Number(defaultSellingOption?.weightGrams || 100))
+    : Math.max(100, initialPackaging || 100);
   const [quantity, setQuantity] = useState(Math.max(1, initialQuantity));
-  const [packaging, setPackaging] = useState(Math.max(100, initialPackaging || 100));
+  const [packaging, setPackaging] = useState(resolvedInitialPackaging);
   const [startDate, setStartDate] = useState(validInitialDate);
 
   const submit = () => {
@@ -525,30 +541,32 @@ function SubscriptionSheet({
           </div>
         </div>
 
-        <div className="subscribe-options-row subscribe-options-row-three">
-          <div className="subscribe-step">
-            <div className="subscribe-step-title">
-              <span>2</span>
-              <div>
-                <strong>Packaging</strong>
-                <small>Choose pack size</small>
+        <div className={`subscribe-options-row ${hasSellingOptions ? "subscribe-options-row-two" : "subscribe-options-row-three"}`}>
+          {!hasSellingOptions ? (
+            <div className="subscribe-step">
+              <div className="subscribe-step-title">
+                <span>2</span>
+                <div>
+                  <strong>Packaging</strong>
+                  <small>Choose pack size</small>
+                </div>
               </div>
+              <select
+                value={packaging}
+                onChange={(event) => setPackaging(Number(event.target.value))}
+                aria-label="Packaging"
+                className="w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2.5 text-sm font-semibold text-[#2b2016]"
+              >
+                {PACKAGING_OPTIONS.map((grams) => (
+                  <option key={grams} value={grams}>{packagingLabel(grams)}</option>
+                ))}
+              </select>
             </div>
-            <select
-              value={packaging}
-              onChange={(event) => setPackaging(Number(event.target.value))}
-              aria-label="Packaging"
-              className="w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2.5 text-sm font-semibold text-[#2b2016]"
-            >
-              {PACKAGING_OPTIONS.map((grams) => (
-                <option key={grams} value={grams}>{packagingLabel(grams)}</option>
-              ))}
-            </select>
-          </div>
+          ) : null}
 
           <div className="subscribe-step">
             <div className="subscribe-step-title">
-              <span>3</span>
+              <span>{hasSellingOptions ? 2 : 3}</span>
               <div>
                 <strong>Quantity</strong>
                 <small>Packs per delivery</small>
@@ -576,7 +594,7 @@ function SubscriptionSheet({
 
           <div className="subscribe-step">
             <div className="subscribe-step-title">
-              <span>4</span>
+              <span>{hasSellingOptions ? 3 : 4}</span>
               <div>
                 <strong>Start date</strong>
                 <small>Saturday only</small>

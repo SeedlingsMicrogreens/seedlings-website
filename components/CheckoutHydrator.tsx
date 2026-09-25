@@ -11,14 +11,16 @@ import { getUnifiedCart } from '@/lib/cart';
 import { getActiveSalesProducts } from '@/lib/salesProducts';
 import { createCustomerMixedCheckout } from '@/lib/customerMixedCheckout';
 import { checkProductAvailability, nextWeekSaturday } from '@/lib/customerOrderAvailability';
-import { confirmHarvestShortage, showCustomerSuccess } from '@/lib/customerAlerts';
+import { confirmHarvestShortage, confirmPincodeUnavailable, showCustomerSuccess } from '@/lib/customerAlerts';
 import { calculateCheckoutDeliveryCharges, type CheckoutDeliveryCharges } from '@/lib/deliveryCharges';
+import { calculateCustomerOffers, type CheckoutOfferResult } from '@/lib/offers';
 import { openCashfreeCheckout } from '@/lib/cashfreeClient';
 import { createCashfreeOrder } from '@/lib/cashfreeFunctions';
 
 const KEY = 'seedlings_checkout_details';
 const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const money = (v: number, c = 'INR') => { try { return new Intl.NumberFormat('en-IN', { style: 'currency', currency: c, maximumFractionDigits: 0 }).format(v); } catch { return `₹${v}`; } };
+const cleanOfferLabel = (v: unknown) => String(v ?? '').trim().replace(/\s+/g, ' ');
 const addressText = (a: CustomerAddress) => {
   const seen = new Set<string>();
   return [a.addressLine1, a.addressLine2, a.landmark, a.city, a.state, a.pincode].map(v => String(v ?? '').trim()).filter(v => { const k = v.replace(/\s+/g, ' ').toLowerCase(); if (!k || seen.has(k)) return false; seen.add(k); return true; }).join(', ');
@@ -59,7 +61,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
       const one = cart.oneTimeItems, subs = cart.subscriptionItems;
       const oneTotal = one.reduce((s, i) => s + i.price * i.quantity, 0), subTotal = subs.reduce((s, i) => s + i.price * i.quantity, 0), subtotal = oneTotal + subTotal, currency = one[0]?.currency || subs[0]?.currency || 'INR';
 
-      root.innerHTML = `<section class="section checkout-page"><div class="container checkout-grid"><div class="form"><span class="eyebrow">Unified checkout</span><h2 style="margin-top:6px;margin-bottom:12px">Confirm your delivery</h2><div class="checkout-compact-row"><label>Name<input data-name value="${esc(saved?.name || account.name || '')}" placeholder="Full name"></label><label>Mobile<input value="${esc(mobile)}" disabled></label></div><div data-address-section></div><p class="checkout-message" style="font-size:13px;min-height:18px;margin-top:10px"></p><button class="btn primary" style="width:100%" type="button" data-place>Proceed to Pay</button></div><aside class="summary"><h3>Order summary</h3>${subs.length ? `<h4 style="margin:14px 0 6px">Subscriptions</h4>${subs.map(i => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">${esc(i.planName)} · starts ${esc(i.startDate)}</small></span><strong>${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}${one.length ? `<h4 style="margin:18px 0 6px">One-time purchases</h4>${one.map(i => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}</span><strong>${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}<div data-delivery-summary><div class="summary-row"><span>Delivery charges</span><strong>Enter a valid delivery pincode</strong></div></div><div class="summary-row summary-total"><span>Total</span><span data-grand-total>${esc(money(subtotal, currency))}</span></div></aside></div></section>`;
+      root.innerHTML = `<section class="section checkout-page"><div class="container checkout-grid"><div class="form"><span class="eyebrow">Unified checkout</span><h2 style="margin-top:6px;margin-bottom:12px">Confirm your delivery</h2><div class="checkout-compact-row"><label>Name<input data-name value="${esc(saved?.name || account.name || '')}" placeholder="Full name"></label><label>Mobile<input value="${esc(mobile)}" disabled></label></div><div data-address-section></div><p class="checkout-message" style="font-size:13px;min-height:18px;margin-top:10px"></p><button class="btn primary" style="width:100%" type="button" data-place>Proceed to Pay</button></div><aside class="summary"><h3>Order summary</h3>${subs.length ? `<h4 style="margin:14px 0 6px">Subscriptions</h4>${subs.map(i => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">${esc(i.planName)} · starts ${esc(i.startDate)}</small></span><strong>${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}${one.length ? `<h4 style="margin:18px 0 6px">One-time purchases</h4>${one.map(i => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}</span><strong>${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}<div data-price-offer-summary></div>` : ''}<div data-delivery-summary><div class="summary-row"><span>Delivery charges</span><strong>Enter a valid delivery pincode</strong></div></div><div class="summary-row summary-total"><span>Total</span><span data-grand-total>${esc(money(subtotal, currency))}</span></div></aside></div></section>`;
 
       const nameInput = root.querySelector('[data-name]') as HTMLInputElement | null;
       nameInput?.addEventListener('blur', async () => {
@@ -76,6 +78,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
       const deliverySummary = root.querySelector('[data-delivery-summary]') as HTMLElement | null;
       const grandTotal = root.querySelector('[data-grand-total]') as HTMLElement | null;
       let delivery: CheckoutDeliveryCharges | null = null;
+      let offers: CheckoutOfferResult = { priceSavings: 0, deliverySavings: 0, totalSavings: 0 };
       let deliveryRequest = 0;
 
       const selectedAddress = () => addresses.find(a => a.id === selectedId);
@@ -126,54 +129,102 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
         );
       };
 
-      const renderDelivery = (result: CheckoutDeliveryCharges) => {
+      const renderDelivery = (result: CheckoutDeliveryCharges, offerResult: CheckoutOfferResult = offers) => {
         delivery = result;
+        offers = offerResult;
         const rows: string[] = [];
         const hasSubscription = subs.length > 0;
-        const oneTimeCharge = Number(result.oneTime.finalCharge || 0);
+        const oneTimeChargeBeforeOffer = Number(result.oneTime.finalCharge || 0);
+        const oneTimeDeliverySaving = hasSubscription ? 0 : Number(offerResult.deliverySavings || 0);
+        const oneTimeCharge = Math.max(0, oneTimeChargeBeforeOffer - oneTimeDeliverySaving);
 
         if (one.length) {
-          const amount = oneTimeCharge === 0
-            ? '<strong>₹0 — FREE</strong>'
-            : esc(money(oneTimeCharge, currency));
-
-          if (hasSubscription && oneTimeCharge > 0) {
-            rows.push(`<div class="summary-row checkout-delivery-waived"><span>One-time delivery</span><strong><s>${amount}</s></strong></div>`);
-            rows.push(`<div class="summary-row summary-saving checkout-delivery-waiver-saving"><span>You save with subscription</span><strong>${esc(money(oneTimeCharge, currency))}</strong></div>`);
-          } else {
-            rows.push(`<div class="summary-row"><span>One-time delivery</span><strong>${amount}</strong></div>`);
-          }
+          const deliveryMarkup = oneTimeDeliverySaving > 0
+            ? `<span class="summary-amount-change"><s>${esc(money(oneTimeChargeBeforeOffer, currency))}</s> <strong>${esc(money(oneTimeCharge, currency))}</strong></span>`
+            : (oneTimeCharge === 0 ? '<strong>₹0 — FREE</strong>' : esc(money(oneTimeCharge, currency)));
+          rows.push(`<div class="summary-row"><span>One-time delivery</span><span>${deliveryMarkup}</span></div>`);
         }
 
         subs.forEach((item, index) => {
           const d = result.subscriptions[index];
           if (!d) return;
-          const amount = d.termCharge === 0
-            ? '<strong>₹0 — FREE</strong>'
-            : esc(money(d.termCharge, currency));
-          const detail = d.termCharge === 0
-            ? 'Free delivery'
-            : `${esc(money(d.perDeliveryCharge, currency))} × ${d.deliveriesPerTerm} deliveries`;
-
+          const amount = d.termCharge === 0 ? '<strong>₹0 — FREE</strong>' : esc(money(d.termCharge, currency));
+          const detail = d.termCharge === 0 ? 'Free delivery' : `${esc(money(d.perDeliveryCharge, currency))} × ${d.deliveriesPerTerm} deliveries`;
           rows.push(`<div class="summary-row"><span>Subscription delivery<small class="muted" style="display:block">${esc(item.planName)} · ${detail}</small></span><strong>${amount}</strong></div>`);
-
-          if (d.termSavings > 0) {
-            rows.push(`<div class="summary-row summary-saving"><span>You saved on ${esc(item.planName)} delivery</span><strong>${esc(money(d.termSavings, currency))}</strong></div>`);
-          }
+          if (d.termSavings > 0) rows.push(`<div class="summary-row summary-saving"><span>You saved on ${esc(item.planName)} delivery</span><strong>− ${esc(money(d.termSavings, currency))}</strong></div>`);
         });
 
-        const effectiveDeliveryTotal = result.subscriptionTotal + (hasSubscription ? 0 : result.oneTimeTotal);
+        // Keep the displayed total tied directly to the same offer savings that
+        // are shown above. This avoids showing an offer without applying it to
+        // the amount the customer will actually pay.
+        const offerPriceSaving = Math.max(0, Number(offerResult.priceSavings || 0));
+        const offerDeliverySaving = hasSubscription ? 0 : Math.max(0, Number(offerResult.deliverySavings || 0));
+        const baseDeliveryTotal = result.subscriptionTotal + (hasSubscription ? 0 : oneTimeChargeBeforeOffer);
+        const grandTotalValue = Math.max(0, subtotal + baseDeliveryTotal - offerPriceSaving - offerDeliverySaving);
+        const visibleOfferSaving = offerPriceSaving + offerDeliverySaving;
+
+        if (visibleOfferSaving > 0) {
+          const offerNames = [offerResult.priceOffer?.name, offerResult.deliveryOffer?.name]
+            .filter(Boolean)
+            .map((name) => cleanOfferLabel(name))
+            .filter(Boolean);
+          const offerMessage = offerNames.length === 1
+            ? `🎉 You saved ${money(visibleOfferSaving, currency)} with the ${offerNames[0]} offer`
+            : `🎉 You saved ${money(visibleOfferSaving, currency)} with your offers`;
+          rows.push(`<div class="summary-row summary-saving checkout-offer-total-saving"><span>${esc(offerMessage)}</span><strong>− ${esc(money(visibleOfferSaving, currency))}</strong></div>`);
+        }
+
+        const priceOfferSummary = root.querySelector('[data-price-offer-summary]') as HTMLElement | null;
+        if (priceOfferSummary) {
+          if (offerPriceSaving > 0 && one.length) {
+            const discountedProductTotal = Math.max(0, oneTotal - offerPriceSaving);
+            priceOfferSummary.innerHTML = `<div class="summary-row summary-offer-adjustment"><span>Product offer</span><span class="summary-amount-change"><s>${esc(money(oneTotal, currency))}</s> <strong>${esc(money(discountedProductTotal, currency))}</strong></span></div>`;
+          } else {
+            priceOfferSummary.innerHTML = '';
+          }
+        }
+
         if (deliverySummary) deliverySummary.innerHTML = rows.join('');
-        if (grandTotal) grandTotal.textContent = money(subtotal + effectiveDeliveryTotal, currency);
+        if (grandTotal) grandTotal.textContent = money(grandTotalValue, currency);
       };
 
       const refreshDelivery = async () => {
         const pincode = getPincode().replace(/\D/g, '');
-        if (pincode.length !== 6) { delivery = null; if (deliverySummary) deliverySummary.innerHTML = '<div class="summary-row"><span>Delivery charges</span><strong>Enter a valid delivery pincode</strong></div>'; if (grandTotal) grandTotal.textContent = money(subtotal, currency); return; }
+        if (pincode.length !== 6) {
+          delivery = null; offers = { priceSavings: 0, deliverySavings: 0, totalSavings: 0 };
+          const priceOfferSummary = root.querySelector('[data-price-offer-summary]') as HTMLElement | null;
+          if (priceOfferSummary) priceOfferSummary.innerHTML = '';
+          if (deliverySummary) deliverySummary.innerHTML = '<div class="summary-row"><span>Delivery charges</span><strong>Enter a valid delivery pincode</strong></div>';
+          if (grandTotal) grandTotal.textContent = money(subtotal, currency);
+          return;
+        }
         const request = ++deliveryRequest;
-        if (deliverySummary) deliverySummary.innerHTML = '<div class="summary-row"><span>Delivery charges</span><strong>Calculating…</strong></div>';
-        try { const result = await calculateCheckoutDeliveryCharges({ pincode, oneTime: one.length > 0, subscriptions: subs.map(i => ({ planId: i.planId, planName: i.planName })) }); if (dead || request !== deliveryRequest) return; renderDelivery(result); }
-        catch (e) { if (dead || request !== deliveryRequest) return; delivery = null; if (deliverySummary) deliverySummary.innerHTML = `<div class="summary-row"><span>Delivery charges</span><strong>${esc(e instanceof Error ? e.message : 'Unable to calculate delivery charges.')}</strong></div>`; if (grandTotal) grandTotal.textContent = money(subtotal, currency); }
+        if (deliverySummary) deliverySummary.innerHTML = '<div class="summary-row"><span>Delivery charges</span><strong>Checking availability…</strong></div>';
+        try {
+          const result = await calculateCheckoutDeliveryCharges({ pincode, oneTime: one.length > 0, subscriptions: subs.map(i => ({ planId: i.planId, planName: i.planName })) });
+          if (dead || request !== deliveryRequest) return;
+          const geoId = result.oneTime.sourceId || result.subscriptions[0]?.sourceId || '';
+          const locationName = result.oneTime.sourceName || result.subscriptions[0]?.sourceName || '';
+          const offerResult = one.length && geoId
+            ? await calculateCustomerOffers({ pincode, geoId, locationName, oneTimeSubtotal: oneTotal, oneTimeDelivery: result.oneTime.finalCharge })
+            : { priceSavings: 0, deliverySavings: 0, totalSavings: 0 };
+          if (dead || request !== deliveryRequest) return;
+          renderDelivery(result, offerResult);
+        } catch (e) {
+          if (dead || request !== deliveryRequest) return;
+          delivery = null; offers = { priceSavings: 0, deliverySavings: 0, totalSavings: 0 };
+          const priceOfferSummary = root.querySelector('[data-price-offer-summary]') as HTMLElement | null;
+          if (priceOfferSummary) priceOfferSummary.innerHTML = '';
+          const message = e instanceof Error ? e.message : '';
+          if (message.includes('We are currently not available in this area')) {
+            if (deliverySummary) deliverySummary.innerHTML = '<div class="summary-row"><span>Delivery</span><strong>Not available for this pincode</strong></div>';
+            if (grandTotal) grandTotal.textContent = money(subtotal, currency);
+            await confirmPincodeUnavailable();
+            return;
+          }
+          if (deliverySummary) deliverySummary.innerHTML = `<div class="summary-row"><span>Delivery charges</span><strong>${esc(message || 'Unable to calculate delivery charges.')}</strong></div>`;
+          if (grandTotal) grandTotal.textContent = money(subtotal, currency);
+        }
       };
 
       renderAddressSection();

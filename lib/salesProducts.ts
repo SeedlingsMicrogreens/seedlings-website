@@ -1,6 +1,14 @@
 import { collection, getDocsFromServer, query, where } from 'firebase/firestore';
 import { db } from './firebase';
 
+export type SalesProductSellingOption = {
+  id: string;
+  weightGrams: number;
+  mrp: number;
+  price: number;
+  active: boolean;
+};
+
 export type SalesProductComponent = {
   productId: string;
   productName: string;
@@ -28,6 +36,7 @@ export type SalesProduct = {
   mrp?: number;
   /** Actual price the customer pays. */
   sellingPrice: number;
+  sellingOptions?: SalesProductSellingOption[];
   oneTimePurchase: boolean;
   subscriptionPurchase: boolean;
   active: boolean;

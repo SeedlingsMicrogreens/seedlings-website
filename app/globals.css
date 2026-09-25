@@ -425,6 +425,40 @@ button {
   font-weight: 700
 }
 
+.checkout-offer-total-saving {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--green-tint);
+  font-weight: 700;
+}
+
+.checkout-offer-total-saving span {
+  font-weight: 700;
+}
+
+.summary-offer-adjustment {
+  margin-top: 2px;
+  color: var(--green-dark);
+}
+
+.summary-amount-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.summary-amount-change s {
+  color: #8a8176;
+  font-weight: 500;
+}
+
+.summary-amount-change strong {
+  color: var(--green-dark);
+  font-weight: 800;
+}
+
 .mini {
   font-size: 12px;
   padding: 8px 11px;
