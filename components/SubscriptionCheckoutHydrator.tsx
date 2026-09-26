@@ -43,6 +43,10 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
       root.innerHTML = `<section class="auth-wrap"><div class="auth-card"><span class="eyebrow">Subscription checkout</span><h1>Unable to continue</h1><p>${esc(message)}</p><a class="btn outline" href="/microgreens">Back to Microgreens</a></div></section>`;
     };
     const render = (mobile: string, account: CustomerAccount, product: SalesProduct, plan: CustomerSubscriptionPlan, quantity: number, packaging: number, startDate: string) => {
+      const planSellingOptions = (plan.sellingOptions ?? []).filter((option) => Number(option.weightGrams) > 0 && Number(option.planPrice) >= 0);
+      const selectedSellingOption = planSellingOptions.find((option) => Number(option.weightGrams) === Number(packaging)) ?? planSellingOptions[0];
+      const effectivePackaging = selectedSellingOption?.weightGrams ?? packaging;
+      const effectivePrice = selectedSellingOption?.planPrice ?? Number(plan.price ?? product.sellingPrice ?? 0);
       const addresses = account.addresses || [];
       const selectedId = addresses[0]?.id || '';
       root.innerHTML = `<section class="section"><div class="container subscription-checkout-grid">
@@ -50,14 +54,14 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
           <span class="eyebrow">Subscription checkout</span>
           <h1 style="margin:8px 0 6px">Confirm your subscription</h1>
           <p class="muted" style="margin:0 0 24px">Choose the delivery address for your recurring deliveries.</p>
-          <div class="subscription-checkout-product"><div class="subscription-checkout-thumb" style="${product.imageUrl ? `background-image:url('${esc(product.imageUrl)}')` : ''}"></div><div><strong>${esc(product.name)}</strong><p>${esc(product.type === 'multiple' ? 'Salable combo' : 'Fresh microgreen')}</p></div><strong>${esc(money(Number(plan.price ?? product.sellingPrice ?? 0), product.currency || 'INR'))}</strong></div>
+          <div class="subscription-checkout-product"><div class="subscription-checkout-thumb" style="${product.imageUrl ? `background-image:url('${esc(product.imageUrl)}')` : ''}"></div><div><strong>${esc(product.name)}</strong><p>${esc(product.type === 'multiple' ? 'Salable combo' : 'Fresh microgreen')}</p></div><strong>${esc(money(effectivePrice, product.currency || 'INR'))}</strong></div>
           <div class="subscription-checkout-card"><h3>Subscription</h3><div class="summary-row"><span>Plan</span><strong>${esc(plan.name || plan.frequency || 'Subscription')}</strong></div><div class="summary-row"><span>Quantity</span><strong>${quantity} pack${quantity === 1 ? '' : 's'} / delivery</strong></div><div class="summary-row"><span>First delivery</span><strong>${esc(startDate || nextWeekSaturday())}</strong></div></div>
           <h3 style="margin:24px 0 10px">Delivery address</h3>
           ${addresses.length ? `<label>Saved address<select data-subscription-address>${addresses.map((a) => `<option value="${esc(a.id || '')}" ${a.id === selectedId ? 'selected' : ''}>${esc(a.label || 'Address')} — ${esc(addressText(a))}</option>`).join('')}</select></label><div data-selected-address class="subscription-address-preview">${esc(addressText(addresses[0]))}</div>` : `<div class="subscribe-warning">No saved delivery address found. Add one from your account before subscribing.</div><a class="btn outline" href="/addresses" style="margin-top:10px">Manage Addresses</a>`}
           <p data-subscription-checkout-message style="font-size:13px;min-height:20px;margin-top:14px"></p>
           <button class="btn primary subscription-checkout-submit" type="button" data-subscription-submit ${addresses.length ? '' : 'disabled'}>Subscribe</button>
         </div>
-        <aside class="summary"><h3>Subscription summary</h3><div class="summary-row"><span>Product</span><span>${esc(product.name)}</span></div><div class="summary-row"><span>Plan</span><span>${esc(plan.name || plan.frequency || 'Subscription')}</span></div><div class="summary-row"><span>Quantity</span><span>${quantity}</span></div><div class="summary-row"><span>Price / term</span><strong>${esc(money(Number(plan.price ?? product.sellingPrice ?? 0) * quantity, product.currency || 'INR'))}</strong></div><div class="summary-row"><span>Delivery</span><span>${plan.deliveryChargeMode === 'per_delivery' && Number(plan.deliveryCharge ?? 0) > 0 ? `+ ${esc(money(Number(plan.deliveryCharge) * Math.max(1, Number(plan.deliveriesPerTerm) || 1), product.currency || 'INR'))} / term<small class="muted" style="display:block">${esc(money(Number(plan.deliveryCharge), product.currency || 'INR'))} × ${Math.max(1, Number(plan.deliveriesPerTerm) || 1)} deliveries</small>` : 'Included'}</span></div><div class="summary-row summary-total"><span>Total</span><strong>${esc(money((Number(plan.price ?? product.sellingPrice ?? 0) * quantity) + (plan.deliveryChargeMode === 'per_delivery' ? Number(plan.deliveryCharge ?? 0) * Math.max(1, Number(plan.deliveriesPerTerm) || 1) : 0), product.currency || 'INR'))}</strong></div><p class="muted" style="font-size:11px">The subscription and its first order are created after you confirm the address.</p></aside>
+        <aside class="summary"><h3>Subscription summary</h3><div class="summary-row"><span>Product</span><span>${esc(product.name)}</span></div><div class="summary-row"><span>Plan</span><span>${esc(plan.name || plan.frequency || 'Subscription')}</span></div><div class="summary-row"><span>Quantity</span><span>${quantity}</span></div><div class="summary-row"><span>Price / term</span><strong>${esc(money(effectivePrice * quantity, product.currency || 'INR'))}</strong></div><div class="summary-row"><span>Delivery</span><span>${plan.deliveryChargeMode === 'per_delivery' && Number(plan.deliveryCharge ?? 0) > 0 ? `+ ${esc(money(Number(plan.deliveryCharge) * Math.max(1, Number(plan.deliveriesPerTerm) || 1), product.currency || 'INR'))} / term<small class="muted" style="display:block">${esc(money(Number(plan.deliveryCharge), product.currency || 'INR'))} × ${Math.max(1, Number(plan.deliveriesPerTerm) || 1)} deliveries</small>` : 'Included'}</span></div><div class="summary-row summary-total"><span>Total</span><strong>${esc(money((effectivePrice * quantity) + (plan.deliveryChargeMode === 'per_delivery' ? Number(plan.deliveryCharge ?? 0) * Math.max(1, Number(plan.deliveriesPerTerm) || 1) : 0), product.currency || 'INR'))}</strong></div><p class="muted" style="font-size:11px">The subscription and its first order are created after you confirm the address.</p></aside>
       </div></section>`;
       const addressSelect = root.querySelector('[data-subscription-address]') as HTMLSelectElement | null;
       const preview = root.querySelector('[data-selected-address]') as HTMLElement | null;
@@ -69,15 +73,15 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
         if (!mobile) { renderMessage('Your customer session could not be found. Please sign in again.', true); return; }
         if (button) { button.disabled = true; button.textContent = 'Checking availability…'; }
         try {
-          const create = async (shortageDecision?: 'continue' | 'contact') => createCustomerSubscription({ mobile, product, planId: plan.id, addressId, quantity, packaging, startDate, shortageDecision });
-          const availability = await checkProductAvailability({ product, quantity, packagingGrams: packaging, deliveryDate: startDate || nextWeekSaturday() });
+          const create = async (shortageDecision?: 'continue' | 'contact') => createCustomerSubscription({ mobile, product, planId: plan.id, addressId, quantity, packaging: effectivePackaging, sellingOptionId: selectedSellingOption?.id, startDate, shortageDecision });
+          const availability = await checkProductAvailability({ product, quantity, packagingGrams: effectivePackaging, deliveryDate: startDate || nextWeekSaturday() });
           let result;
           try { result = await create(availability.hasShortage ? await confirmHarvestShortage({ mode: 'subscription', availableGrams: availability.availableGrams, requestedGrams: availability.requestedGrams, shortageGrams: availability.shortageGrams, deliveryDate: startDate || nextWeekSaturday() }) : undefined); }
           catch (error) {
             if (!(error instanceof Error) || error.message !== 'HARVEST_SHORTAGE_CONFIRMATION_REQUIRED') throw error;
             // Server-side availability is authoritative. Re-check and show the
             // customer-facing Yes/No shortage confirmation before retrying.
-            const retryAvailability = await checkProductAvailability({ product, quantity, packagingGrams: packaging, deliveryDate: startDate || nextWeekSaturday() });
+            const retryAvailability = await checkProductAvailability({ product, quantity, packagingGrams: effectivePackaging, deliveryDate: startDate || nextWeekSaturday() });
             const decision = retryAvailability.hasShortage ? await confirmHarvestShortage({ mode: 'subscription', availableGrams: retryAvailability.availableGrams, requestedGrams: retryAvailability.requestedGrams, shortageGrams: retryAvailability.shortageGrams, deliveryDate: startDate || nextWeekSaturday() }) : undefined;
             result = await create(decision);
           }

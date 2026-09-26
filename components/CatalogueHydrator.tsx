@@ -151,6 +151,7 @@ type SubscriptionPlan = {
   name?: string;
   frequency?: string;
   price?: number;
+  sellingOptions?: Array<{ id: string; weightGrams: number; planPrice: number }>;
   deliveriesPerTerm?: number | string;
   deliveryChargeMode?: 'included' | 'per_delivery' | 'free' | string;
   deliveryCharge?: number;
@@ -321,23 +322,52 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
       const validEditStartDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedStartDate) && !Number.isNaN(requestedDate.getTime()) && requestedDate.getDay() === 6 && requestedStartDate >= nextSaturday
         ? requestedStartDate
         : nextSaturday;
+      const selectedPlanOptions = (selectedPlan?.sellingOptions ?? []).filter((o:any) => Number(o?.weightGrams) > 0 && Number(o?.planPrice) >= 0);
+      const selectedOption = selectedPlanOptions.find((o:any) => Number(o.weightGrams) === subscriptionPackaging) || selectedPlanOptions[0];
+      if (selectedOption) subscriptionPackaging = Number(selectedOption.weightGrams);
+      const optionMarkup = selectedPlanOptions.length
+        ? `<select data-modal-selling-option class="mt-3 w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2 text-sm font-semibold text-[#2b2016]">${selectedPlanOptions.map((o:any) => `<option value="${esc(o.id)}" ${String(o.id) === String(selectedOption?.id) ? 'selected' : ''}>${packagingLabel(Number(o.weightGrams))} — ${money(Number(o.planPrice), product.currency || 'INR')}</option>`).join('')}</select>`
+        : `<div class="mt-3 rounded-xl border border-[#e7dfd0] bg-[#faf7f1] px-3 py-2 text-sm text-[#6b5b48]">Standard plan pricing · ${esc(money(Number(selectedPlan?.price ?? 0), product.currency || 'INR'))} / term</div>`;
+      const selectedPrice = Number(selectedOption?.planPrice ?? selectedPlan?.price ?? 0);
       sheet.innerHTML = `<div class="subscribe-sheet-handle"></div>
         <div class="subscribe-sheet-head subscribe-product-header"><div class="subscribe-product-header-info"><div class="subscribe-product-thumb" style="${product.imageUrl ? `background-image:url(\'${esc(product.imageUrl)}\')` : ''}"></div><div><span class="eyebrow">Subscribe</span><h2>${esc(product.name)}</h2><p>${esc(product.type === 'multiple' ? 'Combo' : 'Fresh microgreen')} · ${esc(money(Number(product.sellingPrice ?? 0), product.currency || 'INR'))}</p></div></div><button type="button" data-close-subscribe aria-label="Close">×</button></div>
         <div class="subscribe-step"><div class="subscribe-step-title"><span>1</span><div><strong>Select plan</strong><small>Choose how often you want it delivered</small></div></div><div class="subscribe-plan-grid-modal">${plans.map((plan) => `<button type="button" class="subscribe-plan-option ${plan.id === selectedPlanId ? 'active' : ''}" data-modal-plan="${esc(plan.id)}"><strong>${esc(plan.name || subscriptionFrequencyLabel(plan.frequency))}</strong><span>${esc(money(Number(plan.price ?? 0), product.currency || 'INR'))} / term</span><small>${Number(plan.deliveriesPerTerm ?? 0) > 0 ? `${Number(plan.deliveriesPerTerm)} deliveries / term` : 'Ongoing deliveries'} · ${plan.deliveryChargeMode === 'per_delivery' && Number(plan.deliveryCharge ?? 0) > 0 ? `+ ${money(Number(plan.deliveryCharge))} / delivery` : 'Delivery included'}</small></button>`).join('')}</div></div>
-        <div class="subscribe-step"><div class="subscribe-step-title"><span>2</span><div><strong>Packaging</strong><small>Choose pack size</small></div></div><select data-modal-packaging class="mt-3 w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2 text-sm font-semibold text-[#2b2016]">${PACKAGING_OPTIONS.map((grams) => `<option value="${grams}" ${grams===subscriptionPackaging?'selected':''}>${packagingLabel(grams)}</option>`).join('')}</select></div>
-        <div class="subscribe-options-row">
-          <div class="subscribe-step"><div class="subscribe-step-title"><span>3</span><div><strong>Quantity</strong><small>Packs per delivery</small></div></div><div class="modal-quantity-control"><button type="button" data-modal-minus aria-label="Decrease quantity">−</button><strong data-modal-qty>${subscriptionQuantity}</strong><button type="button" data-modal-plus aria-label="Increase quantity">+</button></div></div>
+        <div class="subscribe-options-row-three">
+          <div class="subscribe-step"><div class="subscribe-step-title"><span>2</span><div><strong>Salable option</strong><small>Choose pack size and subscription price</small></div></div>${optionMarkup}</div>
+          <div class="subscribe-step"><div class="subscribe-step-title"><span>3</span><div><strong>Quantity</strong><small>Packs per delivery</small></div></div><div class="modal-quantity-control"><button type="button" data-modal-minus aria-label="Decrease quantity">−</button><strong data-modal-qty>${subscriptionQuantity}</strong><button type="button" data-modal-plus aria-label="Increase quantity">+</button></div><div data-modal-price class="mt-2 text-sm font-bold text-[#6fa82e]">${esc(money(selectedPrice * subscriptionQuantity, product.currency || 'INR'))} / term</div></div>
           <div class="subscribe-step"><div class="subscribe-step-title"><span>4</span><div><strong>Start date</strong><small>Saturday deliveries only</small></div></div><div class="subscribe-date-row"><input data-modal-start type="date" min="${nextSaturday}" step="7" value="${esc(validEditStartDate)}" aria-label="Subscription start date"><span>Saturday</span></div></div>
         </div>
         <button class="btn primary subscribe-now-button" data-modal-submit type="button" ${selectedPlanId ? '' : 'disabled'}>Subscribe</button>`;
       sheet.querySelector('[data-close-subscribe]')?.addEventListener('click', closeSheet);
+      const refreshSellingOptionUi = () => {
+        const plan = plans.find((item) => item.id === selectedPlanId);
+        const options = (plan?.sellingOptions ?? []).filter((o:any) => Number(o?.weightGrams) > 0 && Number(o?.planPrice) >= 0);
+        const select = sheet.querySelector('[data-modal-selling-option]') as HTMLSelectElement | null;
+        const selected = select ? options.find((o:any) => String(o.id) === select.value) : options.find((o:any) => Number(o.weightGrams) === subscriptionPackaging) || options[0];
+        if (selected) {
+          subscriptionPackaging = Number(selected.weightGrams);
+          if (select && select.value !== String(selected.id)) select.value = String(selected.id);
+          const price = sheet.querySelector('[data-modal-price]');
+          if (price) price.textContent = `${money(Number(selected.planPrice) * subscriptionQuantity, product.currency || 'INR')} / term`;
+        } else {
+          const price = sheet.querySelector('[data-modal-price]');
+          if (price) price.textContent = `${money(Number(plan?.price ?? 0) * subscriptionQuantity, product.currency || 'INR')} / term`;
+        }
+      };
       sheet.querySelectorAll<HTMLButtonElement>('[data-modal-plan]').forEach((button) => button.addEventListener('click', () => {
         selectedPlanId = button.dataset.modalPlan || '';
         sheet.querySelectorAll('[data-modal-plan]').forEach((el) => el.classList.toggle('active', (el as HTMLElement).dataset.modalPlan === selectedPlanId));
+        void renderSheet();
       }));
-      sheet.querySelector('[data-modal-minus]')?.addEventListener('click', () => { subscriptionQuantity = Math.max(1, subscriptionQuantity - 1); const el = sheet.querySelector('[data-modal-qty]'); if (el) el.textContent = String(subscriptionQuantity); });
+      sheet.querySelector('[data-modal-selling-option]')?.addEventListener('change', (event) => {
+        const select = event.target as HTMLSelectElement;
+        const option = (plans.find((plan) => plan.id === selectedPlanId)?.sellingOptions ?? []).find((item:any) => String(item.id) === select.value);
+        if (option) subscriptionPackaging = Number(option.weightGrams);
+        refreshSellingOptionUi();
+      });
+      sheet.querySelector('[data-modal-minus]')?.addEventListener('click', () => { subscriptionQuantity = Math.max(1, subscriptionQuantity - 1); const el = sheet.querySelector('[data-modal-qty]'); if (el) el.textContent = String(subscriptionQuantity); refreshSellingOptionUi(); });
       sheet.querySelector('[data-modal-packaging]')?.addEventListener('change', (event) => { subscriptionPackaging = Number((event.target as HTMLSelectElement).value) || 100; });
-      sheet.querySelector('[data-modal-plus]')?.addEventListener('click', () => { subscriptionQuantity += 1; const el = sheet.querySelector('[data-modal-qty]'); if (el) el.textContent = String(subscriptionQuantity); });
+      sheet.querySelector('[data-modal-plus]')?.addEventListener('click', () => { subscriptionQuantity += 1; const el = sheet.querySelector('[data-modal-qty]'); if (el) el.textContent = String(subscriptionQuantity); refreshSellingOptionUi(); });
       sheet.querySelector('[data-modal-submit]')?.addEventListener('click', () => {
         const startDate = (sheet.querySelector('[data-modal-start]') as HTMLInputElement | null)?.value || '';
         const parsedStartDate = new Date(`${startDate}T00:00:00`);
@@ -354,11 +384,13 @@ async function applyProduct(root: HTMLElement, products: SalesProduct[], slug: s
           productId: product.id,
           slug: slugFor(product),
           name: product.name,
-          price: Number(selectedPlan.price ?? 0),
-          mrp: Number(selectedPlan.price ?? 0),
+          price: Number((selectedPlan.sellingOptions ?? []).find((o:any) => Number(o.weightGrams) === subscriptionPackaging)?.planPrice ?? selectedPlan.price ?? 0),
+          mrp: Number((selectedPlan.sellingOptions ?? []).find((o:any) => Number(o.weightGrams) === subscriptionPackaging)?.planPrice ?? selectedPlan.price ?? 0),
           currency: product.currency || 'INR',
           imageUrl: product.imageUrl,
           packaging: subscriptionPackaging,
+          sellingOptionId: (selectedPlan.sellingOptions ?? []).find((o:any) => Number(o.weightGrams) === subscriptionPackaging)?.id,
+          sellingOptionLabel: (selectedPlan.sellingOptions ?? []).find((o:any) => Number(o.weightGrams) === subscriptionPackaging) ? packagingLabel(subscriptionPackaging) : undefined,
           planId: selectedPlan.id,
           planName: selectedPlan.name || subscriptionFrequencyLabel(selectedPlan.frequency),
           frequency: selectedPlan.frequency,

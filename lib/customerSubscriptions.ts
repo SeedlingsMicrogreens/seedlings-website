@@ -23,6 +23,7 @@ export type CustomerSubscriptionPlan = {
   salesProductIds?: string[];
   salableProductId?: string;
   salableProductName?: string;
+  sellingOptions?: Array<{ id: string; weightGrams: number; planPrice: number }>;
 };
 
 function dateOnly(date: Date) {
@@ -47,6 +48,7 @@ export async function createCustomerSubscription(input: {
   addressId: string;
   quantity: number;
   packaging?: number;
+  sellingOptionId?: string;
   startDate?: string;
   shortageDecision?: 'continue' | 'contact';
 }) {
@@ -87,9 +89,17 @@ export async function createCustomerSubscription(input: {
   // quantity is the pack size used for fulfilment. A legacy production
   // `sellingOptions` entry is not required because the Admin master can contain
   // production products without those legacy options.
+  const planSellingOptions = (Array.isArray(plan.sellingOptions) ? plan.sellingOptions : [])
+    .filter((option: any) => Number(option?.weightGrams) > 0 && Number(option?.planPrice) >= 0);
+  const selectedSellingOption = input.sellingOptionId
+    ? planSellingOptions.find((option: any) => String(option.id) === String(input.sellingOptionId))
+    : null;
+  if (planSellingOptions.length > 0 && !selectedSellingOption) {
+    throw new Error('Choose a valid salable option for this subscription plan.');
+  }
   const baseWeightGrams = components.reduce((sum: number, component: any) => sum + Number(component.quantityGrams || 0), 0);
-  const packaging = Math.max(1, Math.floor(Number(input.packaging) || baseWeightGrams || 100));
-  if (!PACKAGING_OPTIONS.includes(packaging as any)) throw new Error('Selected packaging is invalid.');
+  const packaging = Math.max(1, Math.floor(Number(selectedSellingOption?.weightGrams ?? input.packaging) || baseWeightGrams || 100));
+  if (!selectedSellingOption && !PACKAGING_OPTIONS.includes(packaging as any)) throw new Error('Selected packaging is invalid.');
   const weightGrams = packaging * input.quantity;
   if (!Number.isFinite(packaging) || packaging <= 0 || !Number.isFinite(weightGrams) || weightGrams <= 0) {
     throw new Error('This Salable Product has an invalid pack quantity.');
@@ -104,8 +114,12 @@ export async function createCustomerSubscription(input: {
   const orderRef = doc(collection(db, 'orders'));
   const subscriptionNumber = `SUB-${subscriptionRef.id.slice(0, 8).toUpperCase()}`;
   const orderNumber = `ORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-  const unitPrice = Number(plan.price || input.product.sellingPrice || 0);
-  const sellingOptionLabel = packaging >= 1000 && packaging % 1000 === 0 ? `${packaging / 1000}kg box` : `${packaging}g box`;
+  const unitPrice = Number(selectedSellingOption?.planPrice ?? plan.price ?? input.product.sellingPrice ?? 0);
+  if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new Error('Invalid subscription price.');
+  const sellingOptionId = selectedSellingOption ? String(selectedSellingOption.id) : '';
+  const sellingOptionLabel = selectedSellingOption
+    ? (packaging >= 1000 && packaging % 1000 === 0 ? `${packaging / 1000}kg box` : `${packaging}g box`)
+    : (packaging >= 1000 && packaging % 1000 === 0 ? `${packaging / 1000}kg box` : `${packaging}g box`);
 
   const availability = await checkProductAvailability({ product: input.product, quantity: input.quantity, packagingGrams: packaging, deliveryDate: firstDelivery });
   const firstDeliveryWeightGrams = availability.hasShortage ? Math.max(0, Math.min(availability.availableGrams, availability.requestedGrams)) : availability.requestedGrams;
@@ -135,7 +149,7 @@ export async function createCustomerSubscription(input: {
     salableProductId: input.product.id,
     productId: input.product.id,
     productName: clean(input.product.name),
-    sellingOptionId: '',
+    sellingOptionId,
     sellingOptionLabel,
     packaging,
     weightGrams,
@@ -184,7 +198,7 @@ export async function createCustomerSubscription(input: {
       salableProductType: input.product.type === 'multiple' ? 'multiple' : 'single',
       productId: input.product.id,
       productName: clean(input.product.name),
-      sellingOptionId: '',
+      sellingOptionId,
       sellingOptionLabel,
       packaging,
       weightGrams: firstDeliveryWeightGrams,

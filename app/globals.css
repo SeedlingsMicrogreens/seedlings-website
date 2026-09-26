@@ -4441,11 +4441,27 @@ body:has(.floating-cart) .footer {
 }
 
 .subscribe-options-row-three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(150px, 0.8fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .subscribe-options-row-three .subscribe-step {
   min-width: 0;
+  margin-top: 0;
+}
+
+.subscribe-options-row-three .subscribe-step-title {
+  min-height: 42px;
+}
+
+.subscribe-options-row-three .modal-quantity-control {
+  margin-top: 2px;
+}
+
+.subscribe-options-row-three .subscribe-date-row {
+  margin-top: 2px;
 }
 
 @media (max-width: 700px) {

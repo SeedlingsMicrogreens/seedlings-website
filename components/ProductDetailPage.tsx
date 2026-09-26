@@ -29,11 +29,18 @@ import {
   getPublishedCollection,
 } from "@/lib/cms";
 
+type SubscriptionPlanSellingOption = {
+  id: string;
+  weightGrams: number;
+  planPrice: number;
+};
+
 type SubscriptionPlan = {
   id: string;
   name?: string;
   frequency?: string;
   price?: number;
+  sellingOptions?: SubscriptionPlanSellingOption[];
   deliveriesPerTerm?: number | string;
   deliveryChargeMode?: "included" | "per_delivery" | "free" | string;
   deliveryCharge?: number;
@@ -417,17 +424,29 @@ function SubscriptionSheet({
       ? initialPlanId
       : plans[0]?.id || "",
   );
-  const sellingOptions = activeSellingOptions(product);
-  const hasSellingOptions = sellingOptions.length > 0;
-  const defaultSellingOption = sellingOptions[0];
-  const resolvedInitialPackaging = hasSellingOptions
-    ? (sellingOptions.some((option) => option.weightGrams === Number(initialPackaging))
-        ? Number(initialPackaging)
-        : Number(defaultSellingOption?.weightGrams || 100))
-    : Math.max(100, initialPackaging || 100);
+  const selectedPlan = plans.find((plan) => plan.id === selectedPlanId);
+  const planSellingOptions = (selectedPlan?.sellingOptions ?? [])
+    .filter((option) => Number(option?.weightGrams) > 0 && Number(option?.planPrice) >= 0)
+    .map((option) => ({ ...option, weightGrams: Number(option.weightGrams), planPrice: Number(option.planPrice) }));
+  const hasPlanSellingOptions = planSellingOptions.length > 0;
+  const initialOption = planSellingOptions.find((option) => option.weightGrams === Number(initialPackaging)) ?? planSellingOptions[0];
   const [quantity, setQuantity] = useState(Math.max(1, initialQuantity));
-  const [packaging, setPackaging] = useState(resolvedInitialPackaging);
+  const [selectedSellingOptionId, setSelectedSellingOptionId] = useState(initialOption?.id || '');
+  const [packaging, setPackaging] = useState(initialOption?.weightGrams || Math.max(100, initialPackaging || 100));
   const [startDate, setStartDate] = useState(validInitialDate);
+
+  useEffect(() => {
+    const options = (plans.find((plan) => plan.id === selectedPlanId)?.sellingOptions ?? [])
+      .filter((option) => Number(option?.weightGrams) > 0 && Number(option?.planPrice) >= 0)
+      .map((option) => ({ ...option, weightGrams: Number(option.weightGrams), planPrice: Number(option.planPrice) }));
+    const current = options.find((option) => option.id === selectedSellingOptionId);
+    const next = current ?? options.find((option) => option.weightGrams === packaging) ?? options[0];
+    setSelectedSellingOptionId(next?.id || '');
+    setPackaging(next?.weightGrams || Math.max(100, initialPackaging || 100));
+  }, [selectedPlanId, plans]);
+
+  const selectedSellingOption = planSellingOptions.find((option) => option.id === selectedSellingOptionId);
+  const selectedPlanPrice = selectedSellingOption?.planPrice ?? Number(selectedPlan?.price ?? 0);
 
   const submit = () => {
     const parsed = new Date(`${startDate}T00:00:00`);
@@ -439,17 +458,20 @@ function SubscriptionSheet({
 
     const selectedPlan = plans.find((plan) => plan.id === selectedPlanId);
     if (!selectedPlan) return;
+    if (hasPlanSellingOptions && !selectedSellingOption) return;
 
     addSubscriptionToCart(
       {
         productId: product.id,
         slug: productSlug(product),
         name: product.name,
-        price: Number(selectedPlan.price ?? 0),
-        mrp: Number(selectedPlan.price ?? 0),
+        price: selectedPlanPrice,
+        mrp: selectedPlanPrice,
         currency: product.currency || "INR",
         imageUrl: product.imageUrl,
         packaging,
+        sellingOptionId: selectedSellingOption?.id,
+        sellingOptionLabel: selectedSellingOption ? packagingLabel(selectedSellingOption.weightGrams) : undefined,
         planId: selectedPlan.id,
         planName:
           selectedPlan.name ||
@@ -541,84 +563,73 @@ function SubscriptionSheet({
           </div>
         </div>
 
-        <div className={`subscribe-options-row ${hasSellingOptions ? "subscribe-options-row-two" : "subscribe-options-row-three"}`}>
-          {!hasSellingOptions ? (
-            <div className="subscribe-step">
-              <div className="subscribe-step-title">
-                <span>2</span>
-                <div>
-                  <strong>Packaging</strong>
-                  <small>Choose pack size</small>
-                </div>
+        <div className="subscribe-options-row-three">
+          <div className="subscribe-step">
+            <div className="subscribe-step-title">
+              <span>2</span>
+              <div>
+                <strong>Salable option</strong>
+                <small>Choose pack size and subscription price</small>
               </div>
+            </div>
+            {hasPlanSellingOptions ? (
               <select
-                value={packaging}
-                onChange={(event) => setPackaging(Number(event.target.value))}
-                aria-label="Packaging"
+                value={selectedSellingOptionId || planSellingOptions[0]?.id || ""}
+                onChange={(event) => setSelectedSellingOptionId(event.target.value)}
+                aria-label="Salable option"
                 className="w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2.5 text-sm font-semibold text-[#2b2016]"
               >
-                {PACKAGING_OPTIONS.map((grams) => (
-                  <option key={grams} value={grams}>{packagingLabel(grams)}</option>
+                {planSellingOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {packagingLabel(option.weightGrams)} — {money(option.planPrice, product.currency || "INR")}
+                  </option>
                 ))}
               </select>
-            </div>
-          ) : null}
+            ) : (
+              <div className="rounded-xl border border-[#e7dfd0] bg-[#faf7f1] px-3 py-2.5 text-sm text-[#6b5b48]">
+                Standard plan pricing · {money(selectedPlanPrice, product.currency || "INR")} / term
+              </div>
+            )}
+          </div>
 
           <div className="subscribe-step">
             <div className="subscribe-step-title">
-              <span>{hasSellingOptions ? 2 : 3}</span>
+              <span>3</span>
               <div>
                 <strong>Quantity</strong>
                 <small>Packs per delivery</small>
               </div>
             </div>
-
             <div className="modal-quantity-control">
-              <button
-                type="button"
-                aria-label="Decrease quantity"
-                onClick={() => setQuantity((value) => Math.max(1, value - 1))}
-              >
-                −
-              </button>
+              <button type="button" aria-label="Decrease quantity" onClick={() => setQuantity((value) => Math.max(1, value - 1))}>−</button>
               <strong>{quantity}</strong>
-              <button
-                type="button"
-                aria-label="Increase quantity"
-                onClick={() => setQuantity((value) => value + 1)}
-              >
-                +
-              </button>
+              <button type="button" aria-label="Increase quantity" onClick={() => setQuantity((value) => value + 1)}>+</button>
+            </div>
+            <div className="mt-2 text-sm font-bold text-[#6fa82e]">
+              {money(selectedPlanPrice * quantity, product.currency || "INR")} / term
             </div>
           </div>
 
           <div className="subscribe-step">
             <div className="subscribe-step-title">
-              <span>{hasSellingOptions ? 3 : 4}</span>
+              <span>4</span>
               <div>
                 <strong>Start date</strong>
                 <small>Saturday only</small>
               </div>
             </div>
 
-            <div className="subscribe-date-row">
-              <input
-                type="date"
-                min={nextSaturday}
-                step="7"
-                value={startDate}
-                aria-label="Subscription start date"
-                onChange={(event) => setStartDate(event.target.value)}
-              />
-              <span>Saturday</span>
-            </div>
+          <div className="subscribe-date-row">
+            <input type="date" min={nextSaturday} step="7" value={startDate} aria-label="Subscription start date" onChange={(event) => setStartDate(event.target.value)} />
+            <span>Saturday</span>
           </div>
+        </div>
         </div>
 
         <button
           className="btn primary subscribe-now-button"
           type="button"
-          disabled={!selectedPlanId}
+          disabled={!selectedPlanId || (hasPlanSellingOptions && !selectedSellingOptionId)}
           onClick={submit}
         >
           Subscribe
