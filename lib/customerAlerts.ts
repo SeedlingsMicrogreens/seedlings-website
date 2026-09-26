@@ -5,19 +5,25 @@ export async function confirmHarvestShortage(args: {
   availableGrams: number;
   requestedGrams: number;
   shortageGrams: number;
+  deliveryDate?: string;
 }) {
   const { default: Swal } = await import('sweetalert2');
   const available = Math.max(0, Math.floor(args.availableGrams));
   const requested = Math.max(0, Math.floor(args.requestedGrams));
   const shortage = Math.max(0, Math.floor(args.shortageGrams));
+  const deliveryDate = String(args.deliveryDate || '').trim();
+  const formattedDate = deliveryDate ? new Date(`${deliveryDate}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+  const dateHtml = formattedDate ? `<strong>${formattedDate}</strong>` : '<strong>the upcoming delivery</strong>';
 
   const isSubscription = args.mode === 'subscription';
-  const message = isSubscription ? `We're experiencing high demand right now. Your order will be fulfilled, and any remaining quantity will be adjusted with your upcoming delivery.` : `We're experiencing high demand right now. Your order will be fulfilled, and any remaining quantity will be adjusted with your upcoming delivery.`;
+  const message = isSubscription
+    ? `We're currently experiencing high demand. Your subscription order is for <strong>${requested.toLocaleString()} gms</strong>, and <strong>${shortage.toLocaleString()} gms</strong> is currently unavailable.<br><br>We'll deliver the available <strong>${available.toLocaleString()} gms</strong> in your first delivery and cover the remaining <strong>${shortage.toLocaleString()} gms</strong> in your upcoming delivery on ${dateHtml}.`
+    : `We're currently experiencing high demand. Your order is for <strong>${requested.toLocaleString()} gms</strong>, and <strong>${shortage.toLocaleString()} gms</strong> is currently unavailable.<br><br>We'll deliver your complete order on ${dateHtml}.`;
 
   const result = await Swal.fire({
-    icon: 'warning',
-    title: 'Your order is on track!',
-    html: `${message}<br><br>Would you like to continue with your order?`,
+    icon: 'info',
+    title: isSubscription ? 'High Demand — We’ll Make Sure You Receive Your Full Quantity' : 'High Demand — We’ll Deliver Your Full Order',
+    html: `${message}<br><br>Would you like to continue?`,
     showCancelButton: true,
     confirmButtonText: 'Yes, continue',
     cancelButtonText: 'No, contact me',
@@ -29,6 +35,8 @@ export async function confirmHarvestShortage(args: {
 
   return result.isConfirmed ? 'continue' as const : 'contact' as const;
 }
+
+
 
 export async function showCustomerSuccess(title: string, text?: string) {
   const { default: Swal } = await import('sweetalert2');

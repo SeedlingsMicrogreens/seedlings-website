@@ -41,7 +41,21 @@ function number(value: unknown) {
 function normalize(value: unknown) { return String(value ?? '').trim(); }
 
 function orderIsCancelled(order: Record<string, unknown>) {
-  return ['cancelled', 'failed', 'rejected'].includes(normalize(order.status).toLowerCase());
+  return ['cancelled', 'failed', 'rejected', 'payment_failed'].includes(normalize(order.status).toLowerCase());
+}
+
+/**
+ * Successful payment is the inventory commitment. Older/legacy records can
+ * have the correct operational status (`confirmed`/`active`) while their
+ * paymentStatus value is missing or inconsistent, so the successful business
+ * status is accepted as a compatibility fallback. New payments continue to
+ * write paymentStatus = paid.
+ */
+function isPaymentCommitted(record: Record<string, unknown>, type: 'one-time' | 'subscription') {
+  const paymentStatus = normalize(record.paymentStatus).toLowerCase();
+  if (['paid', 'success', 'successful'].includes(paymentStatus)) return true;
+  const status = normalize(record.status).toLowerCase();
+  return type === 'one-time' ? status === 'confirmed' : status === 'active';
 }
 
 function itemProductionRequirements(order: Record<string, unknown>, salesProducts: SalesProduct[]) {
@@ -102,7 +116,7 @@ export async function checkProductAvailability(args: {
   const [productsSnap, batchesSnap, subscriptionsSnap, ordersSnap, salesProductsSnap] = await Promise.all([
     getDocs(collection(db, 'products')),
     getDocs(collection(db, 'growingBatches')),
-    getDocs(query(collection(db, 'subscriptions'), where('status', '==', 'active'), where('paymentStatus', '==', 'paid'))),
+    getDocs(query(collection(db, 'subscriptions'), where('status', '==', 'active'))),
     getDocs(query(collection(db, 'orders'), where('scheduledDeliveryDate', '==', deliveryDate))),
     getDocs(query(collection(db, 'salesProducts'), where('active', '==', true))),
   ]);
@@ -119,7 +133,11 @@ export async function checkProductAvailability(args: {
 
   for (const batchDoc of batchesSnap.docs) {
     const batch = batchDoc.data() || {};
-    if (normalize(batch.status) === 'completed') continue;
+    // Harvested quantity is already written into products.stockGrams by the
+    // admin harvest flow. A completed/harvested batch must therefore NOT be
+    // added again here, otherwise the same harvest is double-counted.
+    const batchStatus = normalize(batch.status).toLowerCase().replace(/\s+/g, '');
+    if (batchStatus === 'completed' || batchStatus === 'harvested' || batchStatus === 'completed_harvested') continue;
     const items = Array.isArray(batch.items) ? batch.items : [];
     for (const raw of items) {
       if (!raw || typeof raw !== 'object') continue;
@@ -136,6 +154,7 @@ export async function checkProductAvailability(args: {
 
   for (const doc of subscriptionsSnap.docs) {
     const subscription = doc.data() || {};
+    if (!isPaymentCommitted(subscription, 'subscription')) continue;
     if (normalize(subscription.nextDeliveryDate) !== deliveryDate) continue;
 
     // Subscription `productId` identifies the customer-facing Salable Product.
@@ -173,9 +192,10 @@ export async function checkProductAvailability(args: {
 
   for (const doc of ordersSnap.docs) {
     const order = doc.data() || {};
-    // Only successfully paid one-time orders commit inventory. Pending, failed,
-    // abandoned and cancelled payments must never reduce availability.
-    if (normalize(order.paymentStatus).toLowerCase() !== 'paid') continue;
+    // Only successfully paid/confirmed one-time orders commit inventory.
+    // New records use paymentStatus = paid; confirmed is a compatibility
+    // fallback for older records where the payment/status fields became out of sync.
+    if (!isPaymentCommitted(order, 'one-time')) continue;
     if (orderIsCancelled(order)) continue;
     const requirements = itemProductionRequirements(order, salesProducts);
     // Subscription demand is sourced from active subscriptions above so the

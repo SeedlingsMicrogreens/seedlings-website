@@ -113,12 +113,20 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Contact requests may be created by the signed-in checkout session only.
-    match /customerContactRequests/{requestId} {
-      allow create: if signedIn()
-        && ownAuthUid(request.resource.data)
-        && request.resource.data.status == 'pending'
-        && request.resource.data.reason == 'harvest_shortage';
+    // Customer enquiries are separate from orders. A signed-in customer may
+    // create an enquiry for their own session; the public contact form may also
+    // create an enquiry without authentication. Enquiries are not orders and
+    // cannot be updated or deleted by customers.
+    match /enquiries/{enquiryId} {
+      allow create: if request.resource.data.status == 'open'
+        && request.resource.data.source in ['customer_checkout', 'contact_page']
+        && request.resource.data.name is string
+        && request.resource.data.productName is string
+        && request.resource.data.message is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.productName.size() > 0
+        && request.resource.data.message.size() > 0
+        && (!signedIn() || request.resource.data.authUid == request.auth.uid);
       allow read: if signedIn() && ownAuthUid(resource.data);
       allow update, delete: if false;
     }

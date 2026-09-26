@@ -1,8 +1,8 @@
 import { addDoc, collection, doc, getDoc, getDocs, query, serverTimestamp, where } from 'firebase/firestore';
-import { db } from './firebase';
+import { auth, db } from './firebase';
 import { checkProductAvailability, nextWeekSaturday } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
-import { createCustomerContactRequest } from './customerContactRequests';
+import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
 
 export type CreateOneTimeOrderInput = {
   mobile: string;
@@ -22,6 +22,8 @@ function orderNumber() {
 }
 
 export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput) {
+  const authUid = auth.currentUser?.uid;
+  if (!authUid) throw new Error('Your login session expired. Please sign in again.');
   const mobile = mobileOf(input.mobile);
   const addressId = clean(input.addressId);
   const deliverySlot = clean(input.deliverySlot);
@@ -96,22 +98,21 @@ export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput)
   const shortage = availabilityResults.filter(Boolean).some((result: any) => result.hasShortage);
   if (shortage && !input.shortageDecision) throw new Error('HARVEST_SHORTAGE_CONFIRMATION_REQUIRED');
   if (shortage && input.shortageDecision === 'contact') {
+    const requestedGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.requestedGrams || 0), 0);
+    const availableGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.availableGrams || 0), 0);
+    const shortageGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.shortageGrams || 0), 0);
+    const shortageProductNames = availabilityResults
+      .map((result: any, index: number) => result?.hasShortage ? String(items[index]?.productName || 'Product') : '')
+      .filter(Boolean);
     const contact = await createCustomerContactRequest({
-      mobile,
-      customerName: clean(customer.name),
-      customerMobile: clean(customer.mobileNumber || customer.mobile || mobile),
-      address: address,
-      deliverySlot,
-      reason: 'harvest_shortage',
-      status: 'pending',
+      customerId: authUid,
+      name: clean(customer.name) || 'Customer',
+      mobile: clean(customer.mobileNumber || customer.mobile || mobile),
+      email: clean(customer.email),
+      productName: [...new Set(shortageProductNames)].join(', ') || 'Product',
+      message: buildShortageEnquiryMessage({ mode: 'one-time', requestedGrams, shortageGrams, deliveryDate: nextWeekSaturday() }),
       source: 'customer_checkout',
-      oneTimeItems: input.items,
-      subscriptionItems: [],
-      availability: {
-        requestedGrams: availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.requestedGrams || 0), 0),
-        availableGrams: availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.availableGrams || 0), 0),
-        shortageGrams: availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.shortageGrams || 0), 0),
-      },
+      status: 'open',
     });
     return { contactRequired: true, contactRequestId: contact.id, orderId: '', orderNumber: '', paymentStatus: 'not_required', total: 0 };
   }

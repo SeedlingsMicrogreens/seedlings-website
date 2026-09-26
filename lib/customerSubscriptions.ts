@@ -3,7 +3,7 @@ import { db, auth } from './firebase';
 import { type SalesProduct } from './salesProducts';
 import { checkProductAvailability, nextWeekSaturday } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
-import { createCustomerContactRequest } from './customerContactRequests';
+import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
 import { PACKAGING_OPTIONS } from './packaging';
 
 const clean = (value: unknown) => typeof value === 'string' ? value.trim() : '';
@@ -108,35 +108,20 @@ export async function createCustomerSubscription(input: {
   const sellingOptionLabel = packaging >= 1000 && packaging % 1000 === 0 ? `${packaging / 1000}kg box` : `${packaging}g box`;
 
   const availability = await checkProductAvailability({ product: input.product, quantity: input.quantity, packagingGrams: packaging, deliveryDate: firstDelivery });
+  const firstDeliveryWeightGrams = availability.hasShortage ? Math.max(0, Math.min(availability.availableGrams, availability.requestedGrams)) : availability.requestedGrams;
   if (availability.hasShortage && !input.shortageDecision) {
     throw new Error('HARVEST_SHORTAGE_CONFIRMATION_REQUIRED');
   }
   if (availability.hasShortage && input.shortageDecision === 'contact') {
     const contact = await createCustomerContactRequest({
+      customerId: authUid,
+      name: clean(customer.name) || 'Customer',
       mobile,
-      customerName: clean(customer.name),
-      customerMobile: mobile,
-      address: address,
-      deliverySlot: firstDelivery,
-      reason: 'harvest_shortage',
-      status: 'pending',
+      email: clean(customer.email),
+      productName: clean(input.product.name) || 'Product',
+      message: buildShortageEnquiryMessage({ mode: 'subscription', requestedGrams: availability.requestedGrams, shortageGrams: availability.shortageGrams, deliveryDate: firstDelivery }),
       source: 'customer_checkout',
-      oneTimeItems: [],
-      subscriptionItems: [{
-        productId: input.product.id,
-        productName: clean(input.product.name),
-        packaging,
-        weightGrams,
-        quantity: input.quantity,
-        planId: input.planId,
-        planName: clean(plan.name),
-        startDate: input.startDate || firstDelivery,
-      }],
-      availability: {
-        requestedGrams: availability.requestedGrams,
-        availableGrams: availability.availableGrams,
-        shortageGrams: availability.shortageGrams,
-      },
+      status: 'open',
     });
     return { contactRequired: true, contactRequestId: contact.id, id: '', subscriptionNumber: '', orderId: '', orderNumber: '', status: 'contact_required', paymentStatus: 'not_required', paymentOrderIds: [], frequency, nextDeliveryDate: firstDelivery };
   }
@@ -202,7 +187,7 @@ export async function createCustomerSubscription(input: {
       sellingOptionId: '',
       sellingOptionLabel,
       packaging,
-      weightGrams,
+      weightGrams: firstDeliveryWeightGrams,
       quantity: input.quantity,
       unitPrice,
       lineTotal: unitPrice * input.quantity,

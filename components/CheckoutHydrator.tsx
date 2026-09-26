@@ -7,7 +7,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { getCustomerAccount, updateCustomerAddresses, updateCustomerName, type CustomerAccount, type CustomerAddress } from '@/lib/customerAccount';
 import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
-import { getUnifiedCart } from '@/lib/cart';
+import { getUnifiedCart, clearCart } from '@/lib/cart';
 import { getActiveSalesProducts } from '@/lib/salesProducts';
 import { createCustomerMixedCheckout } from '@/lib/customerMixedCheckout';
 import { checkProductAvailability, nextWeekSaturday } from '@/lib/customerOrderAvailability';
@@ -246,14 +246,34 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           const cartNow = getUnifiedCart();
           const products = await getActiveSalesProducts();
           const checks = [...cartNow.oneTimeItems.map(i => ({ i, p: products.find(x => x.id === i.productId), date: nextWeekSaturday() })), ...cartNow.subscriptionItems.map(i => ({ i, p: products.find(x => x.id === i.productId), date: i.startDate }))];
-          const results = await Promise.all(checks.map(async x => { if (!x.p) throw new Error(`Product "${x.i.name}" is no longer available.`); return checkProductAvailability({ product: x.p, quantity: x.i.quantity, packagingGrams: x.i.packaging, deliveryDate: x.date }); }));
+          const results = await Promise.all(checks.map(async x => { if (!x.p) throw new Error(`Product "${x.i.name}" is no longer available.`); return { item: x.i, product: x.p, result: await checkProductAvailability({ product: x.p, quantity: x.i.quantity, packagingGrams: x.i.packaging, deliveryDate: x.date }) }; }));
           let shortageDecision: any;
-          if (results.some(r => r.hasShortage)) { const requested = results.reduce((s, r) => s + r.requestedGrams, 0), available = results.reduce((s, r) => s + r.availableGrams, 0), shortage = results.reduce((s, r) => s + r.shortageGrams, 0); shortageDecision = await confirmHarvestShortage({ mode: 'one-time', availableGrams: available, requestedGrams: requested, shortageGrams: shortage }); }
+          if (results.some(r => r.result.hasShortage)) { const requested = results.reduce((s, r) => s + r.result.requestedGrams, 0), available = results.reduce((s, r) => s + r.result.availableGrams, 0), shortage = results.reduce((s, r) => s + r.result.shortageGrams, 0); shortageDecision = await confirmHarvestShortage({ mode: 'one-time', availableGrams: available, requestedGrams: requested, shortageGrams: shortage, deliveryDate: nextWeekSaturday() }); }
           if (button) button.textContent = 'Preparing Payment…';
           await updateCustomerName(mobile, name);
           account.name = name;
-          const result = await createCustomerMixedCheckout({ mobile, addressId, deliverySlot, paymentMethod, oneTimeItems: cartNow.oneTimeItems, subscriptionItems: cartNow.subscriptionItems, shortageDecision });
-          if (result.contactRequired) { await showCustomerSuccess('We’ll contact you', 'Your contact request has been saved. Our team will contact you regarding the available quantity.'); if (button) { button.disabled = false; button.textContent = 'Proceed to Pay'; } return; }
+          let result;
+          try {
+            result = await createCustomerMixedCheckout({ mobile, addressId, deliverySlot, paymentMethod, oneTimeItems: cartNow.oneTimeItems, subscriptionItems: cartNow.subscriptionItems, shortageDecision });
+          } catch (error) {
+            // The server re-check is authoritative. If availability changed between
+            // the client check and order creation, show the same Yes/No shortage
+            // confirmation instead of exposing the internal error to the customer.
+            if (!(error instanceof Error) || error.message !== 'HARVEST_SHORTAGE_CONFIRMATION_REQUIRED') throw error;
+            const retryChecks = [...cartNow.oneTimeItems.map(i => ({ i, p: products.find(x => x.id === i.productId), date: nextWeekSaturday() })), ...cartNow.subscriptionItems.map(i => ({ i, p: products.find(x => x.id === i.productId), date: i.startDate }))];
+            const retryResults = await Promise.all(retryChecks.map(async x => {
+              if (!x.p) throw new Error(`Product "${x.i.name}" is no longer available.`);
+              return { item: x.i, product: x.p, result: await checkProductAvailability({ product: x.p, quantity: x.i.quantity, packagingGrams: x.i.packaging, deliveryDate: x.date }) };
+            }));
+            const retryShortage = retryResults.some(r => r.result.hasShortage);
+            if (!retryShortage) throw error;
+            const requested = retryResults.reduce((sum, r) => sum + r.result.requestedGrams, 0);
+            const available = retryResults.reduce((sum, r) => sum + r.result.availableGrams, 0);
+            const shortage = retryResults.reduce((sum, r) => sum + r.result.shortageGrams, 0);
+            shortageDecision = await confirmHarvestShortage({ mode: 'one-time', availableGrams: available, requestedGrams: requested, shortageGrams: shortage, deliveryDate: nextWeekSaturday() });
+            result = await createCustomerMixedCheckout({ mobile, addressId, deliverySlot, paymentMethod, oneTimeItems: cartNow.oneTimeItems, subscriptionItems: cartNow.subscriptionItems, shortageDecision });
+          }
+          if (result.contactRequired) { clearCart(); await showCustomerSuccess('We’ll contact you', 'Your enquiry has been saved. Our team will contact you regarding the available quantity.'); if (button) { button.disabled = false; button.textContent = 'Proceed to Pay'; } return; }
           const paymentData = await createCashfreeOrder(result.paymentOrderIds, mobile);
           sessionStorage.setItem('seedlings_last_checkout', JSON.stringify({ ...result, cashfreeOrderId: paymentData.cashfreeOrderId }));
           sessionStorage.setItem('seedlings_last_order', JSON.stringify({ orderId: result.primaryOrderId, orderNumber: result.primaryOrderNumber, total: result.total, paymentStatus: 'pending', cashfreeOrderId: paymentData.cashfreeOrderId }));

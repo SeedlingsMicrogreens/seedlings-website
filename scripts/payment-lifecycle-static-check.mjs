@@ -5,8 +5,9 @@ const root = process.cwd();
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const checks = [
   ['one-time checkout binds authUid', read('lib/customerMixedCheckout.ts'), /const oneOrder=oneOrderRef\?\{authUid,/],
-  ['availability counts only paid one-time orders', read('lib/customerOrderAvailability.ts'), /paymentStatus\)\.toLowerCase\(\) !== 'paid'/],
-  ['availability counts only paid active subscriptions', read('lib/customerOrderAvailability.ts'), /where\('status', '==', 'active'\).*where\('paymentStatus', '==', 'paid'\)/s],
+  ['availability treats successful payment state as committed', read('lib/customerOrderAvailability.ts'), /function isPaymentCommitted[\s\S]*paymentStatus[\s\S]*paid/],
+  ['availability accepts confirmed one-time orders as compatibility fallback', read('lib/customerOrderAvailability.ts'), /type === 'one-time' \? status === 'confirmed'/],
+  ['availability accepts active subscriptions as compatibility fallback', read('lib/customerOrderAvailability.ts'), /type === 'subscription' \? status === 'active'/],
   ['Cashfree creation validates authUid', read('lib/server/cashfreeCreateOrder.ts'), /order\.authUid.*uid/],
   ['Cashfree finalization has a finalization lock', read('lib/server/cashfreePayment.ts'), /paymentFinalizationLocks/],
   ['Cashfree webhook exists', fs.existsSync(path.join(root, 'app/api/cashfree/webhook/route.ts')) ? 'yes' : '', /yes/],
