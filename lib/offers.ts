@@ -18,6 +18,8 @@ export type CustomerOffer = {
 
 export type CheckoutOfferResult = {
   priceSavings: number;
+  oneTimePriceSavings: number;
+  subscriptionPriceSavings: number;
   deliverySavings: number;
   totalSavings: number;
   priceOffer?: CustomerOffer;
@@ -63,6 +65,7 @@ export async function calculateCustomerOffers(input: {
   geoId: string;
   locationName?: string;
   oneTimeSubtotal: number;
+  subscriptionSubtotal?: number;
   oneTimeDelivery: number;
 }): Promise<CheckoutOfferResult> {
   const snap = await getDocs(collection(db, 'offers'));
@@ -73,9 +76,34 @@ export async function calculateCustomerOffers(input: {
   const best = (candidates: CustomerOffer[], base: number) => candidates
     .map((offer) => ({ offer, saving: savingFor(offer, base) }))
     .sort((a, b) => b.saving - a.saving)[0];
-  const price = best(priceCandidates, amount(input.oneTimeSubtotal));
+  const oneTimeSubtotal = amount(input.oneTimeSubtotal);
+  const subscriptionSubtotal = amount(input.subscriptionSubtotal);
+  const combinedProductSubtotal = oneTimeSubtotal + subscriptionSubtotal;
+  const price = best(priceCandidates, combinedProductSubtotal);
   const delivery = best(deliveryCandidates, amount(input.oneTimeDelivery));
-  const priceSavings = price?.saving || 0;
+
+  let oneTimePriceSavings = 0;
+  let subscriptionPriceSavings = 0;
+  if (price?.offer && combinedProductSubtotal > 0) {
+    if (price.offer.discountType === 'percentage') {
+      oneTimePriceSavings = savingFor(price.offer, oneTimeSubtotal);
+      subscriptionPriceSavings = savingFor(price.offer, subscriptionSubtotal);
+    } else {
+      const totalPriceSaving = Math.min(combinedProductSubtotal, amount(price.offer.discountValue));
+      oneTimePriceSavings = Math.min(oneTimeSubtotal, Math.round((totalPriceSaving * oneTimeSubtotal / combinedProductSubtotal) * 100) / 100);
+      subscriptionPriceSavings = Math.min(subscriptionSubtotal, Math.round((totalPriceSaving - oneTimePriceSavings) * 100) / 100);
+    }
+  }
+
+  const priceSavings = Math.min(combinedProductSubtotal, oneTimePriceSavings + subscriptionPriceSavings);
   const deliverySavings = delivery?.saving || 0;
-  return { priceSavings, deliverySavings, totalSavings: priceSavings + deliverySavings, priceOffer: price?.offer, deliveryOffer: delivery?.offer };
+  return {
+    priceSavings,
+    oneTimePriceSavings,
+    subscriptionPriceSavings,
+    deliverySavings,
+    totalSavings: priceSavings + deliverySavings,
+    priceOffer: price?.offer,
+    deliveryOffer: delivery?.offer,
+  };
 }

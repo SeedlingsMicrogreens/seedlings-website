@@ -1,4 +1,4 @@
-import { collection, documentId, getDocs, query, where } from 'firebase/firestore';
+import { collection, documentId, getDocs, query, where, type QuerySnapshot, type DocumentData } from 'firebase/firestore';
 import { db } from './firebase';
 import type { SalesProduct } from './salesProducts';
 
@@ -127,7 +127,7 @@ function requestedProductionQuantities(product: SalesProduct, quantityInput: num
   return requested;
 }
 
-async function loadAvailabilityContext(deliveryDate: string, requestedProductIds: string[]): Promise<AvailabilityContext> {
+async function loadAvailabilityContext(deliveryDate: string, requestedProductIds: string[], preloadedBatches?: QuerySnapshot<DocumentData>): Promise<AvailabilityContext> {
   const requestedProductIdSet = new Set(requestedProductIds);
 
   const [productsDocs, batchesSnap, subscriptionsSnap, ordersSnap] = await Promise.all([
@@ -137,7 +137,7 @@ async function loadAvailabilityContext(deliveryDate: string, requestedProductIds
     // changing the existing batch schema. Keep the existing batch source here
     // and restrict processing below to requested production products and the
     // calculated ready date.
-    getDocs(collection(db, 'growingBatches')),
+    preloadedBatches ? Promise.resolve(preloadedBatches) : getDocs(collection(db, 'growingBatches')),
     getDocs(query(
       collection(db, 'subscriptions'),
       where('status', '==', 'active'),
@@ -270,6 +270,134 @@ function calculateAvailability(args: {
     availableGrams,
     shortageGrams,
     hasShortage,
+  };
+}
+
+export type CartDeliveryResolutionItem = {
+  key: string;
+  kind: 'subscription' | 'one-time';
+  productId: string;
+  name: string;
+  requestedDate: string;
+  deliveryDate: string | null;
+  available: boolean;
+};
+
+export type CartDeliveryResolution = {
+  requestedDate: string;
+  items: CartDeliveryResolutionItem[];
+  hasDateChanges: boolean;
+  hasUnavailableItems: boolean;
+};
+
+function addReservation(target: Record<string, number>, requested: Record<string, number>) {
+  for (const [productId, grams] of Object.entries(requested)) {
+    target[productId] = (target[productId] || 0) + number(grams);
+  }
+}
+
+function availableForCartItem(
+  context: AvailabilityContext,
+  requested: Record<string, number>,
+  kind: 'subscription' | 'one-time',
+  reservations: { subscription: Record<string, number>; oneTime: Record<string, number> },
+) {
+  for (const [productId, grams] of Object.entries(requested)) {
+    const harvest = context.harvestAvailable[productId] || 0;
+    const committedSubscription = (context.subscriptionCommitted[productId] || 0) + (reservations.subscription[productId] || 0);
+    const committedOneTime = kind === 'one-time'
+      ? (context.oneTimeCommitted[productId] || 0) + (reservations.oneTime[productId] || 0)
+      : 0;
+    if (Math.max(0, harvest - committedSubscription - committedOneTime) < grams) return false;
+  }
+  return true;
+}
+
+function addWeeks(date: string, weeks: number) {
+  const value = new Date(`${date}T00:00:00`);
+  value.setDate(value.getDate() + weeks * 7);
+  return dateOnly(value);
+}
+
+/**
+ * Resolves the actual first delivery date for every cart item before checkout.
+ * Subscriptions are allocated first, then one-time items. A product is never
+ * partially committed: it receives the first Saturday on which its full
+ * requested quantity can be fulfilled.
+ */
+export async function resolveCartDeliveryDates(args: Array<{
+  key: string;
+  kind: 'subscription' | 'one-time';
+  product: SalesProduct;
+  quantity: number;
+  packagingGrams?: number;
+  requestedDate?: string;
+  name?: string;
+}>, options: { maxWeeks?: number } = {}): Promise<CartDeliveryResolution> {
+  if (!args.length) {
+    const requestedDate = nextWeekSaturday();
+    return { requestedDate, items: [], hasDateChanges: false, hasUnavailableItems: false };
+  }
+
+  const requestedDate = args.find((item) => item.requestedDate)?.requestedDate || nextWeekSaturday();
+  const maxWeeks = Math.max(1, Math.floor(Number(options.maxWeeks || 12)));
+  const contextByDate = new Map<string, AvailabilityContext>();
+  // Growing batches use nested item fields, so the existing schema cannot be
+  // filtered by ready date in Firestore. Read the batch snapshot once and reuse
+  // it for all candidate Saturdays instead of repeating the same collection read.
+  const preloadedBatches = await getDocs(collection(db, 'growingBatches'));
+  const reservationsByDate = new Map<string, { subscription: Record<string, number>; oneTime: Record<string, number> }>();
+  const output: CartDeliveryResolutionItem[] = [];
+
+  // Subscription priority is explicit and stable; cart order determines the
+  // order among items of the same type.
+  const ordered = [...args].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'subscription' ? -1 : 1));
+
+  for (const item of ordered) {
+    const requested = requestedProductionQuantities(item.product, item.quantity, item.packagingGrams);
+    let deliveryDate: string | null = null;
+
+    const itemRequestedDate = item.requestedDate || requestedDate;
+    const candidates = Array.from({ length: maxWeeks }, (_, index) => addWeeks(itemRequestedDate, index));
+
+    for (const candidate of candidates) {
+      let context = contextByDate.get(candidate);
+      if (!context) {
+        context = await loadAvailabilityContext(candidate, Object.keys(requested), preloadedBatches);
+        contextByDate.set(candidate, context);
+      }
+      const reservations = reservationsByDate.get(candidate) || { subscription: {}, oneTime: {} };
+      if (!availableForCartItem(context, requested, item.kind, reservations)) continue;
+
+      deliveryDate = candidate;
+      const nextReservations = {
+        subscription: { ...reservations.subscription },
+        oneTime: { ...reservations.oneTime },
+      };
+      const reservationKey = item.kind === 'subscription' ? 'subscription' : 'oneTime';
+      addReservation(nextReservations[reservationKey], requested);
+      reservationsByDate.set(candidate, nextReservations);
+      break;
+    }
+
+    output.push({
+      key: item.key,
+      kind: item.kind,
+      productId: item.product.id,
+      name: String(item.name || item.product.name || 'Product'),
+      requestedDate: itemRequestedDate,
+      deliveryDate,
+      available: Boolean(deliveryDate),
+    });
+  }
+
+  // Restore the original cart order for predictable popup presentation.
+  output.sort((a, b) => args.findIndex((item) => item.key === a.key) - args.findIndex((item) => item.key === b.key));
+  return {
+    requestedDate,
+    items: output,
+    hasDateChanges: output.some((item) => item.deliveryDate !== null && item.deliveryDate !== item.requestedDate),
+    hasUnavailableItems: output.some((item) => !item.deliveryDate),
   };
 }
 

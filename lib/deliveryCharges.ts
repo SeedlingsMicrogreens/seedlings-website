@@ -97,13 +97,20 @@ export async function calculateCheckoutDeliveryCharges(input: {
     if (plan.active !== true) throw new Error(`Subscription plan "${entry.planName || plan.name || entry.planId}" is no longer active.`);
     const mode = clean(plan.deliveryChargeMode).toLowerCase();
     const deliveriesPerTerm = Math.max(1, Number(plan.deliveriesPerTerm) || 1);
+    const mixedCart = input.oneTime && input.subscriptions.length > 0;
     let final = base.finalCharge;
     let source: DeliveryChargeResult['source'] = base.source;
     let sourceId = base.sourceId;
     let sourceName = base.sourceName;
-    if (mode === 'free' || mode === 'included') {
+
+    // Mixed checkout rule: when one-time and subscription items are in the
+    // same cart, do not charge a separate one-time delivery fee and do not
+    // apply the subscription plan's free/included delivery rule. The single
+    // checkout delivery charge is the Pincode Master charge per subscription
+    // delivery, multiplied by the number of deliveries in the term.
+    if (!mixedCart && (mode === 'free' || mode === 'included')) {
       final = 0; source = 'subscription_plan'; sourceId = planDoc.id; sourceName = clean(plan.name) || entry.planName || 'Subscription plan';
-    } else if (mode === 'per_delivery' && Number.isFinite(Number(plan.deliveryCharge)) && Number(plan.deliveryCharge) >= 0) {
+    } else if (!mixedCart && mode === 'per_delivery' && Number.isFinite(Number(plan.deliveryCharge)) && Number(plan.deliveryCharge) >= 0) {
       final = Math.min(base.finalCharge, nonNegative(plan.deliveryCharge));
       if (final !== base.finalCharge) { source = 'subscription_plan'; sourceId = planDoc.id; sourceName = clean(plan.name) || entry.planName || 'Subscription plan'; }
     }

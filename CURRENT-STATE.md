@@ -121,3 +121,31 @@ The cart navigation preserves the SVG cart icon while the item count is rendered
 ### Phase 46 hotfix — AccountHydrator
 - `AccountHydrator` now correctly imports `getCountFromServer`, matching the existing order-count query.
 - This resolves the runtime ReferenceError during account hydration without changing business logic.
+
+
+### Phase 46 delivery logic correction — mixed cart
+- Mixed one-time + subscription checkout has one delivery calculation: Pincode Master delivery charge × subscription deliveries.
+- Separate one-time delivery is not displayed and is not charged in mixed checkout.
+- Subscription-only and one-time-only checkout behavior remains unchanged.
+
+### Phase 46 follow-up — checkout offer and delivery presentation
+- Unified checkout price offers apply to both one-time and subscription product subtotals.
+- The checkout uses one `Delivery charge` row rather than separate one-time/subscription delivery labels.
+- Mixed checkout delivery remains the Pincode Master delivery charge multiplied by subscription deliveries; no separate one-time delivery charge is shown.
+- Subscription order totals include the allocated price-offer discount.
+
+### Phase 46 follow-up — delivery-date resolution and confirmation
+- Cart checkout now performs a smart delivery-date availability check before navigating to `/checkout`.
+- Every one-time and subscription item receives an actual first delivery date. Full quantity is required for a date; partial quantity is not silently placed.
+- Subscription items have priority when competing for the same production inventory, followed by one-time items.
+- If every item is available for the requested date, no confirmation popup is shown.
+- If any item is later/unavailable, the customer sees one delivery-availability confirmation with the affected products and dates.
+- `Yes, Place Order` stores the resolved dates and opens Checkout.
+- `No, Update Cart` sends an enquiry for the affected products, removes those products from the cart, stays on Cart and confirms that the cart was updated and the enquiry was sent. Payment is never started automatically from this path.
+- Checkout displays actual delivery dates for one-time and subscription items.
+- Server-side checkout revalidates the resolved dates and sends the customer back to Cart if availability changed after confirmation.
+- One-time products with different resolved delivery dates are stored in separate order documents so delivery assignments remain date-correct; the single one-time delivery charge is allocated once.
+
+## Phase 46 Bug Fix
+- Fixed checkout crash in `lib/customerOrderAvailability.ts` caused by indexing the reservation map with the cart kind value `one-time` instead of its `oneTime` key.
+- Smart delivery-date resolution now records reservations into the correct subscription/one-time bucket.

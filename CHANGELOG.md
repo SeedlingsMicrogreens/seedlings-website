@@ -198,3 +198,39 @@ Older documents contain statements that no longer exactly describe the current r
 ### Phase 46 hotfix — AccountHydrator Firestore count import
 - Fixed the runtime `getCountFromServer is not defined` error in `components/AccountHydrator.tsx` by importing `getCountFromServer` from `firebase/firestore`.
 - No account hydration logic or Firestore query behavior was changed.
+
+
+### Phase 46 delivery logic correction — mixed cart
+- When one-time and subscription items are present in the same cart, no separate one-time delivery charge is shown or added.
+- Mixed-cart delivery is calculated as the Pincode Master delivery charge per subscription delivery multiplied by the subscription plan's number of deliveries.
+- Subscription plan free/included delivery is not applied to this mixed-cart rule.
+- Subscription-only checkout retains the existing subscription-plan delivery rules.
+- One-time-only checkout retains the existing one-time delivery rules.
+
+### Phase 46 follow-up — checkout product offer + unified delivery charge
+- Price offers now apply to subscription product totals as well as one-time product totals in unified checkout.
+- Percentage price offers are applied to each purchase type; flat price offers are allocated across one-time and subscription subtotals without double-discounting.
+- Subscription order records now carry the allocated product-offer discount and payment total uses the discounted subscription term amount.
+- Checkout displays a single `Delivery charge` row; it no longer labels delivery as `One-time delivery` or `Subscription delivery`.
+- Mixed one-time + subscription checkout continues to charge only the subscription-term delivery amount based on the Pincode Master delivery charge and number of deliveries.
+
+### Phase 46 follow-up — smart delivery-date confirmation before checkout
+- Replaced the old cart shortage confirmation flow with a delivery-date availability check before entering checkout.
+- Every one-time and subscription cart item is resolved against the requested delivery date; if the full requested quantity is unavailable, the system searches subsequent Saturday delivery dates without partially fulfilling the item.
+- Subscription cart items are allocated first when multiple cart items compete for the same production inventory; one-time items are resolved after subscription demand.
+- When all cart items can be fulfilled on the requested date, checkout opens directly without a popup.
+- When any item has a later delivery date or is unavailable, a single confirmation dialog lists the actual delivery date for every affected product.
+- `Yes, Place Order` keeps all cart items, stores their agreed delivery dates and proceeds to Checkout.
+- `No, Update Cart` removes products that cannot be fulfilled for the requested date, sends one enquiry covering those products, stays on the Cart page and shows a confirmation that the cart was updated and the enquiry was sent.
+- The customer must manually review the updated cart and choose `Proceed to checkout` again; the No path never starts payment automatically.
+- Cart items now retain the resolved one-time `deliveryDate`; subscription cart items retain their selected plan `startDate` separately from the resolved first `deliveryDate`.
+- Checkout displays the actual delivery date for every one-time and subscription item instead of showing a subscription `starts` date.
+- Mixed one-time items with different delivery dates are stored as separate one-time order records by delivery date so Delivery Partner assignment does not combine products scheduled for different dates.
+- The single applicable one-time delivery charge is allocated to the first one-time delivery-date order only; mixed one-time + subscription checkout continues to use the subscription delivery charge rule already established.
+- Server-side checkout revalidates the agreed delivery dates; if availability changes after the cart confirmation, checkout returns the customer to Cart for a fresh availability confirmation instead of using the old shortage popup.
+- Growing-batch data is read once and reused across candidate delivery dates during the cart resolution to avoid repeating the same batch collection read.
+
+## Phase 46 Bug Fix — Smart Delivery Reservation Crash
+- Fixed `resolveCartDeliveryDates()` runtime crash when recording reservations.
+- The cart item kind uses `one-time` while the reservation map uses `oneTime`; reservation updates now explicitly map `subscription` and `one-time` to the correct reservation buckets.
+- No delivery-date, availability, cart, enquiry, payment, or pricing business rules changed.

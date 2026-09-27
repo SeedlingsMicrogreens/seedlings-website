@@ -6,6 +6,7 @@ import Header from "@/components/layout/Header";
 import Footer from "@/components/layout/Footer";
 import {
   getUnifiedCart,
+  applyCartDeliveryDates,
   removeFromCart,
   removeSubscriptionFromCart,
   replaceProductCartSelection,
@@ -17,13 +18,16 @@ import {
   type SubscriptionCartItem,
 } from "@/lib/cart";
 import { packagingLabel } from "@/lib/packaging";
-import { nextWeekSaturday } from "@/lib/customerOrderAvailability";
+import { nextWeekSaturday, resolveCartDeliveryDates } from "@/lib/customerOrderAvailability";
 import {
   getActiveSalesProducts,
   productSlug,
   type SalesProduct,
   type SalesProductSellingOption,
 } from "@/lib/salesProducts";
+import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
+import { getCustomerAccount } from "@/lib/customerAccount";
+import { createCustomerContactRequest } from "@/lib/customerContactRequests";
 import {
   loadActiveCustomerSubscriptionPlans,
   type CustomerSubscriptionPlan,
@@ -252,6 +256,7 @@ function CartProductCard({
           >
             {displayName}
           </a>
+          {current?.deliveryDate ? <span className="muted" style={{ display: "block", marginTop: 3, fontSize: 12 }}>Delivery: {new Intl.DateTimeFormat("en-IN", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${current.deliveryDate}T00:00:00`))}</span> : null}
           <label className="cart-packaging-label">
             <span>Packaging</span>
             <select
@@ -431,6 +436,125 @@ export default function CartPage() {
   const groups = useMemo(() => groupCartItems(items.oneTimeItems, items.subscriptionItems), [items]);
   const productMap = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
 
+  const proceedToCheckout = async () => {
+    const currentCart = getUnifiedCart();
+    if (!currentCart.oneTimeItems.length && !currentCart.subscriptionItems.length) return;
+
+    const Swal = (await import("sweetalert2")).default;
+    const requestedDate = nextWeekSaturday();
+    const availableProducts = products.length ? products : await getActiveSalesProducts();
+    const availableProductMap = new Map(availableProducts.map((product) => [product.id, product]));
+    const missingProduct = [...currentCart.oneTimeItems, ...currentCart.subscriptionItems].find((item) => !availableProductMap.has(item.productId));
+    if (missingProduct) {
+      await Swal.fire({ icon: "error", title: "Product unavailable", text: `${missingProduct.name} is no longer available. Please remove it from your cart and try again.`, confirmButtonText: "OK" });
+      return;
+    }
+    const resolution = await resolveCartDeliveryDates([
+      ...currentCart.subscriptionItems.map((item) => ({
+        key: `subscription:${item.productId}:${item.planId}:${item.startDate}`,
+        kind: "subscription" as const,
+        product: availableProductMap.get(item.productId)!,
+        quantity: item.quantity,
+        packagingGrams: item.packaging,
+        requestedDate: item.startDate || requestedDate,
+        name: item.name,
+      })),
+      ...currentCart.oneTimeItems.map((item) => ({
+        key: `one-time:${item.productId}`,
+        kind: "one-time" as const,
+        product: availableProductMap.get(item.productId)!,
+        quantity: item.quantity,
+        packagingGrams: item.packaging,
+        requestedDate,
+        name: item.name,
+      })),
+    ].filter((item) => item.product), { maxWeeks: 12 });
+
+    const dates: Record<string, string | null> = {};
+    for (const item of resolution.items) dates[item.key] = item.deliveryDate;
+
+    if (!resolution.hasDateChanges && !resolution.hasUnavailableItems) {
+      applyCartDeliveryDates(dates);
+      window.location.href = "/checkout";
+      return;
+    }
+
+    const formatDate = (value: string | null) => value
+      ? new Intl.DateTimeFormat("en-IN", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value}T00:00:00`))
+      : "Not currently available";
+    const rows = resolution.items.map((item) => {
+      const safeName = String(item.name).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
+      const deliveryText = item.deliveryDate ? formatDate(item.deliveryDate) : `Not available for ${formatDate(item.requestedDate)}`;
+      return `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:left">${safeName}</td><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:left">${deliveryText}</td></tr>`;
+    }).join("");
+
+    const result = await Swal.fire({
+      icon: "info",
+      title: "Delivery availability update",
+      html: `<p style="margin:0 0 12px">We checked availability for your order. Due to high demand, some products have a later delivery date or are not currently available for the requested date.</p><table style="width:100%;border-collapse:collapse;margin:0 0 14px"><thead><tr><th style="padding:8px 10px;background:#f5f7ef;text-align:left">Product</th><th style="padding:8px 10px;background:#f5f7ef;text-align:left">Delivery date</th></tr></thead><tbody>${rows}</tbody></table><p style="margin:0">Would you like to place the complete order with these delivery dates?</p>`,
+      showCancelButton: true,
+      confirmButtonText: "Yes, Place Order",
+      cancelButtonText: "No, Update Cart",
+      reverseButtons: true,
+      focusCancel: true,
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+    });
+
+    if (result.isConfirmed) {
+      applyCartDeliveryDates(dates);
+      window.location.href = "/checkout";
+      return;
+    }
+
+    const removed = resolution.items.filter((item) => item.deliveryDate !== item.requestedDate);
+    if (!removed.length) {
+      applyCartDeliveryDates(dates);
+      return;
+    }
+
+    const mobile = getStoredCustomerMobile();
+    if (!mobile) {
+      await Swal.fire({ icon: "info", title: "Please sign in", text: "Please sign in before updating your cart so we can send an enquiry for the products you are unable to order now.", confirmButtonText: "OK" });
+      return;
+    }
+    const account = await getCustomerAccount(mobile);
+    if (!account) {
+      await Swal.fire({ icon: "error", title: "Unable to send enquiry", text: "We could not find your customer account. Please sign in again and try once more.", confirmButtonText: "OK" });
+      return;
+    }
+
+    const removedNames = [...new Set(removed.map((item) => item.name))];
+    const enquiryMessage = `We are currently experiencing high demand. ${removedNames.join(", ")} could not be fulfilled for the requested delivery date of ${formatDate(requestedDate)}. The product${removedNames.length > 1 ? "s" : ""} ${removedNames.length > 1 ? "are" : "is"} currently unavailable for that date. Please contact me regarding availability and the next possible delivery date.`;
+    await createCustomerContactRequest({
+      customerId: account.id,
+      name: String(account.name || "Customer"),
+      mobile,
+      email: String(account.email || ""),
+      productName: removedNames.join(", "),
+      message: enquiryMessage,
+      source: "customer_checkout",
+      status: "open",
+    });
+
+    for (const item of removed) {
+      if (item.kind === "subscription") {
+        removeSubscriptionFromCart(item.productId, currentCart.subscriptionItems.find((x) => `subscription:${x.productId}:${x.planId}:${x.startDate}` === item.key)?.planId || "", currentCart.subscriptionItems.find((x) => `subscription:${x.productId}:${x.planId}:${x.startDate}` === item.key)?.startDate || "");
+      } else {
+        removeFromCart(item.productId);
+      }
+    }
+    applyCartDeliveryDates(Object.fromEntries(resolution.items.filter((item) => item.deliveryDate === requestedDate).map((item) => [item.key, item.deliveryDate])));
+
+    await Swal.fire({
+      icon: "success",
+      title: "Cart updated successfully",
+      text: "Products that could not be fulfilled for the requested delivery date have been removed, and an enquiry has been sent regarding their availability. You can review your updated cart and proceed to payment when ready.",
+      confirmButtonText: "OK",
+    });
+    reload();
+  };
+
   if (loading && !groups.length) {
     return <><Header /><main className="section cart-page"><div className="container"><div className="breadcrumbs"><a href="/">Home</a> / Cart</div><div className="cart-page-loading"><div className="skeleton skeleton-cart" /><div className="skeleton skeleton-cart" /></div></div></main><Footer /></>;
   }
@@ -461,7 +585,7 @@ export default function CartPage() {
           </section>
 
           <div className="cart-checkout-bar cart-checkout-bar--actions-only">
-            <a className="btn primary cart-checkout-button" href="/checkout">Proceed to checkout</a>
+            <button type="button" className="btn primary cart-checkout-button" onClick={() => void proceedToCheckout()}>Proceed to checkout</button>
           </div>
         </div>
       </main>
