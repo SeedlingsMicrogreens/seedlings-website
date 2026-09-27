@@ -388,3 +388,14 @@ Keep both copies synchronized when the cross-application contract changes.
 The actual current source code is authoritative when it conflicts with historical documentation.
 
 This document describes the current integration contract and known boundaries; it must be updated when the implementation intentionally changes.
+
+## 14. Delivery Partner Website Portal
+
+- Delivery Partner Login is exposed from the Website footer at `/delivery-login`.
+- Login uses the Admin-managed `deliveryUsers` record, validates active status and the registered mobile number, then creates an independent HttpOnly delivery session cookie. It does not sign into the shared customer Firebase Auth instance.
+- The delivery portal reads assigned work from `deliveryAssignments`; order/customer/item/address details are resolved from the related `orders` record.
+- Delivery completion is server-controlled and verifies that the independent delivery session belongs to the delivery user who owns the assignment.
+- Mark Delivered updates `deliveryAssignments`, the related `orders` record, related `fulfilments`, and, for subscription deliveries, `subscriptionDeliveries` plus subscription delivery-completion state.
+- Current device latitude/longitude and delivery timestamp are captured at the moment Mark Delivered is confirmed.
+- Customer Firebase authentication and the Delivery Partner session are independent browser sessions; logging into or out of one must not replace or clear the other.
+- Delivery completion does not perform another inventory deduction and does not change growing-batch `soldQuantityGrams`; batch sold quantity is recorded during Admin handover.

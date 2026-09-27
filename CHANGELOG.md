@@ -70,3 +70,21 @@ Older documents contain statements that no longer exactly describe the current r
 - Salable option, Quantity and Start date are presented in a single responsive row on the subscription sheet to reduce unnecessary scrolling.
 - The same behavior is kept in the catalogue subscription sheet.
 
+
+## Phase 32 — Delivery Partner Website Portal
+- Added Delivery Partner Login in the Website footer.
+- Added mobile-number + static OTP `1234` login with a proper Firebase authenticated delivery session.
+- Added `/deliveries` with Pending and Delivered delivery cards.
+- Deliveries are sourced from `deliveryAssignments` for the logged-in delivery user, with order/customer/item/address details from `orders`.
+- Mark Delivered requires current browser location and records latitude/longitude with the delivery completion.
+- Delivery completion updates the delivery assignment, order, fulfilment and subscription-delivery lifecycle where applicable.
+- No additional inventory deduction or growing-batch sold-quantity change occurs at delivery completion.
+
+## Delivery authentication session isolation
+
+- Reworked Delivery Partner authentication so it no longer signs into the shared browser Firebase Auth instance with a custom token.
+- Added an independent HttpOnly delivery session cookie for `/delivery-login` and delivery APIs.
+- Customer Firebase Authentication remains untouched and can stay active while a delivery session is active.
+- Delivery logout now clears only the delivery session.
+- Footer keeps `Delivery Partner Login` available while a customer is logged in and shows `Delivery Partner Dashboard` when a delivery session is active.
+- Delivery APIs validate the independent delivery session against the active `deliveryUsers` record.
