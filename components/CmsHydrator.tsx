@@ -148,6 +148,201 @@ async function getCachedTestimonials(): Promise<Record<string, unknown>[]> {
   }
 }
 
+function youtubeEmbedUrl(videoId: unknown): string {
+  const id = String(videoId ?? '').trim();
+  return /^[A-Za-z0-9_-]{11}$/.test(id) ? `https://www.youtube.com/embed/${encodeURIComponent(id)}` : '';
+}
+
+function seedlingsFeedbackMarkup(items: Array<Record<string, unknown>>) {
+  return items
+    .slice()
+    .sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0))
+    .map((item, index) => {
+      const type = String(item.type ?? 'text');
+      const textValue = typeof item.text === 'string' ? item.text.trim() : '';
+      const imageUrl = typeof item.imageUrl === 'string' ? item.imageUrl.trim() : '';
+      const embedUrl = youtubeEmbedUrl(item.videoId);
+      let body = '';
+
+      if (type === 'video' && embedUrl) {
+        body = `<div class="journey-feedback-media journey-feedback-video"><iframe src="${esc(embedUrl)}" title="Seedlings feedback video" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>`;
+      } else if (type === 'image' && imageUrl) {
+        body = `<div class="journey-feedback-media journey-feedback-image-only"><img src="${esc(imageUrl)}" alt="Seedlings customer feedback" loading="lazy" /></div>`;
+      } else if (type === 'text') {
+        const media = imageUrl ? `<div class="journey-feedback-media"><img src="${esc(imageUrl)}" alt="Seedlings customer feedback" loading="lazy" /></div>` : '';
+        body = `<div class="journey-feedback-content">${media}<div class="journey-feedback-copy"><span class="journey-feedback-quote-mark" aria-hidden="true">“</span><p>${esc(textValue)}</p><span class="journey-feedback-quote-mark journey-feedback-quote-mark-end" aria-hidden="true">”</span></div></div>`;
+      }
+
+      if (!body) return '';
+      return `<article class="journey-feedback-card" data-feedback-index="${index}" role="tabpanel" aria-label="Feedback ${index + 1}">${body}</article>`;
+    })
+    .filter(Boolean)
+    .join('');
+}
+
+function renderSeedlingsFeedback(root: HTMLElement, items: Array<Record<string, unknown>>) {
+  const section = root.querySelector('.journey-feedback-section') as HTMLElement | null;
+  const track = root.querySelector('.journey-feedback-track') as HTMLElement | null;
+  const dots = root.querySelector('.journey-feedback-dots') as HTMLElement | null;
+  if (!section || !track || !dots) return;
+
+  track.innerHTML = seedlingsFeedbackMarkup(items);
+  const cards = Array.from(track.querySelectorAll<HTMLElement>('.journey-feedback-card'));
+  if (!cards.length) {
+    section.hidden = true;
+    dots.innerHTML = '';
+    return;
+  }
+
+  section.hidden = false;
+  initializeSeedlingsFeedbackCarousel(root);
+}
+
+function initializeSeedlingsFeedbackCarousel(root: HTMLElement) {
+  const carousel = root.querySelector('.journey-feedback-carousel') as HTMLElement | null;
+  const track = carousel?.querySelector('.journey-feedback-track') as HTMLElement | null;
+  const prev = carousel?.querySelector('.journey-feedback-prev') as HTMLButtonElement | null;
+  const next = carousel?.querySelector('.journey-feedback-next') as HTMLButtonElement | null;
+  const dotsContainer = carousel?.querySelector('.journey-feedback-dots') as HTMLElement | null;
+  if (!carousel || !track || !prev || !next || !dotsContainer) return;
+
+  const managedCarousel = carousel as HTMLElement & { __feedbackCleanup?: () => void };
+  managedCarousel.__feedbackCleanup?.();
+
+  const cards = () => Array.from(track.querySelectorAll<HTMLElement>('.journey-feedback-card'));
+  let currentIndex = 0;
+  let autoplayTimer: number | null = null;
+  let isPaused = false;
+
+  const visibleCount = () => {
+    if (window.innerWidth <= 700) return 1;
+    if (window.innerWidth <= 1000) return 2;
+    return 3;
+  };
+
+  const maxIndex = () => Math.max(0, cards().length - visibleCount());
+
+  const renderDots = () => {
+    const max = maxIndex();
+    dotsContainer.innerHTML = Array.from({ length: max + 1 }, (_, index) =>
+      `<button type="button" class="journey-feedback-dot${index === currentIndex ? ' is-active' : ''}" aria-label="Show feedback ${index + 1}" aria-selected="${index === currentIndex ? 'true' : 'false'}" role="tab"></button>`
+    ).join('');
+    Array.from(dotsContainer.querySelectorAll<HTMLButtonElement>('.journey-feedback-dot')).forEach((dot, index) => {
+      dot.onclick = () => goTo(index);
+    });
+  };
+
+  const updateState = () => {
+    const items = cards();
+    const max = Math.max(0, items.length - visibleCount());
+    currentIndex = Math.min(currentIndex, max);
+    const first = items[0];
+    if (first) {
+      const gap = Number.parseFloat(getComputedStyle(track).columnGap || getComputedStyle(track).gap || '0') || 0;
+      const cardWidth = first.getBoundingClientRect().width + gap;
+      track.scrollTo({ left: currentIndex * cardWidth, behavior: 'auto' });
+    }
+    const dots = Array.from(dotsContainer.querySelectorAll<HTMLButtonElement>('.journey-feedback-dot'));
+    dots.forEach((dot, index) => {
+      const active = index === currentIndex;
+      dot.classList.toggle('is-active', active);
+      dot.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    prev.disabled = items.length <= visibleCount();
+    next.disabled = items.length <= visibleCount();
+  };
+
+  const goTo = (index: number, smooth = true) => {
+    const items = cards();
+    if (!items.length) return;
+    const max = maxIndex();
+    currentIndex = Math.max(0, Math.min(index, max));
+    const first = items[0];
+    if (!first) return;
+    const gap = Number.parseFloat(getComputedStyle(track).columnGap || getComputedStyle(track).gap || '0') || 0;
+    const cardWidth = first.getBoundingClientRect().width + gap;
+    track.scrollTo({ left: currentIndex * cardWidth, behavior: smooth ? 'smooth' : 'auto' });
+    updateState();
+  };
+
+  const move = (direction: 1 | -1) => {
+    const max = maxIndex();
+    if (max === 0) return;
+    const nextIndex = currentIndex + direction;
+    goTo(nextIndex > max ? 0 : nextIndex < 0 ? max : nextIndex);
+  };
+
+  const stopAutoplay = () => {
+    if (autoplayTimer !== null) {
+      window.clearInterval(autoplayTimer);
+      autoplayTimer = null;
+    }
+  };
+
+  const startAutoplay = () => {
+    stopAutoplay();
+    if (isPaused || maxIndex() === 0) return;
+    autoplayTimer = window.setInterval(() => move(1), 5000);
+  };
+
+  prev.onclick = () => move(-1);
+  next.onclick = () => move(1);
+  track.onscroll = () => {
+    const first = cards()[0];
+    if (!first) return;
+    const gap = Number.parseFloat(getComputedStyle(track).columnGap || getComputedStyle(track).gap || '0') || 0;
+    const cardWidth = first.getBoundingClientRect().width + gap;
+    currentIndex = Math.max(0, Math.min(maxIndex(), Math.round(track.scrollLeft / Math.max(cardWidth, 1))));
+    const dots = Array.from(dotsContainer.querySelectorAll<HTMLButtonElement>('.journey-feedback-dot'));
+    dots.forEach((dot, index) => {
+      const active = index === currentIndex;
+      dot.classList.toggle('is-active', active);
+      dot.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+  };
+
+  const handleMouseEnter = () => { isPaused = true; stopAutoplay(); };
+  const handleMouseLeave = () => { isPaused = false; startAutoplay(); };
+  const handleFocusIn = () => {
+    isPaused = true;
+    stopAutoplay();
+  };
+  const handleFocusOut = () => {
+    window.setTimeout(() => {
+      if (!carousel.contains(document.activeElement)) {
+        isPaused = false;
+        startAutoplay();
+      }
+    }, 0);
+  };
+
+  carousel.addEventListener('mouseenter', handleMouseEnter);
+  carousel.addEventListener('mouseleave', handleMouseLeave);
+  carousel.addEventListener('focusin', handleFocusIn);
+  carousel.addEventListener('focusout', handleFocusOut);
+
+  const handleResize = () => {
+    renderDots();
+    updateState();
+    startAutoplay();
+  };
+
+  window.addEventListener('resize', handleResize, { passive: true });
+
+  renderDots();
+  updateState();
+  startAutoplay();
+
+  managedCarousel.__feedbackCleanup = () => {
+    stopAutoplay();
+    carousel.removeEventListener('mouseenter', handleMouseEnter);
+    carousel.removeEventListener('mouseleave', handleMouseLeave);
+    carousel.removeEventListener('focusin', handleFocusIn);
+    carousel.removeEventListener('focusout', handleFocusOut);
+    window.removeEventListener('resize', handleResize);
+  };
+}
+
 function initializeTestimonialCarousel(root: HTMLElement) {
   const carousel = root.querySelector('.carousel') as HTMLElement | null;
   const track = carousel?.querySelector('.carousel-track') as HTMLElement | null;
@@ -353,11 +548,12 @@ async function applyPage(root: HTMLElement, page: Page) {
     text(root.querySelector('.page-hero h1'),x.title);text(root.querySelector('.page-hero p'),x.body);image(root.querySelector('.page-hero img'),x.imageUrl);applySeo(x.seoTitle,x.seoDescription); const mood=root.querySelectorAll('.section')[0];text(mood?.querySelector('.eyebrow'),x.moodEyebrow);text(mood?.querySelector('h2'),x.moodTitle);const cards=Array.from(mood?.querySelectorAll('.card')??[]);[[x.everydayTitle,x.everydayText],[x.colourTitle,x.colourText],[x.chefTitle,x.chefText]].forEach((v,i)=>{text(cards[i]?.querySelector('h3'),v[0]);text(cards[i]?.querySelector('p'),v[1]);}); return;
   }
   if (page === 'journey') {
-    const [legacyContent,hero,spark,process]=await Promise.all([
+    const [legacyContent,hero,spark,process,seedlingsFeedback]=await Promise.all([
       getDocById<Record<string,unknown>>('journey_page','content'),
       getPublishedByField<Record<string,unknown>>(cmsCollections.journey,'blockKey','hero'),
       getPublishedByField<Record<string,unknown>>(cmsCollections.journey,'blockKey','spark'),
-      getPublishedByField<Record<string,unknown>>(cmsCollections.journey,'blockKey','process')
+      getPublishedByField<Record<string,unknown>>(cmsCollections.journey,'blockKey','process'),
+      getPublishedCollection<Record<string,unknown>>(cmsCollections.seedlingsFeedback)
     ]);
     const h=hero[0],s=spark[0],p=process[0];
     if(h){
@@ -389,6 +585,7 @@ async function applyPage(root: HTMLElement, page: Page) {
       const steps=root.querySelectorAll('.step');
       [[p.seedTitle,p.seedText],[p.growTitle,p.growText],[p.harvestTitle,p.harvestText],[p.deliverTitle,p.deliverText]].forEach((v,i)=>{text(steps[i]?.querySelector('h3'),v[0]); text(steps[i]?.querySelector('p'),v[1]);});
     }
+    renderSeedlingsFeedback(root, seedlingsFeedback);
     return;
   }
   if (page === 'contact') { const rows=await getPublishedByField<Record<string,unknown>>(cmsCollections.websitePages,'pageKey','contact');const x=rows[0];if(!x)return;text(root.querySelector('.page-hero h1'),x.title);text(root.querySelector('.page-hero p'),x.body);image(root.querySelector('.page-hero img'),x.imageUrl);applySeo(x.seoTitle,x.seoDescription);const g=root.querySelector('.contact-grid');if(g){text(g.querySelector('.eyebrow'),x.eyebrow);text(g.querySelector('h2'),x.title);const fs=g.querySelectorAll('.feature');[[x.callTitle,x.callText],[x.emailTitle,x.emailText],[x.serviceTitle,x.serviceText]].forEach((v,i)=>{text(fs[i]?.querySelector('h3'),v[0]);text(fs[i]?.querySelector('p'),v[1]);});} }

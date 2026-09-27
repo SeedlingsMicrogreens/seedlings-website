@@ -7,6 +7,18 @@ export const runtime = 'nodejs';
 const ACTIVE_STATUSES = new Set(['assigned', 'accepted', 'picked_up', 'out_for_delivery']);
 const HISTORY_STATUSES = new Set(['delivered', 'failed', 'cancelled']);
 
+interface DeliveryAssignment {
+  id: string;
+  status?: string;
+  orderId?: string;
+  orderNumber?: string;
+  customerName?: string;
+  deliveryUserMobile?: string;
+  assignedAt?: unknown;
+  deliveredAt?: unknown;
+  [key: string]: unknown;
+}
+
 function toIso(value: unknown) {
   if (!value) return null;
   if (typeof value === 'object' && value !== null && 'toDate' in value && typeof (value as { toDate?: unknown }).toDate === 'function') {
@@ -34,7 +46,10 @@ export async function GET(request: Request) {
       .where('deliveryUserAuthUid', '==', deliveryUser.authUid)
       .get();
 
-    const assignments = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+    const assignments = snapshot.docs.map<DeliveryAssignment>((doc) => ({
+      id: doc.id,
+      ...(doc.data() as Omit<DeliveryAssignment, 'id'>),
+    }))
       .filter((assignment) => ACTIVE_STATUSES.has(String(assignment.status)) || HISTORY_STATUSES.has(String(assignment.status)));
 
     const orderIds = Array.from(new Set(assignments.map((assignment) => String(assignment.orderId || '')).filter(Boolean)));

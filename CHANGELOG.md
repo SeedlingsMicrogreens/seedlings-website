@@ -88,3 +88,11 @@ Older documents contain statements that no longer exactly describe the current r
 - Delivery logout now clears only the delivery session.
 - Footer keeps `Delivery Partner Login` available while a customer is logged in and shows `Delivery Partner Dashboard` when a delivery session is active.
 - Delivery APIs validate the independent delivery session against the active `deliveryUsers` record.
+## Phase 35 — Seedlings Feedback on Journey
+
+- Added published `seedlingsFeedback` loading to the Website Journey page.
+- Displays Seedlings Feedback immediately below **The Seedlings process**.
+- Added left/right carousel navigation, pagination dots, and touch/swipe scrolling.
+- Added type-specific rendering for text, image, and YouTube video feedback.
+- YouTube feedback renders from the stored `videoId`; no iframe HTML is read from Firestore.
+- Preserved the existing Journey Hero, The Spark, and The Seedlings process blocks.

@@ -41,6 +41,7 @@ data it consumes without needing the Admin repository open.
 | `subscriptions` | Subscription operations | Creates/reads customer subscriptions | Website creates; both operate |
 | `subscriptionDeliveries` | Delivery operations | Delivery Calendar and customer actions | Shared operational data |
 | `enquiries` | Customer Contact / Enquiries administration | Creates customer contact/shortage enquiries | Website creates; Admin handles |
+| `seedlingsFeedback` | Creates/edits Seedlings feedback content | Reads published feedback for the Journey page | Admin |
 | `fulfilments` | Packing/fulfilment | No direct customer fulfilment management | Admin |
 | `inventoryAdjustments` / `growingBatches` | Production/inventory | Website checks availability through its customer availability logic | Admin |
 | `paymentAttempts` | Not a normal Admin master | Payment-attempt/finalization support | Website/server payment flow |
@@ -388,6 +389,60 @@ Keep both copies synchronized when the cross-application contract changes.
 The actual current source code is authoritative when it conflicts with historical documentation.
 
 This document describes the current integration contract and known boundaries; it must be updated when the implementation intentionally changes.
+
+
+## 19. Seedlings Feedback — Admin to Journey Page
+
+`seedlingsFeedback` is an Admin-owned CMS collection for feedback about the Seedlings brand/service. It is separate from future Product Feedback and is displayed only as a section within the Website Journey page.
+
+### Admin content model
+
+Each feedback record contains:
+- `type`: `text`, `image`, or `video`
+- `text`: feedback text; required when `type` is `text`
+- `imageUrl`: optional for text feedback and required when `type` is `image`
+- `videoId`: required when `type` is `video`
+- `status`: `draft` or `published`
+- `sortOrder`: display order
+
+For video feedback, Admin accepts a normal YouTube video URL, extracts the YouTube video ID, and stores only `videoId`. The Website generates the YouTube embed URL and renders the video using an iframe. Admin does not store arbitrary iframe/embed HTML.
+
+For feedback images, Admin validates the image as a landscape 3:2 image: minimum 900×600 px, recommended 1200×800 px, PNG/JPG/JPEG, maximum 1 MB. Images are not automatically cropped.
+
+### Website Journey placement
+
+The Website Journey page currently contains the **The Seedlings process** block. Published Seedlings Feedback must be displayed **immediately below the The Seedlings process block**.
+
+The intended Journey structure is:
+
+`Journey Hero`
+→ `The Spark`
+→ `The Seedlings process`
+→ `Seedlings Feedback`
+
+The Website must read only `seedlingsFeedback` records where `status == published`, ordered by `sortOrder` ascending. Draft feedback must never be shown to customers.
+
+The Website should render each record according to `type`:
+- `text`: feedback text, with optional `imageUrl` when present
+- `image`: feedback image
+- `video`: YouTube iframe generated from the stored `videoId`
+
+### Journey feedback presentation
+
+Seedlings Feedback is presented as a horizontal single-card carousel immediately below **The Seedlings process**. The carousel provides:
+- Left and right navigation buttons on desktop and mobile.
+- Pagination dots showing the current feedback item.
+- Horizontal touch/swipe scrolling on mobile.
+- One feedback record visible at a time to keep the testimonial readable.
+- Text feedback with an image uses a two-column image/content layout on larger screens and stacks vertically on mobile.
+- Image-only feedback uses the feedback image as the visual card.
+- Video feedback uses the stored YouTube `videoId` to generate a 16:9 iframe player.
+
+The carousel does not auto-advance; the customer controls navigation.
+
+This integration does not create a separate customer-facing Feedback page. Feedback remains part of the Journey page.
+
+The Website should consume the Firestore collection directly using its existing CMS/Firestore read pattern. It must not depend on Admin UI routes or Admin page components.
 
 ## 14. Delivery Partner Website Portal
 

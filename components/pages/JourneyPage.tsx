@@ -12,6 +12,21 @@ export default function JourneyPage() {
       <section className="section" style={{ background: '#fff' }}><div className="container"><div className="center"><span className="eyebrow">The Seedlings process</span><h2>Small steps. Consistent care.</h2><p className="muted">The growing journey is designed around freshness and repeatable quality.</p></div>
         <div className="steps"><div className="step"><span className="step-no">01</span><h3>Seed</h3><p>Start with carefully selected varieties.</p></div><div className="step"><span className="step-no">02</span><h3>Grow</h3><p>Monitor the crop through its growing cycle.</p></div><div className="step"><span className="step-no">03</span><h3>Harvest</h3><p>Harvest at the right stage for freshness.</p></div><div className="step"><span className="step-no">04</span><h3>Deliver</h3><p>Get fresh greens closer to your plate.</p></div></div>
       </div></section>
+      <section className="section journey-feedback-section" hidden aria-labelledby="seedlings-feedback-title">
+        <div className="container">
+          <div className="center">
+            <span className="eyebrow">Seedlings feedback</span>
+            <h2 id="seedlings-feedback-title">What our customers say</h2>
+            <p className="muted">Real experiences shared by the Seedlings community.</p>
+          </div>
+          <div className="journey-feedback-carousel" aria-label="Seedlings feedback carousel">
+            <button type="button" className="journey-feedback-nav journey-feedback-prev" aria-label="Previous feedback">←</button>
+            <div className="journey-feedback-track"></div>
+            <button type="button" className="journey-feedback-nav journey-feedback-next" aria-label="Next feedback">→</button>
+            <div className="journey-feedback-dots" role="tablist" aria-label="Feedback slides"></div>
+          </div>
+        </div>
+      </section>
     </main>
     <Footer navItems={[]} settings={null} />
   </>;

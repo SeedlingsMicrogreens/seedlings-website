@@ -12,6 +12,7 @@ export const cmsCollections = {
   faq: 'cmsFaq',
   blogs: 'cmsBlogs',
   journey: 'websiteJourneyContent',
+  seedlingsFeedback: 'seedlingsFeedback',
 } as const;
 
 export async function getPublishedCollection<T extends Record<string, unknown>>(name: string): Promise<T[]> {
