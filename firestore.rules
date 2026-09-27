@@ -88,6 +88,26 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Customers may submit feedback only for their own delivered order/delivery.
+    // The document ID is intentionally not user-controlled for uniqueness; the
+    // application checks for an existing feedback record before showing the form.
+    match /orderFeedback/{feedbackId} {
+      allow read: if signedIn() && ownAuthUid(get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data);
+      allow create: if signedIn()
+        && request.resource.data.customerId == get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.customerId
+        && ownAuthUid(get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data)
+        && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.status == 'delivered'
+        && request.resource.data.orderId is string
+        && request.resource.data.orderRating is int
+        && request.resource.data.orderRating >= 1
+        && request.resource.data.orderRating <= 5
+        && request.resource.data.deliveryRating is int
+        && request.resource.data.deliveryRating >= 1
+        && request.resource.data.deliveryRating <= 5
+        && (!('subscriptionDeliveryId' in request.resource.data) || request.resource.data.subscriptionDeliveryId == null || (request.resource.data.subscriptionDeliveryId is string && get(/databases/$(database)/documents/subscriptionDeliveries/$(request.resource.data.subscriptionDeliveryId)).data.orderId == request.resource.data.orderId && get(/databases/$(database)/documents/subscriptionDeliveries/$(request.resource.data.subscriptionDeliveryId)).data.status == 'delivered' && get(/databases/$(database)/documents/subscriptionDeliveries/$(request.resource.data.subscriptionDeliveryId)).data.customerId == request.resource.data.customerId));
+      allow update, delete: if false;
+    }
+
     match /subscriptions/{subscriptionId} {
       allow read: if signedIn() && ownAuthUid(resource.data);
       allow create: if signedIn()

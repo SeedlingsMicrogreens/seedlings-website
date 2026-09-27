@@ -2,6 +2,16 @@
 
 This file consolidates the useful historical context from the previous phase, UAT, bug-fix, checkout and standardization Markdown files. It is not a verbatim archive; the actual source remains authoritative.
 
+
+## Phase 38 — Customer Order & Delivery Feedback
+- Added a customer feedback popup available only after a delivery is completed.
+- One overall 1–5 rating is collected for the order and one overall 1–5 rating for delivery.
+- Order and delivery use selectable feedback options; they do not have separate ratings per option.
+- A single optional comment is stored against the order feedback record.
+- One-time orders support one feedback record; subscription feedback is captured separately for each delivered `subscriptionDelivery`.
+- Feedback records use deterministic IDs to prevent duplicate submissions.
+- Firestore rules restrict feedback to the authenticated customer's own delivered order/delivery.
+
 ## Phase 31 — Current baseline
 - Customer enquiry/contact behavior is part of the current Website source.
 - Latest supplied Phase 31 repository is the working baseline.

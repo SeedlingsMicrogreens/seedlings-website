@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
 import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import OrderFeedbackModal from '@/components/OrderFeedbackModal';
 
 type OrderItem = {
   productName?: string;
@@ -39,6 +40,10 @@ type Order = {
   deliverySlot?: string;
   createdAt?: unknown;
 };
+
+type SubscriptionDelivery = { id: string; status?: string; deliveryNumber?: number; deliveryDate?: unknown; productName?: string; orderId?: string; customerId?: string };
+
+type FeedbackRecord = { id: string; subscriptionDeliveryId?: string | null };
 
 type PaymentTransaction = {
   paymentStatus?: string;
@@ -130,7 +135,7 @@ function renderState(panel: HTMLElement, title: string, message: string, action 
   panel.innerHTML = `<div class="empty-state"><h3>${esc(title)}</h3><p class="muted">${esc(message)}</p>${action}</div>`;
 }
 
-function renderOrder(panel: HTMLElement, order: Order, transaction?: PaymentTransaction) {
+function renderOrder(panel: HTMLElement, order: Order, transaction?: PaymentTransaction, subscriptionDeliveries: SubscriptionDelivery[] = [], feedbackIds: Set<string> = new Set()) {
   const currency = order.currency || 'INR';
   const items = Array.isArray(order.items) ? order.items : [];
   const deliveryDate = order.deliveryDate || order.scheduledDeliveryDate;
@@ -200,11 +205,19 @@ function renderOrder(panel: HTMLElement, order: Order, transaction?: PaymentTran
       <h3>Payment</h3>
       <div class="transaction">${transactionRows}</div>
     </div>
+
+    ${subscriptionDeliveries.length ? `<div class="panel"><h3>Subscription Deliveries</h3>${subscriptionDeliveries.map((delivery) => {
+      const delivered = String(delivery.status || '').toLowerCase() === 'delivered';
+      const feedbackKey = delivery.id;
+      const submitted = feedbackIds.has(feedbackKey);
+      return `<div class="order-row"><div><strong>Delivery ${Number(delivery.deliveryNumber || 1)}</strong><div class="order-meta">${esc(dateText(delivery.deliveryDate))} · ${esc(delivery.status || 'upcoming')}</div></div>${delivered ? (submitted ? `<span class="feedback-success">Feedback submitted</span>` : `<button type="button" class="btn mini feedback-action" data-feedback-delivery="${esc(feedbackKey)}">Give Feedback</button>`) : `<span class="muted">Available after delivery</span>`}</div>`;
+    }).join('')}</div>` : (String(order.status || '').toLowerCase() === 'delivered' ? `<div class="panel"><div class="account-title"><div><h3>How was your order?</h3><p class="muted">Tell us about your order and delivery experience.</p></div>${feedbackIds.has(order.id) ? `<span class="feedback-success">Feedback submitted</span>` : `<button type="button" class="btn primary feedback-action" data-feedback-order="${esc(order.id)}">Give Feedback</button>`}</div></div>` : '')}
   `;
 }
 
 export default function OrderDetailHydrator({ children }: { children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [feedbackTarget, setFeedbackTarget] = useState<{ orderId: string; orderNumber: string; customerId: string; subscriptionDeliveryId?: string } | null>(null);
 
   useEffect(() => {
     const root = ref.current;
@@ -244,6 +257,8 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
         }
 
         let transaction: PaymentTransaction | undefined;
+        let subscriptionDeliveries: SubscriptionDelivery[] = [];
+        let feedbackIds = new Set<string>();
         try {
           const paymentSnap = await getDocs(query(collection(db, 'paymentTransactions'), where('orderId', '==', orderId)));
           const matching = paymentSnap.docs
@@ -254,8 +269,24 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
         } catch {
           // Payment transaction history is optional. The order itself remains viewable.
         }
+        try {
+          const deliverySnap = await getDocs(query(collection(db, 'subscriptionDeliveries'), where('orderId', '==', orderId)));
+          subscriptionDeliveries = deliverySnap.docs.map(item => ({ id: item.id, ...(item.data() as Record<string, unknown>) })) as SubscriptionDelivery[];
+        } catch {
+          // Subscription delivery history is optional for one-time orders.
+        }
+        try {
+          const feedbackSnap = await getDocs(query(collection(db, 'orderFeedback'), where('orderId', '==', orderId)));
+          feedbackIds = new Set(feedbackSnap.docs.map(item => String((item.data() as FeedbackRecord).subscriptionDeliveryId || orderId)));
+        } catch {
+          // Feedback history is optional; submission remains available.
+        }
 
-        if (alive && currentRequest === requestId) renderOrder(panel, order, transaction);
+        if (alive && currentRequest === requestId) {
+          renderOrder(panel, order, transaction, subscriptionDeliveries, feedbackIds);
+          panel.querySelectorAll<HTMLButtonElement>('[data-feedback-order]').forEach(button => button.addEventListener('click', () => setFeedbackTarget({ orderId, orderNumber: String(order.orderNumber || order.id), customerId: mobile })));
+          panel.querySelectorAll<HTMLButtonElement>('[data-feedback-delivery]').forEach(button => button.addEventListener('click', () => setFeedbackTarget({ orderId, orderNumber: String(order.orderNumber || order.id), customerId: mobile, subscriptionDeliveryId: button.dataset.feedbackDelivery || undefined })));
+        }
       } catch (error) {
         if (!alive || currentRequest !== requestId) return;
         renderState(panel, 'Unable to load order', error instanceof Error ? error.message : 'Unable to load this order.');
@@ -266,5 +297,13 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
     return () => { alive = false; requestId += 1; unsubscribe(); };
   }, []);
 
-  return <div ref={ref}>{children}</div>;
+  return <div ref={ref}>{children}<OrderFeedbackModal
+    open={Boolean(feedbackTarget)}
+    orderId={feedbackTarget?.orderId || ''}
+    orderNumber={feedbackTarget?.orderNumber || ''}
+    customerId={feedbackTarget?.customerId || ''}
+    subscriptionDeliveryId={feedbackTarget?.subscriptionDeliveryId}
+    onClose={() => setFeedbackTarget(null)}
+    onSubmitted={() => { setFeedbackTarget(null); window.location.reload(); }}
+  /></div>;
 }
