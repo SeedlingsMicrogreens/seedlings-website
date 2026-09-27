@@ -34,6 +34,7 @@ The repository also contains a separate `functions/` Firebase Functions project 
 - Active Product selling options are used for subscription packaging when available.
 
 ### Cart
+- Cart displays products as vertical cards, with two cards per row on desktop and one per row on smaller screens.
 - Cart uses the unified cart model for one-time and subscription items.
 - One-time and subscription item operations use their appropriate cart APIs.
 - Browser cart state is local; it is not treated as the canonical Firestore order record.
@@ -101,6 +102,22 @@ Customer contact/enquiry scenarios are handled separately from normal completed 
 - SweetAlert2 is used for customer confirmation/success interactions where the current implementation specifies it; do not reintroduce browser `window.confirm()` for protected customer flows.
 - Loading placeholders/skeletons are part of the established UX in areas where current source implements them.
 
+## 8.1 Cart product card layout
+
+- Cart uses two product cards per row on desktop.
+- Each desktop/tablet card places the product image on the left and product/cart controls on the right.
+- Mobile collapses each card to a single-column layout.
+- Packaging, one-time/subscription selection, quantity, price and checkout behavior remain unchanged.
+
 ## 9. Current repository validation
 
 Available scripts include typecheck, build and E2E tests. Full validation may require installed dependencies and configured Firebase/Cashfree environments. Do not claim a successful full build/typecheck when the required environment is unavailable.
+
+- The right-side cart content is arranged as a continuous stack: product name/packaging, purchase options, then quantity/price.
+- The product image spans that content stack on desktop/tablet, preventing an artificial vertical gap between Packaging and One-time/subscription choices.
+### Phase 46 follow-up — Cart header icon
+The cart navigation preserves the SVG cart icon while the item count is rendered in the separate badge. CMS and cart badge hydration no longer overwrite the icon markup.
+
+### Phase 46 hotfix — AccountHydrator
+- `AccountHydrator` now correctly imports `getCountFromServer`, matching the existing order-count query.
+- This resolves the runtime ReferenceError during account hydration without changing business logic.

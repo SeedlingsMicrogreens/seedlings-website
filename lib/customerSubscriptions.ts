@@ -33,11 +33,13 @@ function dateOnly(date: Date) {
 function nextSaturday(_startDate?: string) { return nextWeekSaturday(); }
 
 export async function loadActiveCustomerSubscriptionPlans(productId?: string): Promise<CustomerSubscriptionPlan[]> {
-  const snapshot = await getDocs(query(collection(db, 'subscriptionPlans'), where('active', '==', true)));
   const normalizedProductId = clean(productId);
+  const snapshot = normalizedProductId
+    ? await getDocs(query(collection(db, 'subscriptionPlans'), where('salableProductId', '==', normalizedProductId)))
+    : await getDocs(query(collection(db, 'subscriptionPlans'), where('active', '==', true)));
   return snapshot.docs
     .map((item) => ({ id: item.id, ...(item.data() as Record<string, unknown>) }) as CustomerSubscriptionPlan)
-    .filter((plan) => Number(plan.price ?? 0) >= 0)
+    .filter((plan) => plan.active === true && Number(plan.price ?? 0) >= 0)
     .filter((plan) => !normalizedProductId || clean(plan.salableProductId) === normalizedProductId);
 }
 

@@ -53,7 +53,11 @@ export async function GET(request: Request) {
       .filter((assignment) => ACTIVE_STATUSES.has(String(assignment.status)) || HISTORY_STATUSES.has(String(assignment.status)));
 
     const orderIds = Array.from(new Set(assignments.map((assignment) => String(assignment.orderId || '')).filter(Boolean)));
-    const orderDocs = await Promise.all(orderIds.map((id) => db.collection('orders').doc(id).get()));
+    // Admin SDK getAll batches the referenced order reads into a single
+    // Firestore RPC instead of opening one request per assignment.
+    const orderDocs = orderIds.length
+      ? await db.getAll(...orderIds.map((id) => db.collection('orders').doc(id)))
+      : [];
     const orders = new Map(orderDocs.filter((doc) => doc.exists).map((doc) => [doc.id, doc.data()]));
 
     const deliveries = assignments.map((assignment) => {

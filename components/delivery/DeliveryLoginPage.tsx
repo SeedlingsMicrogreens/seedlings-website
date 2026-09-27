@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
@@ -12,6 +12,18 @@ export default function DeliveryLoginPage() {
   const [step, setStep] = useState<'mobile' | 'otp'>('mobile');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/delivery/session', { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const data = await response.json() as { authenticated?: boolean };
+        if (alive && data.authenticated) router.replace('/deliveries');
+      })
+      .catch(() => { /* Login remains available if the session check fails. */ });
+    return () => { alive = false; };
+  }, [router]);
 
   async function continueToOtp(event: FormEvent) {
     event.preventDefault();

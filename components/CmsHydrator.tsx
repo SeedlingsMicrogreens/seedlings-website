@@ -461,7 +461,17 @@ function applyNavigation(root: HTMLElement, items: Array<Record<string, unknown>
     const label = String(item?.label ?? fallback);
     const links = Array.from((key.startsWith('footer') ? footer : nav)?.querySelectorAll('a') ?? []);
     const link = links.find((a) => (a.textContent ?? '').replace(/\s+/g,' ').trim().replace(/^Cart\s*0$/,'Cart') === fallback || (a.textContent ?? '').trim() === label);
-    if (link) text(link, key === 'cart' ? `${label} 0` : label);
+    if (link) {
+      if (key === 'cart') {
+        // The cart navigation item contains a real SVG icon and a separate count badge.
+        // Never replace the link textContent because doing so removes the SVG.
+        const badge = link.querySelector('sup');
+        if (badge) badge.textContent = '0';
+        link.setAttribute('aria-label', `${label}, 0 items`);
+      } else {
+        text(link, label);
+      }
+    }
   }
 }
 

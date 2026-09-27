@@ -14,8 +14,11 @@ import {
   addToCart,
   addSubscriptionToCart,
   getCart,
+  getUnifiedCart,
   setCartQuantity,
   setCartPackaging,
+  setSubscriptionCartQuantity,
+  setSubscriptionCartPackaging,
 } from "@/lib/cart";
 import {
   loadActiveCustomerSubscriptionPlans,
@@ -194,26 +197,6 @@ function sanitizeRichText(value: string | undefined, fallback = ""): ReactNode[]
 }
 
 
-function Price({ product }: { product: SalesProduct }) {
-  const sale = Number(product.sellingPrice ?? 0);
-  const mrp = Number(product.mrp ?? sale);
-  const currency = product.currency || "INR";
-
-  return (
-    <span className="flex flex-wrap items-baseline gap-2.5">
-      {Number.isFinite(mrp) && mrp > sale && sale >= 0 ? (
-        <span className="text-sm text-[#8a7967]">MRP {money(mrp, currency)}</span>
-      ) : null}
-      <strong className="text-3xl font-bold tracking-tight text-[#6fa82e] sm:text-[34px]">{money(sale, currency)}</strong>
-      {Number.isFinite(mrp) && mrp > sale && sale >= 0 ? (
-        <span className="rounded-full bg-[#edf6de] px-2.5 py-1 text-xs font-bold text-[#6fa82e]">
-          Save {money(mrp - sale, currency)}
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
 function RichText({
   value,
   fallback,
@@ -289,106 +272,289 @@ function activeSellingOptions(product: SalesProduct): SalesProductSellingOption[
     .filter((option) => Number.isFinite(option.weightGrams) && option.weightGrams > 0 && Number.isFinite(option.price) && option.price >= 0);
 }
 
-function CartControl({
+function PurchaseOptions({
   product,
+  plans,
 }: {
   product: SalesProduct;
+  plans: SubscriptionPlan[];
 }) {
   const options = activeSellingOptions(product);
-  const existing = getCart().find((item) => item.productId === product.id);
-  const initialPackaging = (existing?.packaging && (!options.length || options.some((option) => option.weightGrams === existing.packaging))) ? existing.packaging : (options[0]?.weightGrams || 100);
-  const [quantity, setQuantity] = useState(existing?.quantity || 0);
-  const [packaging, setPackaging] = useState(initialPackaging);
+  const fallbackWeights = options.length ? options.map((option) => option.weightGrams) : PACKAGING_OPTIONS;
+  const initialOption = options[0];
+  const [selectedSellingOptionId, setSelectedSellingOptionId] = useState(initialOption?.id || '');
+  const [packaging, setPackaging] = useState(initialOption?.weightGrams || 100);
+  const [selectedPurchase, setSelectedPurchase] = useState<string>(product.oneTimePurchase ? 'one-time' : (plans[0] ? `subscription:${plans[0].id}` : ''));
+  const [quantity, setQuantity] = useState(0);
 
-  const selectedOption = options.find((option) => option.weightGrams === packaging);
-  const selectedPrice = selectedOption?.price ?? Number(product.sellingPrice ?? 0);
-  const selectedMrp = selectedOption?.mrp ?? Number(product.mrp ?? selectedPrice);
+  const selectedOption = options.find((option) => option.id === selectedSellingOptionId)
+    ?? options.find((option) => option.weightGrams === packaging);
 
-  const refreshCartState = () => {
-    const current = getCart().find((item) => item.productId === product.id);
-    setQuantity(current?.quantity || 0);
-    setPackaging(current?.packaging || options[0]?.weightGrams || 100);
+  const planEntries = plans.map((plan) => {
+    const planOptions = (plan.sellingOptions ?? [])
+      .filter((option) => Number(option?.weightGrams) > 0 && Number(option?.planPrice) >= 0)
+      .map((option) => ({
+        ...option,
+        weightGrams: Number(option.weightGrams),
+        planPrice: Number(option.planPrice),
+      }));
+    const matched = planOptions.find((option) => String(option.id) === String(selectedOption?.id))
+      ?? planOptions.find((option) => option.weightGrams === packaging);
+    return {
+      plan,
+      option: matched,
+      available: planOptions.length === 0 || Boolean(matched),
+      price: Number(matched?.planPrice ?? plan.price ?? 0),
+    };
+  });
+
+  const selectedPlanEntry = selectedPurchase.startsWith('subscription:')
+    ? planEntries.find((entry) => `subscription:${entry.plan.id}` === selectedPurchase)
+    : undefined;
+
+  const selectedOneTimePrice = selectedOption?.price ?? Number(product.sellingPrice ?? 0);
+  const selectedOneTimeMrp = selectedOption?.mrp ?? Number(product.mrp ?? selectedOneTimePrice);
+  const selectedSubscriptionPrice = selectedPlanEntry?.price ?? 0;
+  const nextSaturday = nextWeekSaturday();
+
+  const readQuantity = (purchaseKey: string) => {
+    const cart = getUnifiedCart();
+    if (purchaseKey === 'one-time') {
+      return cart.oneTimeItems.find((item) => item.productId === product.id)?.quantity || 0;
+    }
+    const planId = purchaseKey.replace('subscription:', '');
+    return cart.subscriptionItems.find(
+      (item) => item.productId === product.id && item.planId === planId && item.startDate === nextSaturday,
+    )?.quantity || 0;
   };
 
+  useEffect(() => {
+    setQuantity(readQuantity(selectedPurchase));
+  }, [selectedPurchase, product.id]);
+
+  useEffect(() => {
+    if (!selectedPurchase && product.oneTimePurchase) {
+      setSelectedPurchase('one-time');
+    } else if (!selectedPurchase && plans.length > 0) {
+      setSelectedPurchase(`subscription:${plans[0].id}`);
+    }
+  }, [plans, product.oneTimePurchase, selectedPurchase]);
+
   const changePackaging = (value: number) => {
-    const next = Number(value) || options[0]?.weightGrams || 100;
+    const next = Number(value) || fallbackWeights[0] || 100;
+    const nextOption = options.find((option) => option.weightGrams === next);
     setPackaging(next);
-    if (getCart().some((item) => item.productId === product.id)) {
-      const option = options.find((entry) => entry.weightGrams === next);
-      setCartPackaging(product.id, next, option?.price ?? Number(product.sellingPrice ?? 0), option?.mrp ?? Number(product.mrp ?? product.sellingPrice ?? 0), option?.id, option ? packagingLabel(option.weightGrams) : undefined);
-      refreshCartState();
+    if (nextOption) setSelectedSellingOptionId(nextOption.id);
+
+    const cart = getUnifiedCart();
+    if (selectedPurchase === 'one-time' && cart.oneTimeItems.some((item) => item.productId === product.id)) {
+      setCartPackaging(
+        product.id,
+        next,
+        nextOption?.price ?? Number(product.sellingPrice ?? 0),
+        nextOption?.mrp ?? Number(product.mrp ?? product.sellingPrice ?? 0),
+        nextOption?.id,
+        nextOption ? packagingLabel(nextOption.weightGrams) : undefined,
+      );
+    } else if (selectedPurchase.startsWith('subscription:')) {
+      const planId = selectedPurchase.replace('subscription:', '');
+      const entry = planEntries.find((item) => item.plan.id === planId);
+      if (entry && cart.subscriptionItems.some((item) => item.productId === product.id && item.planId === planId && item.startDate === nextSaturday)) {
+        const option = (entry.plan.sellingOptions ?? [])
+          .map((item) => ({ ...item, weightGrams: Number(item.weightGrams), planPrice: Number(item.planPrice) }))
+          .find((item) => String(item.id) === String(nextOption?.id) || Number(item.weightGrams) === next);
+        if (option) {
+          setSubscriptionCartPackaging(
+            product.id,
+            planId,
+            nextSaturday,
+            next,
+            option.planPrice,
+            option.id,
+            packagingLabel(option.weightGrams),
+          );
+        }
+      }
     }
   };
 
-  const add = () => {
-    addToCart(
-      {
-        productId: product.id,
-        slug: productSlug(product),
-        name: product.name,
-        price: selectedPrice,
-        mrp: selectedMrp,
-        currency: product.currency || "INR",
-        imageUrl: product.imageUrl,
-        packaging,
-        sellingOptionId: selectedOption?.id,
-        sellingOptionLabel: selectedOption ? packagingLabel(selectedOption.weightGrams) : undefined,
-      },
-      1,
-    );
-    window.location.href = "/cart";
+  const selectPurchase = (purchaseKey: string) => {
+    const entry = purchaseKey.startsWith('subscription:')
+      ? planEntries.find((item) => `subscription:${item.plan.id}` === purchaseKey)
+      : undefined;
+    if (entry && !entry.available) return;
+    setSelectedPurchase(purchaseKey);
+    setQuantity(readQuantity(purchaseKey));
+  };
+
+  const addSelected = () => {
+    if (!selectedPurchase) return;
+
+    if (selectedPurchase === 'one-time') {
+      addToCart(
+        {
+          productId: product.id,
+          slug: productSlug(product),
+          name: product.name,
+          price: selectedOneTimePrice,
+          mrp: selectedOneTimeMrp,
+          currency: product.currency || 'INR',
+          imageUrl: product.imageUrl,
+          packaging,
+          sellingOptionId: selectedOption?.id,
+          sellingOptionLabel: selectedOption ? packagingLabel(selectedOption.weightGrams) : undefined,
+        },
+        1,
+      );
+    } else {
+      if (!selectedPlanEntry?.available) return;
+      const subscriptionOption = selectedPlanEntry.option ?? selectedOption;
+      addSubscriptionToCart(
+        {
+          productId: product.id,
+          slug: productSlug(product),
+          name: product.name,
+          price: selectedSubscriptionPrice,
+          mrp: selectedSubscriptionPrice,
+          currency: product.currency || 'INR',
+          imageUrl: product.imageUrl,
+          packaging: subscriptionOption?.weightGrams ?? packaging,
+          sellingOptionId: subscriptionOption?.id,
+          sellingOptionLabel: subscriptionOption ? packagingLabel(subscriptionOption.weightGrams) : undefined,
+          planId: selectedPlanEntry.plan.id,
+          planName: selectedPlanEntry.plan.name || subscriptionFrequencyLabel(selectedPlanEntry.plan.frequency),
+          frequency: selectedPlanEntry.plan.frequency,
+          deliveriesPerTerm: Number(selectedPlanEntry.plan.deliveriesPerTerm ?? 0) || undefined,
+          startDate: nextSaturday,
+        },
+        1,
+      );
+    }
+    setQuantity(1);
   };
 
   const decrease = () => {
-    const current = getCart().find((item) => item.productId === product.id);
-    if (current) setCartQuantity(product.id, current.quantity - 1);
-    refreshCartState();
+    const nextQuantity = Math.max(0, quantity - 1);
+    if (selectedPurchase === 'one-time') {
+      setCartQuantity(product.id, nextQuantity);
+    } else {
+      const planId = selectedPurchase.replace('subscription:', '');
+      setSubscriptionCartQuantity(product.id, planId, nextSaturday, nextQuantity);
+    }
+    setQuantity(nextQuantity);
   };
 
   const increase = () => {
-    const current = getCart().find((item) => item.productId === product.id);
-    if (current) setCartQuantity(product.id, current.quantity + 1);
-    refreshCartState();
+    if (quantity <= 0) {
+      addSelected();
+      return;
+    }
+    const nextQuantity = quantity + 1;
+    if (selectedPurchase === 'one-time') {
+      setCartQuantity(product.id, nextQuantity);
+    } else {
+      const planId = selectedPurchase.replace('subscription:', '');
+      setSubscriptionCartQuantity(product.id, planId, nextSaturday, nextQuantity);
+    }
+    setQuantity(nextQuantity);
   };
 
+  const selectedPrice = selectedPurchase === 'one-time' ? selectedOneTimePrice : selectedSubscriptionPrice;
+  const selectedMrp = selectedPurchase === 'one-time' ? selectedOneTimeMrp : selectedSubscriptionPrice;
+
   return (
-    <div className="product-purchase-control">
-      <div>
-        <label className="block text-xs font-bold text-[#6b5b48]" htmlFor={`packaging-${product.id}`}>
-          Packaging
-        </label>
+    <div className="product-purchase-options">
+      <div className="product-packaging-selector">
+        <label htmlFor={`packaging-${product.id}`}>Packaging</label>
         <select
           id={`packaging-${product.id}`}
           value={packaging}
           onChange={(event) => changePackaging(Number(event.target.value))}
-          className="mt-1 w-full rounded-xl border border-[#e7dfd0] bg-white px-3 py-2.5 text-sm font-semibold text-[#2b2016] outline-none focus:border-[#6fa82e]"
         >
-          {(options.length ? options.map((option) => option.weightGrams) : PACKAGING_OPTIONS).map((grams) => (
+          {fallbackWeights.map((grams) => (
             <option key={grams} value={grams}>{packagingLabel(grams)}</option>
           ))}
         </select>
-        <div className="mt-2 flex items-baseline gap-2">
-          {selectedMrp > selectedPrice ? <span className="text-xs text-[#8a7967] line-through">MRP {money(selectedMrp, product.currency || "INR")}</span> : null}
-          <strong className="text-lg font-bold text-[#6fa82e]">{money(selectedPrice, product.currency || "INR")}</strong>
-        </div>
       </div>
 
-      <div className="mt-4">
-        <div className="mb-2 text-xs font-bold text-[#6b5b48]">One-time purchase</div>
-        {!quantity ? (
-          <button className="btn primary cart-add-button" type="button" onClick={add}>Add</button>
-        ) : (
-          <div className="cart-quantity-control">
-            <button className={`cart-quantity-btn${quantity === 1 ? " remove" : ""}`} type="button" aria-label={quantity === 1 ? "Remove from cart" : "Decrease quantity"} onClick={decrease}>
+      <div className="product-purchase-choice-list" role="radiogroup" aria-label="Purchase option">
+        {product.oneTimePurchase ? (
+          <button
+            type="button"
+            role="radio"
+            aria-checked={selectedPurchase === 'one-time'}
+            className={`product-purchase-choice${selectedPurchase === 'one-time' ? ' selected' : ''}`}
+            onClick={() => selectPurchase('one-time')}
+          >
+            <span className="product-purchase-radio" aria-hidden="true" />
+            <span className="product-purchase-choice-content">
+              <strong>One-time purchase</strong>
+              <small>Buy once</small>
+            </span>
+            <span className="product-purchase-choice-price">
+              <strong>{money(selectedOneTimePrice, product.currency || 'INR')}</strong>
+              {selectedOneTimeMrp > selectedOneTimePrice ? <small>Save {money(selectedOneTimeMrp - selectedOneTimePrice, product.currency || 'INR')}</small> : null}
+            </span>
+          </button>
+        ) : null}
+
+        {planEntries.map((entry) => {
+          const key = `subscription:${entry.plan.id}`;
+          const price = entry.price;
+          return (
+            <button
+              type="button"
+              role="radio"
+              key={entry.plan.id}
+              aria-checked={selectedPurchase === key}
+              disabled={!entry.available}
+              className={`product-purchase-choice${selectedPurchase === key ? ' selected' : ''}${!entry.available ? ' unavailable' : ''}`}
+              onClick={() => selectPurchase(key)}
+            >
+              <span className="product-purchase-radio" aria-hidden="true" />
+              <span className="product-purchase-choice-content">
+                <strong>{entry.plan.name || subscriptionFrequencyLabel(entry.plan.frequency)}</strong>
+                <small>
+                  {Number(entry.plan.deliveriesPerTerm ?? 0) > 0
+                    ? `${Number(entry.plan.deliveriesPerTerm)} deliveries / term`
+                    : 'Subscription delivery'}
+                </small>
+              </span>
+              <span className="product-purchase-choice-price">
+                {entry.available ? <strong>{money(price, product.currency || 'INR')}</strong> : <strong>Not available</strong>}
+                {entry.available && selectedOneTimePrice > price ? <small>Save {money(selectedOneTimePrice - price, product.currency || 'INR')}</small> : null}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="product-purchase-action-row">
+        {quantity > 0 ? (
+          <div className="cart-quantity-control" aria-label="Cart quantity">
+            <button className="cart-quantity-btn remove" type="button" aria-label={quantity === 1 ? 'Remove from cart' : 'Decrease quantity'} onClick={decrease}>
               {quantity === 1 ? (
                 <svg className="cart-trash-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="M7 7l1 13h8l1-13" /><path d="M10 11v5M14 11v5" /></svg>
-              ) : "−"}
+              ) : '−'}
             </button>
             <strong>{quantity}</strong>
             <button className="cart-quantity-btn" type="button" aria-label="Increase quantity" onClick={increase}>+</button>
           </div>
+        ) : (
+          <button className="btn primary product-purchase-add" type="button" onClick={addSelected} disabled={!selectedPurchase || (selectedPurchase.startsWith('subscription:') && !selectedPlanEntry?.available)}>
+            Add to Cart
+          </button>
         )}
+        {quantity > 0 ? (
+          <span className="product-purchase-selected-price">
+            {money(selectedPrice * quantity, product.currency || 'INR')}
+            {selectedPurchase.startsWith('subscription:') ? ' / term' : ''}
+          </span>
+        ) : null}
       </div>
+      {selectedPurchase.startsWith('subscription:') ? (
+        <p className="product-purchase-note">First delivery: {nextSaturday}. You can change the start date in your cart.</p>
+      ) : null}
     </div>
   );
 }
@@ -825,7 +991,7 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
                   </div>
                   <div className="py-4">
                     <span className="inline-flex rounded-full bg-[#fcebd4] px-3 py-1.5 text-xs font-bold text-[#c36f1a]">Product unavailable</span>
-                    <h1 className="mt-4 font-serif text-4xl font-bold tracking-tight text-[#2b2016] sm:text-5xl">Product unavailable</h1>
+                    <h1 className="mt-2 font-serif text-4xl font-bold tracking-tight text-[#2b2016] sm:text-5xl">Product unavailable</h1>
                     <p className="mt-4 max-w-xl text-[#6b5b48]">This product could not be loaded right now.</p>
                   </div>
                 </>
@@ -837,40 +1003,12 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
                     <span className="inline-flex w-fit rounded-full bg-[#edf6de] px-3.5 py-2 text-xs font-bold uppercase tracking-[0.12em] text-[#6fa82e]">
                       {product.type === "multiple" ? "Salable combo" : "Fresh microgreen"}
                     </span>
-                    <h1 className="mt-4 font-serif text-4xl font-bold leading-[1.05] tracking-tight text-[#2b2016] sm:text-5xl lg:text-[54px]">
+                    <h1 className="mt-2 font-serif text-4xl font-bold leading-[1.05] tracking-tight text-[#2b2016] sm:text-5xl lg:text-[54px]">
                       {product.name}
                     </h1>
-                    <div className="mt-4 flex items-center gap-3 text-sm font-semibold text-[#6fa82e]">
-                      <span className="tracking-[0.12em] text-[#ef9b2f]">★★★★★</span>
-                      <span>Fresh quality</span>
+                    <div className="mt-3">
+                      <PurchaseOptions product={product} plans={plans} />
                     </div>
-
-                    <div className="mt-6 product-price-packaging-row">
-                      <div className="product-price-panel">
-                        <span className="block text-xs font-bold uppercase tracking-[0.1em] text-[#6b5b48]">Price</span>
-                        <div className="mt-1"><Price product={product} /></div>
-                      </div>
-                      {product.oneTimePurchase ? <div className="product-packaging-panel">
-                        <CartControl product={product} />
-                      </div> : null}
-                    </div>
-
-                    {product.active && plans.length > 0 ? (
-                      <button
-                        className="sticky-subscribe-trigger"
-                        type="button"
-                        onClick={() => setSubscribeOpen(true)}
-                      >
-                        <span className="sticky-subscribe-icon">▣</span>
-                        <span>
-                          <strong>Subscribe</strong>
-                          <small>
-                            Set it once and enjoy automatic deliveries
-                          </small>
-                        </span>
-                        <span className="sticky-subscribe-arrow">›</span>
-                      </button>
-                    ) : null}
 
                     <div className="mt-5 grid gap-3 sm:grid-cols-3">
                       <div className="rounded-2xl bg-[#edf6de] p-4">

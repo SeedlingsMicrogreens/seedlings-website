@@ -147,10 +147,25 @@ export function addSubscriptionToCart(item: Omit<SubscriptionCartItem, 'quantity
   saveUnifiedCart({ ...cart, subscriptionItems: items });
 }
 
-export function setSubscriptionCartPackaging(productId: string, planId: string, startDate: string, packaging: number) {
+export function setSubscriptionCartPackaging(
+  productId: string,
+  planId: string,
+  startDate: string,
+  packaging: number,
+  price?: number,
+  sellingOptionId?: string,
+  sellingOptionLabel?: string,
+) {
   const cart = getUnifiedCart();
   const nextPackaging = Math.max(1, Math.floor(Number(packaging) || 100));
-  const next = cart.subscriptionItems.map((item) => item.productId === productId && item.planId === planId && item.startDate === startDate ? { ...item, packaging: nextPackaging, weightGrams: nextPackaging * item.quantity } : item);
+  const next = cart.subscriptionItems.map((item) => item.productId === productId && item.planId === planId && item.startDate === startDate ? {
+    ...item,
+    packaging: nextPackaging,
+    weightGrams: nextPackaging * item.quantity,
+    ...(price !== undefined ? { price: Number(price), mrp: Number(price) } : {}),
+    ...(sellingOptionId !== undefined ? { sellingOptionId: String(sellingOptionId) } : {}),
+    ...(sellingOptionLabel !== undefined ? { sellingOptionLabel: String(sellingOptionLabel) } : {}),
+  } : item);
   saveUnifiedCart({ ...cart, subscriptionItems: next });
 }
 
@@ -168,5 +183,56 @@ export function setSubscriptionCartQuantity(productId: string, planId: string, s
 
 export function removeFromCart(productId: string) { const cart = getUnifiedCart(); saveUnifiedCart({ ...cart, oneTimeItems: cart.oneTimeItems.filter((item) => item.productId !== productId) }); }
 export function removeSubscriptionFromCart(productId: string, planId: string, startDate: string) { const cart = getUnifiedCart(); saveUnifiedCart({ ...cart, subscriptionItems: cart.subscriptionItems.filter((item) => !(item.productId === productId && item.planId === planId && item.startDate === startDate)) }); }
+
+export function replaceProductCartSelection(input: {
+  product: Omit<CartItem, "quantity" | "weightGrams"> & {
+    planId?: string;
+    planName?: string;
+    frequency?: string;
+    deliveriesPerTerm?: number;
+    startDate?: string;
+  };
+  mode: "one-time" | "subscription";
+  quantity: number;
+}) {
+  const cart = getUnifiedCart();
+  const nextQuantity = Math.max(1, Math.floor(Number(input.quantity) || 1));
+  const base = {
+    productId: input.product.productId,
+    slug: input.product.slug,
+    name: input.product.name,
+    price: Number(input.product.price ?? 0),
+    mrp: input.product.mrp !== undefined ? Number(input.product.mrp) : undefined,
+    currency: input.product.currency || "INR",
+    imageUrl: input.product.imageUrl,
+    quantity: nextQuantity,
+    packaging: Math.max(1, Math.floor(Number(input.product.packaging) || 100)),
+    weightGrams: Math.max(1, Math.floor(Number(input.product.packaging) || 100)) * nextQuantity,
+    sellingOptionId: input.product.sellingOptionId,
+    sellingOptionLabel: input.product.sellingOptionLabel,
+  };
+
+  const oneTimeItems = cart.oneTimeItems.filter((item) => item.productId !== input.product.productId);
+  const subscriptionItems = cart.subscriptionItems.filter((item) => item.productId !== input.product.productId);
+
+  if (input.mode === "one-time") {
+    oneTimeItems.push(base);
+  } else {
+    if (!input.product.planId || !input.product.startDate) {
+      throw new Error("Subscription plan and start date are required.");
+    }
+    subscriptionItems.push({
+      ...base,
+      planId: input.product.planId,
+      planName: input.product.planName || "Subscription",
+      frequency: input.product.frequency,
+      deliveriesPerTerm: input.product.deliveriesPerTerm,
+      startDate: input.product.startDate,
+    });
+  }
+
+  saveUnifiedCart({ oneTimeItems, subscriptionItems });
+}
+
 export function clearCart() { saveUnifiedCart({ oneTimeItems: [], subscriptionItems: [] }); }
 export function cartCount() { const cart = getUnifiedCart(); return [...cart.oneTimeItems, ...cart.subscriptionItems].reduce((sum, item) => sum + item.quantity, 0); }

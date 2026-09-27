@@ -1,6 +1,6 @@
 import { addDoc, collection, doc, getDoc, getDocs, query, serverTimestamp, where } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import { checkProductAvailability, nextWeekSaturday } from './customerOrderAvailability';
+import { checkProductsAvailability, nextWeekSaturday } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
 
@@ -86,15 +86,16 @@ export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput)
     });
   }
 
-  const availabilityResults = await Promise.all(requestedItems.map(async (raw) => {
+  const availabilityInputs = requestedItems.flatMap((raw) => {
     const product = byId.get(clean(raw.productId));
-    if (!product?.exists()) return null;
-    return checkProductAvailability({
+    if (!product?.exists()) return [];
+    return [{
       product: { id: product.id, ...product.data() } as any,
       quantity: Number(raw.quantity),
       deliveryDate: nextWeekSaturday(),
-    });
-  }));
+    }];
+  });
+  const availabilityResults = await checkProductsAvailability(availabilityInputs);
   const shortage = availabilityResults.filter(Boolean).some((result: any) => result.hasShortage);
   if (shortage && !input.shortageDecision) throw new Error('HARVEST_SHORTAGE_CONFIRMATION_REQUIRED');
   if (shortage && input.shortageDecision === 'contact') {

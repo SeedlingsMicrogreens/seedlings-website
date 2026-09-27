@@ -1,4 +1,4 @@
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, documentId, getDocs, query, where } from 'firebase/firestore';
 import { db } from './firebase';
 import type { SalesProduct } from './salesProducts';
 
@@ -58,7 +58,7 @@ function isPaymentCommitted(record: Record<string, unknown>, type: 'one-time' | 
   return type === 'one-time' ? status === 'confirmed' : status === 'active';
 }
 
-function itemProductionRequirements(order: Record<string, unknown>, salesProducts: SalesProduct[]) {
+function itemProductionRequirements(order: Record<string, unknown>, salesProductById: Map<string, SalesProduct>) {
   const result: Record<string, number> = {};
   const items = Array.isArray(order.items) ? order.items : [];
   for (const raw of items) {
@@ -67,7 +67,7 @@ function itemProductionRequirements(order: Record<string, unknown>, salesProduct
     const quantity = number(item.quantity);
     if (quantity <= 0) continue;
     const salableId = normalize(item.salableProductId);
-    const salesProduct = salableId ? salesProducts.find(p => p.id === salableId) : null;
+    const salesProduct = salableId ? salesProductById.get(salableId) : null;
     if (salesProduct?.components?.length) {
       const itemPackaging = number(item.packaging);
       const baseTotal = salesProduct.components.reduce((sum, component) => sum + number(component.quantityGrams), 0);
@@ -94,17 +94,29 @@ function itemProductionRequirements(order: Record<string, unknown>, salesProduct
  * Future growing-batch yield is included only when it is expected to be ready by
  * the delivery date; already harvested yield is already reflected in stockGrams.
  */
-export async function checkProductAvailability(args: {
-  product: SalesProduct;
-  quantity: number;
-  packagingGrams?: number;
-  deliveryDate?: string;
-}): Promise<AvailabilityResult> {
-  const deliveryDate = args.deliveryDate || nextWeekSaturday();
-  const components = Array.isArray(args.product.components) ? args.product.components : [];
+type AvailabilityContext = {
+  harvestAvailable: Record<string, number>;
+  subscriptionCommitted: Record<string, number>;
+  oneTimeCommitted: Record<string, number>;
+  salesProductById: Map<string, SalesProduct>;
+};
+
+async function fetchByIds(collectionName: string, ids: string[]) {
+  if (!ids.length) return [];
+  const uniqueIds = [...new Set(ids)].filter(Boolean);
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniqueIds.length; i += 30) chunks.push(uniqueIds.slice(i, i + 30));
+  const snapshots = await Promise.all(chunks.map((chunk) =>
+    getDocs(query(collection(db, collectionName), where(documentId(), 'in', chunk)))
+  ));
+  return snapshots.flatMap((snapshot) => snapshot.docs);
+}
+
+function requestedProductionQuantities(product: SalesProduct, quantityInput: number, packagingInput?: number) {
+  const components = Array.isArray(product.components) ? product.components : [];
   const requested: Record<string, number> = {};
-  const quantity = Math.max(1, Math.floor(args.quantity));
-  const packaging = number(args.packagingGrams);
+  const quantity = Math.max(1, Math.floor(quantityInput));
+  const packaging = number(packagingInput);
   const baseTotal = components.reduce((sum, component) => sum + number(component.quantityGrams), 0);
   for (const component of components) {
     const baseComponentGrams = number(component.quantityGrams);
@@ -112,30 +124,58 @@ export async function checkProductAvailability(args: {
     const grams = perPack * quantity;
     if (component.productId && grams > 0) requested[component.productId] = (requested[component.productId] || 0) + grams;
   }
+  return requested;
+}
 
-  const [productsSnap, batchesSnap, subscriptionsSnap, ordersSnap, salesProductsSnap] = await Promise.all([
-    getDocs(collection(db, 'products')),
+async function loadAvailabilityContext(deliveryDate: string, requestedProductIds: string[]): Promise<AvailabilityContext> {
+  const requestedProductIdSet = new Set(requestedProductIds);
+
+  const [productsDocs, batchesSnap, subscriptionsSnap, ordersSnap] = await Promise.all([
+    fetchByIds('products', requestedProductIds),
+    // Batch items contain the calculated harvest/ready date inside the batch
+    // item array, so Firestore cannot safely filter that nested value without
+    // changing the existing batch schema. Keep the existing batch source here
+    // and restrict processing below to requested production products and the
+    // calculated ready date.
     getDocs(collection(db, 'growingBatches')),
-    getDocs(query(collection(db, 'subscriptions'), where('status', '==', 'active'))),
+    getDocs(query(
+      collection(db, 'subscriptions'),
+      where('status', '==', 'active'),
+      where('nextDeliveryDate', '==', deliveryDate),
+    )),
     getDocs(query(collection(db, 'orders'), where('scheduledDeliveryDate', '==', deliveryDate))),
-    getDocs(query(collection(db, 'salesProducts'), where('active', '==', true))),
   ]);
 
-  const salesProducts = salesProductsSnap.docs.map(d => ({ id: d.id, ...d.data() } as SalesProduct));
+  const relevantSalesProductIds = new Set<string>();
+  for (const doc of subscriptionsSnap.docs) {
+    const id = normalize(doc.data()?.salableProductId);
+    if (id) relevantSalesProductIds.add(id);
+  }
+  for (const doc of ordersSnap.docs) {
+    const items = Array.isArray(doc.data()?.items) ? doc.data().items : [];
+    for (const raw of items) {
+      if (raw && typeof raw === 'object') {
+        const id = normalize((raw as Record<string, unknown>).salableProductId);
+        if (id) relevantSalesProductIds.add(id);
+      }
+    }
+  }
+
+  const salesProductDocs = await fetchByIds('salesProducts', [...relevantSalesProductIds]);
+  const salesProductById = new Map<string, SalesProduct>(
+    salesProductDocs.map((d) => [d.id, { id: d.id, ...d.data() } as SalesProduct])
+  );
   const harvestAvailable: Record<string, number> = {};
   const subscriptionCommitted: Record<string, number> = {};
   const oneTimeCommitted: Record<string, number> = {};
 
-  for (const doc of productsSnap.docs) {
+  for (const doc of productsDocs) {
     const data = doc.data() || {};
     harvestAvailable[doc.id] = number(data.stockGrams ?? data.stock);
   }
 
   for (const batchDoc of batchesSnap.docs) {
     const batch = batchDoc.data() || {};
-    // Harvested quantity is already written into products.stockGrams by the
-    // admin harvest flow. A completed/harvested batch must therefore NOT be
-    // added again here, otherwise the same harvest is double-counted.
     const batchStatus = normalize(batch.status).toLowerCase().replace(/\s+/g, '');
     if (batchStatus === 'completed' || batchStatus === 'harvested' || batchStatus === 'completed_harvested') continue;
     const items = Array.isArray(batch.items) ? batch.items : [];
@@ -143,7 +183,7 @@ export async function checkProductAvailability(args: {
       if (!raw || typeof raw !== 'object') continue;
       const item = raw as Record<string, unknown>;
       const productId = normalize(item.productId);
-      if (!productId || ['harvested', 'failed'].includes(normalize(item.status))) continue;
+      if (!productId || !requestedProductIdSet.has(productId) || ['harvested', 'failed'].includes(normalize(item.status))) continue;
       const readyDate = normalize(item.expectedReadyDate);
       if (readyDate && readyDate <= deliveryDate) {
         const expectedUsable = number(item.expectedUsableYieldGrams);
@@ -155,14 +195,8 @@ export async function checkProductAvailability(args: {
   for (const doc of subscriptionsSnap.docs) {
     const subscription = doc.data() || {};
     if (!isPaymentCommitted(subscription, 'subscription')) continue;
-    if (normalize(subscription.nextDeliveryDate) !== deliveryDate) continue;
-
-    // Subscription `productId` identifies the customer-facing Salable Product.
-    // Its Microgreen components are the production/inventory requirements.
-    // Keep a legacy fallback for older subscriptions that stored the first
-    // production component in `productId`.
     const salableId = normalize(subscription.salableProductId);
-    const salesProduct = salableId ? salesProducts.find((product) => product.id === salableId) : null;
+    const salesProduct = salableId ? salesProductById.get(salableId) : null;
     const quantity = number(subscription.quantity) || 1;
     const packaging = number(subscription.packaging);
 
@@ -170,11 +204,9 @@ export async function checkProductAvailability(args: {
       const baseTotal = salesProduct.components.reduce((sum, component) => sum + number(component.quantityGrams), 0);
       for (const component of salesProduct.components) {
         const baseComponentGrams = number(component.quantityGrams);
-        const perPack = packaging > 0 && baseTotal > 0
-          ? packaging * (baseComponentGrams / baseTotal)
-          : baseComponentGrams;
+        const perPack = packaging > 0 && baseTotal > 0 ? packaging * (baseComponentGrams / baseTotal) : baseComponentGrams;
         const grams = perPack * quantity;
-        if (component.productId && grams > 0) {
+        if (component.productId && requestedProductIdSet.has(component.productId) && grams > 0) {
           subscriptionCommitted[component.productId] = (subscriptionCommitted[component.productId] || 0) + grams;
         }
       }
@@ -185,46 +217,95 @@ export async function checkProductAvailability(args: {
     const grams = number(subscription.weightGrams) > 0
       ? number(subscription.weightGrams)
       : number(subscription.weightGrams) * quantity;
-    if (legacyProductionId && grams > 0) {
+    if (legacyProductionId && requestedProductIdSet.has(legacyProductionId) && grams > 0) {
       subscriptionCommitted[legacyProductionId] = (subscriptionCommitted[legacyProductionId] || 0) + grams;
     }
   }
 
   for (const doc of ordersSnap.docs) {
     const order = doc.data() || {};
-    // Only successfully paid/confirmed one-time orders commit inventory.
-    // New records use paymentStatus = paid; confirmed is a compatibility
-    // fallback for older records where the payment/status fields became out of sync.
     if (!isPaymentCommitted(order, 'one-time')) continue;
     if (orderIsCancelled(order)) continue;
-    const requirements = itemProductionRequirements(order, salesProducts);
-    // Subscription demand is sourced from active subscriptions above so the
-    // initial subscription order is not counted twice.
     if (normalize(order.orderType) === 'subscription' || normalize(order.subscriptionId)) continue;
+    const requirements = itemProductionRequirements(order, salesProductById);
     for (const [productId, grams] of Object.entries(requirements)) {
-      oneTimeCommitted[productId] = (oneTimeCommitted[productId] || 0) + grams;
+      if (requestedProductIdSet.has(productId)) oneTimeCommitted[productId] = (oneTimeCommitted[productId] || 0) + grams;
     }
   }
 
+  return { harvestAvailable, subscriptionCommitted, oneTimeCommitted, salesProductById };
+}
+
+function calculateAvailability(args: {
+  product: SalesProduct;
+  quantity: number;
+  packagingGrams?: number;
+  deliveryDate: string;
+  context: AvailabilityContext;
+}): AvailabilityResult {
+  const requested = requestedProductionQuantities(args.product, args.quantity, args.packagingGrams);
   const availableForOneTime: Record<string, number> = {};
   let requestedGrams = 0;
   let availableGrams = Number.POSITIVE_INFINITY;
   for (const [productId, grams] of Object.entries(requested)) {
     requestedGrams += grams;
-    const harvest = harvestAvailable[productId] || 0;
-    const subscription = subscriptionCommitted[productId] || 0;
-    const oneTime = oneTimeCommitted[productId] || 0;
+    const harvest = args.context.harvestAvailable[productId] || 0;
+    const subscription = args.context.subscriptionCommitted[productId] || 0;
+    const oneTime = args.context.oneTimeCommitted[productId] || 0;
     const available = Math.max(0, harvest - subscription - oneTime);
     availableForOneTime[productId] = available;
-    // Convert each component's stock into the number of requested grams it can satisfy.
-    // For a single-component product this is simply its available grams.
     availableGrams = Math.min(availableGrams, Math.min(grams, available));
   }
   if (!Number.isFinite(availableGrams)) availableGrams = 0;
-
   const hasShortage = Object.entries(requested).some(([productId, grams]) => (availableForOneTime[productId] || 0) < grams);
   const shortageGrams = Object.entries(requested).reduce((sum, [productId, grams]) => sum + Math.max(0, grams - (availableForOneTime[productId] || 0)), 0);
-
-  return { deliveryDate, requestedByProductionProduct: requested, harvestAvailableByProductionProduct: harvestAvailable, subscriptionCommittedByProductionProduct: subscriptionCommitted, oneTimeCommittedByProductionProduct: oneTimeCommitted, availableForOneTimeByProductionProduct: availableForOneTime, requestedGrams, availableGrams, shortageGrams, hasShortage };
+  return {
+    deliveryDate: args.deliveryDate,
+    requestedByProductionProduct: requested,
+    harvestAvailableByProductionProduct: args.context.harvestAvailable,
+    subscriptionCommittedByProductionProduct: args.context.subscriptionCommitted,
+    oneTimeCommittedByProductionProduct: args.context.oneTimeCommitted,
+    availableForOneTimeByProductionProduct: availableForOneTime,
+    requestedGrams,
+    availableGrams,
+    shortageGrams,
+    hasShortage,
+  };
 }
 
+/** Calculates customer-facing availability for one product. */
+export async function checkProductAvailability(args: {
+  product: SalesProduct;
+  quantity: number;
+  packagingGrams?: number;
+  deliveryDate?: string;
+}): Promise<AvailabilityResult> {
+  const deliveryDate = args.deliveryDate || nextWeekSaturday();
+  const requested = requestedProductionQuantities(args.product, args.quantity, args.packagingGrams);
+  const context = await loadAvailabilityContext(deliveryDate, Object.keys(requested));
+  return calculateAvailability({ ...args, deliveryDate, context });
+}
+
+/**
+ * Bulk availability check for a checkout. All products for the same delivery
+ * date share the same inventory/demand snapshot, so Firestore is read once and
+ * each selected item is calculated in memory.
+ */
+export async function checkProductsAvailability(args: Array<{
+  product: SalesProduct;
+  quantity: number;
+  packagingGrams?: number;
+  deliveryDate?: string;
+}>): Promise<AvailabilityResult[]> {
+  if (!args.length) return [];
+  const deliveryDate = args[0].deliveryDate || nextWeekSaturday();
+  if (args.some((item) => (item.deliveryDate || deliveryDate) !== deliveryDate)) {
+    return Promise.all(args.map((item) => checkProductAvailability(item)));
+  }
+  const requestedIds = new Set<string>();
+  for (const item of args) {
+    for (const id of Object.keys(requestedProductionQuantities(item.product, item.quantity, item.packagingGrams))) requestedIds.add(id);
+  }
+  const context = await loadAvailabilityContext(deliveryDate, [...requestedIds]);
+  return args.map((item) => calculateAvailability({ ...item, deliveryDate, context }));
+}

@@ -1,4 +1,4 @@
-import { collection, doc, getDoc, getDocs, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
+import { collection, doc, documentId, getDoc, getDocs, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
 import { auth } from './firebase';
 import { db } from './firebase';
 import { checkProductAvailability, nextWeekSaturday } from './customerOrderAvailability';
@@ -25,7 +25,7 @@ export async function createCustomerMixedCheckout(input:{mobile:string;addressId
  const addresses=Array.isArray(customer.addresses)?customer.addresses:[];const address=addresses.find((a:Record<string,unknown>)=>String(a?.id??'')===input.addressId) as CustomerAddress|undefined;if(!address)throw new Error('Selected delivery address was not found.');
  const oneIds=input.oneTimeItems.map(i=>clean(i.productId));const subIds=input.subscriptionItems.map(i=>clean(i.productId));const allIds=[...new Set([...oneIds,...subIds])];
  const snaps=await Promise.all(allIds.map(id=>getDoc(doc(db,'salesProducts',id))));const byId=new Map(allIds.map((id,n)=>[id,snaps[n]]));
- const plans=await getDocs(query(collection(db,'subscriptionPlans'),where('active','==',true)));const planById=new Map(plans.docs.map(d=>[d.id,d.data()]));
+ const planIds=[...new Set(input.subscriptionItems.map(i=>clean(i.planId)).filter(Boolean))];const planChunks:string[][]=[];for(let i=0;i<planIds.length;i+=30)planChunks.push(planIds.slice(i,i+30));const planSnapshots=await Promise.all(planChunks.map(chunk=>getDocs(query(collection(db,'subscriptionPlans'),where(documentId(),'in',chunk)))));const planById=new Map(planSnapshots.flatMap(s=>s.docs).map(d=>[d.id,d.data()]));
  const deliveryCharges=await calculateCheckoutDeliveryCharges({pincode:String((address as any).pincode||''),oneTime:input.oneTimeItems.length>0,subscriptions:input.subscriptionItems.map(i=>({planId:i.planId,planName:i.planName}))});
  const geoId=deliveryCharges.oneTime.sourceId||deliveryCharges.subscriptions[0]?.sourceId||''; const geoName=deliveryCharges.oneTime.sourceName||deliveryCharges.subscriptions[0]?.sourceName||'';
  const targetDate=nextWeekSaturday();

@@ -1,3 +1,35 @@
+
+## Phase 45 — Cart Checkout Action Simplification
+
+- Removed the cart-level Total display from the bottom checkout bar.
+- Cart now shows only the **Proceed to checkout** action; the final total remains visible and calculated on the Checkout page.
+- Preserved all existing cart product, packaging, purchase-option, quantity, subscription, and checkout behavior.
+## Phase 44 — Compact One-Row Cart Layout
+
+- Reworked the Cart product card so desktop keeps product, packaging, purchase options, quantity and price in a single compact row.
+- Preserved the existing one-time/subscription selling-option selection and matching price behavior.
+- Packaging remains changeable directly from Cart.
+- Quantity controls remain in the same product row.
+- Responsive behavior wraps the row for tablet/mobile usability.
+- No checkout, payment, inventory, subscription, or cart business rules were changed.
+
+## Phase 42 — Listing & Featured Cart Controls
+
+- Microgreen listing now shows **Add to cart** when the product is not in the one-time cart.
+- Once added, the same card shows the quantity control with decrease/remove and increase actions.
+- Home **Featured Microgreens** cards use the same Add to cart / quantity behavior.
+- Add to cart starts with quantity **1** and stays on the current page; it does not redirect to Cart.
+- Existing cart state is reflected immediately across cards through the existing `seedlings-cart-updated` event.
+- When adding from a card, the first active Product selling option is used as the default packaging/price; products without selling options retain the existing 100g/product-price fallback.
+- No checkout, payment, inventory, subscription, or availability business rules were changed.
+
+
+## Phase 41 — Product Detail Add-to-Cart Quantity Fix
+
+- Fixed Product Detail **Add to Cart** so the initial quantity starts at **1**, not 2.
+- Preserved existing cart quantity increment/decrement behavior.
+- No pricing, selling-option, subscription, checkout, or payment logic changed.
+
 # Website Changelog / Decision History
 
 This file consolidates the useful historical context from the previous phase, UAT, bug-fix, checkout and standardization Markdown files. It is not a verbatim archive; the actual source remains authoritative.
@@ -106,3 +138,63 @@ Older documents contain statements that no longer exactly describe the current r
 - Added type-specific rendering for text, image, and YouTube video feedback.
 - YouTube feedback renders from the stored `videoId`; no iframe HTML is read from Firestore.
 - Preserved the existing Journey Hero, The Spark, and The Seedlings process blocks.
+
+## Phase 39 — Website Performance Optimization
+
+- Reduced checkout availability reads to the requested production Microgreens, requested delivery-date orders, and active subscription demand for that delivery date.
+- Reused one availability inventory/demand snapshot for multiple products checked in the same delivery-date request.
+- Replaced repeated Sales Product linear lookups in availability/subscription flows with Maps.
+- Reduced checkout delivery-charge reads by querying the requested pincode and requested subscription plan IDs instead of loading all records, while retaining a legacy pincode fallback.
+- Reduced Account page reads by querying active subscriptions only and using Firestore count aggregation for order count.
+- Parallelized Order Detail related reads for payment, subscription deliveries, and feedback.
+- Batched Delivery Partner order document reads with the Admin SDK `getAll` call.
+- Added an existing-session redirect check to Delivery Partner Login without changing the independent delivery session architecture.
+- Added `WEBSITE-PERFORMANCE-OPTIMIZATION-PLAN.md` as the implementation and non-regression checklist.
+
+## Phase 40 — Product Detail Unified Selling Options
+- Simplified the Product Detail purchase area by removing the rating row and the separate price panel.
+- Added one Packaging dropdown driven by the Product selling options.
+- Added one-time purchase and all active subscription plan choices below the same dropdown.
+- Changing the Packaging selection updates the one-time price and the matching selling-option plan price for every subscription plan.
+- Subscription plan pricing is resolved from the plan's selling-option `planPrice`; it is not calculated from the one-time price.
+- Subscription plans without a matching selling option are shown as unavailable rather than displaying an incorrect price.
+- Add to Cart now stays on the Product Detail page instead of redirecting to `/cart`.
+- After adding, the same purchase area shows quantity controls; plus/minus updates the selected cart item in place.
+- Subscription selections use the next Saturday as the initial cart start date; the customer can change the start date from the cart/edit flow.
+- Extended subscription cart packaging updates so an already-added subscription keeps its selected selling-option price/ID when packaging changes.
+- Existing cart, checkout, payment, availability and subscription business logic is preserved.
+
+## Phase 43 — Cart purchase options and compact cart navigation
+
+- Reworked the cart to show each product as a single card with packaging selection.
+- Added one-time purchase and subscription-plan choices directly inside each cart product.
+- Changing packaging updates the matching Product selling-option price and subscription `planPrice` for the selected plan.
+- Customers can switch between one-time and an eligible subscription plan without leaving the cart.
+- Removed the separate Order Summary panel; checkout now appears below the product cards with the current total.
+- Replaced the text Cart navigation item with a compact cart icon and item-count badge.
+- Preserved existing cart storage, checkout, payment, subscription and availability flows.
+## Phase 46 — Cart Product Cards
+
+- Desktop displays two cart product cards per row to reduce unnecessary vertical scrolling.
+- Each desktop/tablet card keeps the **product image on the left** and the cart controls/content on the **right**.
+- Smaller mobile screens collapse each card to a single-column layout.
+- Preserved the existing packaging selector, one-time/subscription purchase options, quantity controls, pricing and checkout behavior.
+- No cart, checkout, payment, subscription or business-logic changes.
+
+### Phase 46 layout correction
+- Corrected the first Phase 46 card layout so the image is not placed above the content.
+- The intended layout is now: **left = product image; right = product name, packaging, purchase options, quantity and price**.
+
+### Phase 46 layout spacing correction
+- Removed the vertical grid-row gap between Packaging and the purchase options.
+- The product image now spans the full right-side content stack so Packaging and One-time/subscription choices stay directly aligned without unused space below the image.
+- Mobile single-column behavior remains unchanged.
+## Phase 46 follow-up — Cart header icon visibility
+
+- Fixed the header cart badge hydrator so it updates only the count badge and never replaces the SVG cart icon.
+- Fixed CMS navigation hydration so the cart link preserves its SVG icon and separate count badge.
+- Cart header now displays the cart icon and item count together.
+
+### Phase 46 hotfix — AccountHydrator Firestore count import
+- Fixed the runtime `getCountFromServer is not defined` error in `components/AccountHydrator.tsx` by importing `getCountFromServer` from `firebase/firestore`.
+- No account hydration logic or Firestore query behavior was changed.

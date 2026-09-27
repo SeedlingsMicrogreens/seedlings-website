@@ -58,14 +58,15 @@ export default function Header({ navItems = [] }: { navItems?: HeaderNavItem[] }
         <a href="/our-journey" onClick={close}>{label('journey', 'Journey')}</a>
         <a href="/contact" onClick={close}>{label('contact', 'Contact')}</a>
         <a href="/account" onClick={close}>{label('account', 'Account')}</a>
-        <a href="/cart" onClick={close}>
-          {label('cart', 'Cart')}
-          <sup
-            aria-label={cartCount === null ? undefined : `${cartCount} items in cart`}
-            suppressHydrationWarning
-          >
-            {cartCount ?? ''}
-          </sup>
+        <a href="/cart" onClick={close} className="nav-cart-icon" aria-label={cartCount === null ? 'Cart' : `Cart, ${cartCount} items`}>
+          <span className="nav-cart-icon-svg" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 4h2l2.4 11.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.6L21 7H6" />
+              <circle cx="10" cy="20" r="1" />
+              <circle cx="18" cy="20" r="1" />
+            </svg>
+          </span>
+          <sup aria-hidden="true" suppressHydrationWarning>{cartCount ?? ''}</sup>
         </a>
         <a className="nav-cta" href="/microgreens" onClick={close}>{label('shopCta', 'Shop Fresh')}</a>
       </nav>

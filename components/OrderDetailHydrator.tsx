@@ -259,27 +259,23 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
         let transaction: PaymentTransaction | undefined;
         let subscriptionDeliveries: SubscriptionDelivery[] = [];
         let feedbackIds = new Set<string>();
-        try {
-          const paymentSnap = await getDocs(query(collection(db, 'paymentTransactions'), where('orderId', '==', orderId)));
-          const matching = paymentSnap.docs
+        const [paymentResult, deliveryResult, feedbackResult] = await Promise.allSettled([
+          getDocs(query(collection(db, 'paymentTransactions'), where('orderId', '==', orderId))),
+          getDocs(query(collection(db, 'subscriptionDeliveries'), where('orderId', '==', orderId))),
+          getDocs(query(collection(db, 'orderFeedback'), where('orderId', '==', orderId))),
+        ]);
+        if (paymentResult.status === 'fulfilled') {
+          const matching = paymentResult.value.docs
             .map(item => item.data() as PaymentTransaction & { customerId?: string })
             .filter(item => String(item.customerId || '').replace(/\D/g, '') === mobile)
             .sort((a, b) => (dateObject(b.createdAt)?.getTime() || 0) - (dateObject(a.createdAt)?.getTime() || 0));
           transaction = matching[0];
-        } catch {
-          // Payment transaction history is optional. The order itself remains viewable.
         }
-        try {
-          const deliverySnap = await getDocs(query(collection(db, 'subscriptionDeliveries'), where('orderId', '==', orderId)));
-          subscriptionDeliveries = deliverySnap.docs.map(item => ({ id: item.id, ...(item.data() as Record<string, unknown>) })) as SubscriptionDelivery[];
-        } catch {
-          // Subscription delivery history is optional for one-time orders.
+        if (deliveryResult.status === 'fulfilled') {
+          subscriptionDeliveries = deliveryResult.value.docs.map(item => ({ id: item.id, ...(item.data() as Record<string, unknown>) })) as SubscriptionDelivery[];
         }
-        try {
-          const feedbackSnap = await getDocs(query(collection(db, 'orderFeedback'), where('orderId', '==', orderId)));
-          feedbackIds = new Set(feedbackSnap.docs.map(item => String((item.data() as FeedbackRecord).subscriptionDeliveryId || orderId)));
-        } catch {
-          // Feedback history is optional; submission remains available.
+        if (feedbackResult.status === 'fulfilled') {
+          feedbackIds = new Set(feedbackResult.value.docs.map(item => String((item.data() as FeedbackRecord).subscriptionDeliveryId || orderId)));
         }
 
         if (alive && currentRequest === requestId) {

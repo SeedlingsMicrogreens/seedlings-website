@@ -3,7 +3,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { onAuthStateChanged, signInAnonymously, signOut } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
-import { collection, getDocsFromServer, query, where } from "firebase/firestore";
+import { collection, getCountFromServer, getDocsFromServer, query, where } from "firebase/firestore";
 import { getCustomerAccount } from "@/lib/customerAccount";
 import { clearStoredCustomerMobile, ensureClientOnboarding, getStoredCustomerMobile, normalizeIndianMobile } from "@/lib/clientOnboarding";
 
@@ -147,17 +147,20 @@ export default function AccountHydrator({ children }: { children: ReactNode }) {
       wireAccountActions();
 
       try {
-        const [account, subscriptionsSnapshot, ordersSnapshot] = await Promise.all([
+        const [account, activeSubscriptionsSnapshot, orderCountSnapshot] = await Promise.all([
           getCustomerAccount(mobile, { bypassCache: true }),
-          getDocsFromServer(query(collection(db, "subscriptions"), where("customerId", "==", mobile))),
-          getDocsFromServer(query(collection(db, "orders"), where("customerId", "==", mobile))),
+          getDocsFromServer(query(
+            collection(db, "subscriptions"),
+            where("customerId", "==", mobile),
+            where("status", "==", "active"),
+          )),
+          getCountFromServer(query(collection(db, "orders"), where("customerId", "==", mobile))),
         ]);
         if (!account) throw new Error("Customer account not found.");
         if (!alive) return;
 
-        const subscriptions: Array<Record<string, any> & { id: string }> = subscriptionsSnapshot.docs.map((item) => ({ id: item.id, ...(item.data() as Record<string, any>) }));
-        const orders: Array<Record<string, any> & { id: string }> = ordersSnapshot.docs.map((item) => ({ id: item.id, ...(item.data() as Record<string, any>) }));
-        const activeSubscriptions = subscriptions.filter((item) => String(item.status) === "active");
+        const activeSubscriptions: Array<Record<string, any> & { id: string }> = activeSubscriptionsSnapshot.docs.map((item) => ({ id: item.id, ...(item.data() as Record<string, any>) }));
+        const pastOrderCount = Number(orderCountSnapshot.data().count || 0);
         const dateValue = (value: unknown) => {
           if (typeof value === "string") return value.slice(0, 10);
           if (value && typeof value === "object" && "toDate" in value && typeof (value as { toDate?: unknown }).toDate === "function") return (value as { toDate: () => Date }).toDate().toISOString().slice(0, 10);
@@ -167,7 +170,7 @@ export default function AccountHydrator({ children }: { children: ReactNode }) {
         const data = {
           customer: { name: account.name || "", mobile },
           activeSubscriptionCount: activeSubscriptions.length,
-          pastOrderCount: orders.length,
+          pastOrderCount,
           currentSubscription: upcoming,
           upcomingDelivery: upcoming ? { date: dateValue(upcoming.nextDeliveryDate), productName: upcoming.productName, packaging: Number(upcoming.packaging || 0), weightGrams: Number(upcoming.weightGrams || 0), quantity: Number(upcoming.quantity || 0), deliveryAddress: upcoming.deliveryAddress || null } : null,
         };

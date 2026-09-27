@@ -5,6 +5,7 @@ import { cmsCollections, getDocById, getPublishedCollection } from '@/lib/cms';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import { getActiveSalesProducts, productSlug, type SalesProduct } from '@/lib/salesProducts';
+import { addToCart, getCart, setCartQuantity } from '@/lib/cart';
 import heroBannerImage from '@/public/assets/microgreens-hero-banner.png';
 
 const money = (value: number, currency = 'INR') => {
@@ -66,17 +67,54 @@ function ProductCard({ product }: { product: SalesProduct }) {
   const mrp = Number(product.mrp ?? price);
   const currency = product.currency || 'INR';
   const description = listingDescriptionFor(product);
+  const [quantity, setQuantity] = useState(0);
+
+  useEffect(() => {
+    const sync = () => {
+      const item = getCart().find((entry) => entry.productId === product.id);
+      setQuantity(item?.quantity || 0);
+    };
+    sync();
+    window.addEventListener('seedlings-cart-updated', sync);
+    return () => window.removeEventListener('seedlings-cart-updated', sync);
+  }, [product.id]);
+
+  const add = () => {
+    const defaultOption = (product.sellingOptions || [])
+      .filter((option) => option?.active !== false && Number(option?.weightGrams) > 0)
+      .sort((a, b) => Number(a.weightGrams) - Number(b.weightGrams))[0];
+    const packaging = Number(defaultOption?.weightGrams || 100);
+    const optionPrice = Number(defaultOption?.price);
+    addToCart({
+      productId: product.id,
+      slug: productSlug(product),
+      name: product.name,
+      price: Number.isFinite(optionPrice) && optionPrice >= 0 ? optionPrice : price,
+      mrp: Number.isFinite(Number(defaultOption?.mrp)) ? Number(defaultOption?.mrp) : mrp,
+      currency,
+      imageUrl: product.imageUrl,
+      packaging,
+      sellingOptionId: defaultOption?.id,
+      sellingOptionLabel: defaultOption ? `${defaultOption.weightGrams}g` : undefined,
+    }, 1);
+  };
+
+  const decrease = () => {
+    const current = getCart().find((entry) => entry.productId === product.id);
+    if (current) setCartQuantity(product.id, current.quantity - 1);
+  };
+
+  const increase = () => {
+    const current = getCart().find((entry) => entry.productId === product.id);
+    if (current) setCartQuantity(product.id, current.quantity + 1);
+  };
 
   return (
     <article className="group flex h-full min-w-0 flex-col overflow-hidden rounded-[20px] border border-[var(--line)] bg-white shadow-[0_5px_18px_rgba(71,47,22,.055)] transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_14px_35px_rgba(71,47,22,.10)]">
       <a href={href} aria-label={`View ${product.name}`} className="block shrink-0">
         <div className="relative h-[205px] overflow-hidden bg-[#edf1df]">
           {image ? (
-            <img
-              src={image}
-              alt={product.name}
-              className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.025]"
-            />
+            <img src={image} alt={product.name} className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.025]" />
           ) : null}
           <span className="absolute left-3 top-3 rounded-full bg-white px-3 py-1.5 text-[11px] font-bold text-[var(--green-dark)] shadow-sm">
             {product.featured ? 'Featured' : 'Fresh'}
@@ -88,32 +126,27 @@ function ProductCard({ product }: { product: SalesProduct }) {
         <span className="text-[10px] font-bold uppercase tracking-[1.4px] text-[var(--green-dark)]">
           {product.type === 'multiple' ? 'Salable combo' : 'Fresh microgreen'}
         </span>
-        <h3 className="mt-1.5 min-h-[3.5rem] text-[18px] font-bold leading-7 text-[var(--ink)]">
-          {product.name}
-        </h3>
+        <h3 className="mt-1.5 min-h-[3.5rem] text-[18px] font-bold leading-7 text-[var(--ink)]">{product.name}</h3>
 
         <RichText value={description} />
 
         <div className="mt-auto flex items-end justify-between gap-3 pt-4">
           <div className="inline-flex min-w-0 flex-col items-start gap-0.5 leading-tight">
-            {Number.isFinite(mrp) && mrp > price ? (
-              <span className="text-[11px] font-medium text-[var(--soft)] line-through">
-                MRP {money(mrp, currency)}
-              </span>
-            ) : null}
+            {Number.isFinite(mrp) && mrp > price ? <span className="text-[11px] font-medium text-[var(--soft)] line-through">MRP {money(mrp, currency)}</span> : null}
             <strong className="text-base font-bold text-[var(--ink)]">{money(price, currency)}</strong>
-            {Number.isFinite(mrp) && mrp > price ? (
-              <span className="text-[11px] font-bold text-[var(--green-dark)]">
-                Save {money(mrp - price, currency)}
-              </span>
-            ) : null}
+            {Number.isFinite(mrp) && mrp > price ? <span className="text-[11px] font-bold text-[var(--green-dark)]">Save {money(mrp - price, currency)}</span> : null}
           </div>
-          <a
-            className="shrink-0 rounded-full bg-[var(--green-tint)] px-4 py-2.5 text-xs font-bold text-[var(--green-dark)] transition hover:bg-[var(--green)] hover:text-white"
-            href={href}
-          >
-            Details
-          </a>
+          {quantity === 0 ? (
+            <button className="cart-add-button shrink-0 bg-[var(--green)] text-white transition hover:opacity-90" type="button" onClick={add}>Add to cart</button>
+          ) : (
+            <div className="cart-quantity-control shrink-0" aria-label={`Cart quantity for ${product.name}`}>
+              <button className={`cart-quantity-btn${quantity === 1 ? ' remove' : ''}`} type="button" aria-label={quantity === 1 ? 'Remove from cart' : 'Decrease quantity'} onClick={decrease}>
+                {quantity === 1 ? <svg className="cart-trash-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="M7 7l1 13h8l1-13" /><path d="M10 11v5M14 11v5" /></svg> : '−'}
+              </button>
+              <strong>{quantity}</strong>
+              <button className="cart-quantity-btn" type="button" aria-label="Increase quantity" onClick={increase}>+</button>
+            </div>
+          )}
         </div>
       </div>
     </article>

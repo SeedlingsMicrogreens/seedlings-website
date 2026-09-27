@@ -1,4 +1,4 @@
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, documentId, getDocs, query, where } from 'firebase/firestore';
 import { db } from './firebase';
 
 const clean = (value: unknown) => typeof value === 'string' ? value.trim() : '';
@@ -43,14 +43,30 @@ export async function calculateCheckoutDeliveryCharges(input: {
   const pincode = clean(input.pincode).replace(/\D/g, '').slice(0, 6);
   if (!/^\d{6}$/.test(pincode)) throw new Error('A valid 6-digit pincode is required to calculate delivery charges.');
 
-  const [geoSnap, planSnap] = await Promise.all([
-    getDocs(collection(db, 'geolocations')),
-    getDocs(collection(db, 'subscriptionPlans')),
+  const planIds = [...new Set(input.subscriptions.map((entry) => clean(entry.planId)).filter(Boolean))];
+  const planChunks: string[][] = [];
+  for (let i = 0; i < planIds.length; i += 30) planChunks.push(planIds.slice(i, i + 30));
+
+  const [geoSnap, planSnaps] = await Promise.all([
+    // Pincode Master normally stores the normalized 6-digit pincode. Query it
+    // directly instead of downloading every configured location.
+    getDocs(query(collection(db, 'geolocations'), where('pincode', '==', pincode))),
+    Promise.all(planChunks.map((chunk) =>
+      getDocs(query(collection(db, 'subscriptionPlans'), where(documentId(), 'in', chunk)))
+    )),
   ]);
-  const matches = geoSnap.docs.filter((d) => {
+  let geoDocs = geoSnap.docs;
+  // Legacy records may contain a formatted/non-string pincode. Preserve the
+  // previous normalization behavior as a compatibility fallback only when the
+  // targeted query returns nothing.
+  if (!geoDocs.length) {
+    geoDocs = (await getDocs(collection(db, 'geolocations'))).docs;
+  }
+  const matches = geoDocs.filter((d) => {
     const x = d.data() || {};
     return x.active === true && clean(x.pincode).replace(/\D/g, '') === pincode;
   });
+  const planDocs = planSnaps.flatMap((snapshot) => snapshot.docs);
   if (matches.length > 1) throw new Error(`Multiple active pincodes are configured for ${pincode}.`);
   if (!matches.length) throw new Error('We are currently not available in this area. We are working on it and would be happy to contact you.');
 
@@ -75,7 +91,7 @@ export async function calculateCheckoutDeliveryCharges(input: {
   const oneTime = input.oneTime ? baseResult('one_time_order') : { finalCharge: 0, baseCharge: 0, savings: 0, isFree: true, source: 'none' as const, sourceId: '', sourceName: '', snapshot: {}, perDeliveryCharge: 0, termCharge: 0, termSavings: 0, deliveriesPerTerm: 1 };
   const subscriptions = input.subscriptions.map((entry) => {
     const base = baseResult('subscription');
-    const planDoc = planSnap.docs.find((d) => d.id === entry.planId);
+    const planDoc = planDocs.find((d) => d.id === entry.planId);
     if (!planDoc) throw new Error(`Subscription plan "${entry.planName || entry.planId}" was not found.`);
     const plan = planDoc.data() || {};
     if (plan.active !== true) throw new Error(`Subscription plan "${entry.planName || plan.name || entry.planId}" is no longer active.`);
