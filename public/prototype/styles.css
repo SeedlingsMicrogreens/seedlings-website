@@ -345,3 +345,13 @@
   .all-product-card{flex-basis:170px}
   .all-product-image{height:132px}
 }
+
+/* Account-area consistency: presentation only. */
+.nav-cart-icon{display:inline-flex!important;align-items:center;gap:2px;color:var(--soft)!important}
+.nav-cart-icon-svg{width:21px;height:21px;display:inline-flex;align-items:center;justify-content:center}
+.nav-cart-icon-svg svg{width:100%;height:100%;display:block;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.nav-cart-icon sup{position:relative;top:-7px;margin-left:-2px;min-width:14px;height:14px;padding:0 4px;border-radius:999px;background:var(--green);color:#fff;font-size:9px;line-height:14px;text-align:center;font-weight:700}
+.account-side{overflow:hidden}
+.account-side .account-logout{font-size:13px;font-weight:600;color:var(--soft);}
+.account-side .account-logout:hover{color:var(--green-dark);}
+.account-title .eyebrow + h1{margin-top:6px}

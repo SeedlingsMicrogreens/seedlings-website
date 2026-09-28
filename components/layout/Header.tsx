@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { getUnifiedCart } from '@/lib/cart';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from '@/lib/firebase';
 
 export type HeaderNavItem = { navKey?: unknown; label?: unknown };
 
@@ -10,10 +12,15 @@ const text = (value: unknown, fallback: string) => typeof value === 'string' && 
 export default function Header({ navItems = [] }: { navItems?: HeaderNavItem[] }) {
   const [open, setOpen] = useState(false);
   const [cartCount, setCartCount] = useState<number | null>(null);
+  const [signedIn, setSignedIn] = useState(false);
   const navRef = useRef<HTMLElement>(null);
   const menuRef = useRef<HTMLButtonElement>(null);
   const label = (key: string, fallback: string) => text(navItems.find((item) => String(item.navKey ?? '') === key)?.label, fallback);
   const close = () => setOpen(false);
+
+  useEffect(() => {
+    return onAuthStateChanged(auth, (user) => setSignedIn(Boolean(user)));
+  }, []);
 
   useEffect(() => {
     const updateCartCount = () => {
@@ -50,14 +57,14 @@ export default function Header({ navItems = [] }: { navItems?: HeaderNavItem[] }
 
   return <header className="header">
     <div className="container nav-wrap">
-      <a className="brand" href="/"><span className="brand-mark">S</span><span>Seedlings</span></a>
+      <a className="brand" href="/"><span className="brand-mark">S</span><span>Seedlings Microgreen</span></a>
       <button ref={menuRef} className="menu" aria-label={open ? 'Close navigation' : 'Open navigation'} aria-expanded={open} onClick={() => setOpen((value) => !value)}>☰</button>
       <nav ref={navRef} className={`nav${open ? ' open' : ''}`}>
         <a href="/" onClick={close}>{label('home', 'Home')}</a>
         <a href="/microgreens" onClick={close}>{label('microgreens', 'Microgreens')}</a>
         <a href="/our-journey" onClick={close}>{label('journey', 'Journey')}</a>
         <a href="/contact" onClick={close}>{label('contact', 'Contact')}</a>
-        <a href="/account" onClick={close}>{label('account', 'Account')}</a>
+        <a href="/account" onClick={(event) => { close(); if (!signedIn) { event.preventDefault(); window.dispatchEvent(new CustomEvent('seedlings-open-login', { detail: { redirectTo: '/microgreens' } })); } }}>{label('account', 'Account')}</a>
         <a href="/cart" onClick={close} className="nav-cart-icon" aria-label={cartCount === null ? 'Cart' : `Cart, ${cartCount} items`}>
           <span className="nav-cart-icon-svg" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

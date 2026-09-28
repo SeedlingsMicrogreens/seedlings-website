@@ -49,7 +49,9 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
       const x = root.querySelector('.checkout-message') as HTMLElement | null;
       if (x) { x.textContent = t; x.style.color = e ? 'crimson' : ''; }
     };
-    const renderSignedOut = () => root.innerHTML = `<section class="auth-wrap"><div class="auth-card"><span class="eyebrow">Checkout</span><h1>Sign in to continue</h1><p>Please sign in with your mobile number before confirming your delivery details.</p><a class="btn primary" style="width:100%;text-align:center" href="/account">Go to Account Login</a></div></section>`;
+    const renderSignedOut = () => {
+      window.dispatchEvent(new CustomEvent('seedlings-open-login', { detail: { redirectTo: null } }));
+    };
     const renderEmpty = () => root.innerHTML = `<section class="auth-wrap"><div class="auth-card"><span class="eyebrow">Checkout</span><h1>Your cart is empty</h1><p>Add fresh microgreens from the catalogue before checkout.</p><a class="btn primary" style="width:100%;text-align:center" href="/microgreens">Browse Microgreens</a></div></section>`;
 
     const render = (mobile: string, account: CustomerAccount) => {
@@ -288,9 +290,34 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
       });
     };
 
-    const start = async (present: boolean) => { const mobile = getStoredCustomerMobile(); if (!present || !mobile) return renderSignedOut(); const c = getUnifiedCart(); if (!c.oneTimeItems.length && !c.subscriptionItems.length) return renderEmpty(); try { const account = await getCustomerAccount(mobile); if (!account) throw new Error('Customer account not found.'); render(mobile, account); } catch (e) { console.error(e); renderSignedOut(); } };
+    const start = async (present: boolean, mobileOverride?: string) => {
+      const mobile = mobileOverride || getStoredCustomerMobile();
+      if (!present || !mobile) return renderSignedOut();
+      const c = getUnifiedCart();
+      if (!c.oneTimeItems.length && !c.subscriptionItems.length) return renderEmpty();
+      try {
+        const account = await getCustomerAccount(mobile);
+        if (!account) throw new Error('Customer account not found.');
+        if (dead) return;
+        render(mobile, account);
+      } catch (e) {
+        console.error(e);
+        if (!dead) renderSignedOut();
+      }
+    };
+
     const unsub = onAuthStateChanged(auth, u => void start(Boolean(u)));
-    return () => { dead = true; unsub(); };
+    const onCustomerAuthenticated = (event: Event) => {
+      const detail = (event as CustomEvent<{ mobile?: string }>).detail || {};
+      void start(true, detail.mobile);
+    };
+    window.addEventListener('seedlings-customer-authenticated', onCustomerAuthenticated);
+
+    return () => {
+      dead = true;
+      unsub();
+      window.removeEventListener('seedlings-customer-authenticated', onCustomerAuthenticated);
+    };
   }, []);
   return <>{children}</>;
 }

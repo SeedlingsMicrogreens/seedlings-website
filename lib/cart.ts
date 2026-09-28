@@ -4,6 +4,8 @@ const GUEST_CART_STORAGE_KEY = `${CUSTOMER_CART_STORAGE_PREFIX}guest`;
 
 type StoredCart = { oneTimeItems: CartItem[]; subscriptionItems: SubscriptionCartItem[] };
 
+let nextCartOrderSeed = 0;
+
 function activeCartStorageKey(): string {
   if (typeof window === 'undefined') return CART_STORAGE_KEY;
   const mobile = window.localStorage.getItem('seedlings_customer_mobile') || '';
@@ -11,7 +13,7 @@ function activeCartStorageKey(): string {
 }
 
 export type CartItem = {
-  productId: string; slug: string; name: string; price: number; mrp?: number; currency: string; imageUrl?: string; quantity: number; packaging: number; weightGrams: number; sellingOptionId?: string; sellingOptionLabel?: string; deliveryDate?: string;
+  productId: string; slug: string; name: string; price: number; mrp?: number; currency: string; imageUrl?: string; quantity: number; packaging: number; weightGrams: number; sellingOptionId?: string; sellingOptionLabel?: string; deliveryDate?: string; cartOrder?: number;
 };
 
 export type SubscriptionCartItem = CartItem & {
@@ -34,6 +36,7 @@ const cleanCartItem = (item: any): CartItem | null => {
     sellingOptionId: item.sellingOptionId ? String(item.sellingOptionId) : undefined,
     sellingOptionLabel: item.sellingOptionLabel ? String(item.sellingOptionLabel) : undefined,
     deliveryDate: item.deliveryDate ? String(item.deliveryDate) : undefined,
+    cartOrder: Number.isFinite(Number(item.cartOrder)) ? Number(item.cartOrder) : undefined,
   };
 };
 
@@ -53,6 +56,35 @@ function safeParse(value: string | null): StoredCart {
   } catch { return { oneTimeItems: [], subscriptionItems: [] }; }
 }
 
+function normalizeCartOrder(cart: StoredCart): StoredCart {
+  const items = [...cart.oneTimeItems, ...cart.subscriptionItems];
+  const used = new Set<number>();
+  let maxOrder = items.reduce((value, item) => {
+    const order = Number(item.cartOrder);
+    return Number.isFinite(order) ? Math.max(value, order) : value;
+  }, -1);
+
+  for (const item of items) {
+    const order = Number(item.cartOrder);
+    if (Number.isFinite(order) && !used.has(order)) {
+      used.add(order);
+      continue;
+    }
+    item.cartOrder = ++maxOrder;
+    used.add(item.cartOrder);
+  }
+
+  return cart;
+}
+
+function nextCartOrder(cart: StoredCart): number {
+  const max = [...cart.oneTimeItems, ...cart.subscriptionItems]
+    .map((item) => Number(item.cartOrder))
+    .filter(Number.isFinite)
+    .reduce((value, order) => Math.max(value, order), -1);
+  nextCartOrderSeed = Math.max(nextCartOrderSeed, max + 1);
+  return nextCartOrderSeed++;
+}
 
 export function mergeGuestCartIntoCustomer(mobile: string) {
   if (typeof window === 'undefined' || !mobile) return;
@@ -60,18 +92,17 @@ export function mergeGuestCartIntoCustomer(mobile: string) {
   const normalizedMobile = String(mobile).replace(/\D/g, '');
   if (!normalizedMobile) return;
 
-  const guest = safeParse(localStorage.getItem(GUEST_CART_STORAGE_KEY) ?? localStorage.getItem(CART_STORAGE_KEY));
+  const guest = normalizeCartOrder(safeParse(localStorage.getItem(GUEST_CART_STORAGE_KEY) ?? localStorage.getItem(CART_STORAGE_KEY)));
   const customerKey = `${CUSTOMER_CART_STORAGE_PREFIX}${normalizedMobile}`;
-  const customer = safeParse(localStorage.getItem(customerKey));
+  const customer = normalizeCartOrder(safeParse(localStorage.getItem(customerKey)));
 
   const oneTime = [...customer.oneTimeItems];
+  const subscription = [...customer.subscriptionItems];
   for (const guestItem of guest.oneTimeItems) {
     const existing = oneTime.find((item) => item.productId === guestItem.productId);
     if (existing) existing.quantity += guestItem.quantity;
-    else oneTime.push(guestItem);
+    else oneTime.push({ ...guestItem, cartOrder: Number.isFinite(guestItem.cartOrder) ? guestItem.cartOrder : nextCartOrder({ oneTimeItems: oneTime, subscriptionItems: subscription }) });
   }
-
-  const subscription = [...customer.subscriptionItems];
   for (const guestItem of guest.subscriptionItems) {
     const existing = subscription.find((item) =>
       item.productId === guestItem.productId &&
@@ -79,10 +110,11 @@ export function mergeGuestCartIntoCustomer(mobile: string) {
       item.startDate === guestItem.startDate
     );
     if (existing) existing.quantity += guestItem.quantity;
-    else subscription.push(guestItem);
+    else subscription.push({ ...guestItem, cartOrder: Number.isFinite(guestItem.cartOrder) ? guestItem.cartOrder : nextCartOrder({ oneTimeItems: oneTime, subscriptionItems: subscription }) });
   }
 
-  localStorage.setItem(customerKey, JSON.stringify({ oneTimeItems: oneTime, subscriptionItems: subscription }));
+  const merged = normalizeCartOrder({ oneTimeItems: oneTime, subscriptionItems: subscription });
+  localStorage.setItem(customerKey, JSON.stringify(merged));
   localStorage.removeItem(GUEST_CART_STORAGE_KEY);
   localStorage.removeItem(CART_STORAGE_KEY);
   window.dispatchEvent(new CustomEvent('seedlings-cart-updated'));
@@ -92,11 +124,11 @@ export function getUnifiedCart(): StoredCart {
   if (typeof window === 'undefined') return { oneTimeItems: [], subscriptionItems: [] };
   const key = activeCartStorageKey();
   const stored = localStorage.getItem(key);
-  if (stored !== null) return safeParse(stored);
+  if (stored !== null) return normalizeCartOrder(safeParse(stored));
   if (key.endsWith(':guest')) {
     const legacy = localStorage.getItem(CART_STORAGE_KEY);
     if (legacy !== null) {
-      const cart = safeParse(legacy);
+      const cart = normalizeCartOrder(safeParse(legacy));
       localStorage.setItem(key, JSON.stringify(cart)); localStorage.removeItem(CART_STORAGE_KEY); return cart;
     }
   }
@@ -122,7 +154,7 @@ export function addToCart(item: Omit<CartItem, 'quantity' | 'weightGrams'>, quan
     existing.weightGrams = packaging * existing.quantity;
     existing.deliveryDate = undefined;
   } else {
-    items.push({ ...item, quantity: nextQuantity, packaging, weightGrams: packaging * nextQuantity, deliveryDate: undefined });
+    items.push({ ...item, quantity: nextQuantity, packaging, weightGrams: packaging * nextQuantity, deliveryDate: undefined, cartOrder: nextCartOrder(cart) });
   }
   saveUnifiedCart({ ...cart, oneTimeItems: items });
 }
@@ -145,7 +177,7 @@ export function addSubscriptionToCart(item: Omit<SubscriptionCartItem, 'quantity
     existing.weightGrams = packaging * existing.quantity;
     existing.deliveryDate = undefined;
   } else {
-    items.push({ ...item, quantity: nextQuantity, packaging, weightGrams: packaging * nextQuantity, deliveryDate: undefined });
+    items.push({ ...item, quantity: nextQuantity, packaging, weightGrams: packaging * nextQuantity, deliveryDate: undefined, cartOrder: nextCartOrder(cart) });
   }
   saveUnifiedCart({ ...cart, subscriptionItems: items });
 }
@@ -216,6 +248,8 @@ export function replaceProductCartSelection(input: {
 }) {
   const cart = getUnifiedCart();
   const nextQuantity = Math.max(1, Math.floor(Number(input.quantity) || 1));
+  const existing = [...cart.oneTimeItems, ...cart.subscriptionItems].find((item) => item.productId === input.product.productId);
+  const preservedCartOrder = existing?.cartOrder ?? nextCartOrder(cart);
   const base = {
     productId: input.product.productId,
     slug: input.product.slug,
@@ -229,6 +263,7 @@ export function replaceProductCartSelection(input: {
     weightGrams: Math.max(1, Math.floor(Number(input.product.packaging) || 100)) * nextQuantity,
     sellingOptionId: input.product.sellingOptionId,
     sellingOptionLabel: input.product.sellingOptionLabel,
+    cartOrder: preservedCartOrder,
   };
 
   const oneTimeItems = cart.oneTimeItems.filter((item) => item.productId !== input.product.productId);

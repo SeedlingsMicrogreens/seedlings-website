@@ -106,12 +106,12 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
 
     const renderSignedOut = () => {
       const m = main();
-      if (m) m.innerHTML = `<div class="account-title"><div><div class="eyebrow">Subscriptions</div><h1>My Subscription</h1><p class="muted">Sign in to manage your recurring microgreens plan.</p></div></div><div class="panel"><h3>Sign in to continue</h3><p class="muted">Use your mobile number and OTP from the Account page.</p><a class="btn primary" href="/account">Go to Account</a></div>`;
+      if (m) m.innerHTML = `<div class="account-title"><div><div class="eyebrow">Subscriptions</div><h1>My Subscriptions</h1><p class="muted">Sign in to manage your recurring microgreens plan.</p></div></div><div class="panel"><h3>Sign in to continue</h3><p class="muted">Use your mobile number and OTP from the Account page.</p><a class="btn primary" href="/account">Go to Account</a></div>`;
     };
 
     const renderError = (text: string) => {
       const m = main();
-      if (m) m.innerHTML = `<div class="account-title"><div><div class="eyebrow">Subscriptions</div><h1>My Subscription</h1><p class="muted">Unable to load your subscription.</p></div></div><div class="panel"><p class="muted">${esc(text)}</p></div>`;
+      if (m) m.innerHTML = `<div class="account-title"><div><div class="eyebrow">Subscriptions</div><h1>My Subscriptions</h1><p class="muted">Unable to load your subscription.</p></div></div><div class="panel"><p class="muted">${esc(text)}</p></div>`;
     };
 
     async function load() {
@@ -258,7 +258,7 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
           <button class="btn primary" data-create type="button" style="margin-top:12px" ${addresses.length ? "" : "disabled"}>Create Subscription</button>
         </div>` : "";
 
-        m.innerHTML = `<div class="account-title subscription-page-title"><div><div class="eyebrow">Subscriptions</div><h1>My Subscription</h1><p class="muted">Your recurring microgreens plan and delivery schedule.</p></div><span class="status ${active?.status === "active" ? "delivered" : ""}">${active ? String(active.status || "active").toUpperCase() : "NO ACTIVE PLAN"}</span></div><p data-message class="subscription-page-message"></p>${currentHtml}${startHtml}`;
+        m.innerHTML = `<div class="account-title subscription-page-title"><div><div class="eyebrow">Subscriptions</div><h1>My Subscriptions</h1><p class="muted">Your recurring microgreens plan and delivery schedule.</p></div><span class="status ${active?.status === "active" ? "delivered" : ""}">${active ? String(active.status || "active").toUpperCase() : "NO ACTIVE PLAN"}</span></div><p data-message class="subscription-page-message"></p>${currentHtml}${startHtml}`;
 
         const showMessage = (text: string, error = false) => { const el = host.querySelector("[data-message]") as HTMLElement | null; if (el) { el.textContent = text; el.style.color = error ? "crimson" : ""; } };
         host.querySelectorAll("[data-delivery-action]").forEach((button) => button.addEventListener("click", async () => {

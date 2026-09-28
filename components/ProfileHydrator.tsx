@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
-import { signOut } from "firebase/auth";
 import { auth } from "@/lib/firebase";
-import { clearStoredCustomerMobile, getStoredCustomerMobile } from "@/lib/clientOnboarding";
+import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
 import { getCachedCustomerAccount, getCustomerAccount, updateCustomerProfile } from "@/lib/customerAccount";
 
 const FIXED_DELIVERY_DAY = "Saturday";
@@ -140,33 +139,7 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  useEffect(() => {
-    const root = ref.current;
-    if (!root) return;
-    const side = root.querySelector(".account-side") as HTMLElement | null;
-    if (!side || root.querySelector("[data-profile-logout]")) return;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.profileLogout = "true";
-    button.className = "account-logout";
-    button.textContent = "↪ Logout";
-    button.setAttribute("aria-label", "Logout");
-    const profile = Array.from(side.querySelectorAll("a")).find(a => (a.getAttribute("href") || "").includes("profile"));
-    if (profile) profile.insertAdjacentElement("afterend", button); else side.appendChild(button);
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      button.textContent = "Logging out…";
-      try {
-        await signOut(auth);
-        clearStoredCustomerMobile();
-        window.location.assign("/account");
-      } catch (error) {
-        console.error("Customer logout failed", error);
-        button.disabled = false;
-        button.textContent = "↪ Logout";
-      }
-    });
-  }, []);
+
 
   return <div ref={ref}>{children}</div>;
 }

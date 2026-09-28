@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Header from "@/components/layout/Header";
+import ProductCard from "@/components/business/ProductCard";
 import Footer from "@/components/layout/Footer";
 import {
   getUnifiedCart,
@@ -92,7 +93,14 @@ const groupCartItems = (oneTimeItems: CartItem[], subscriptionItems: Subscriptio
     groups.set(item.productId, group);
   }
 
-  return [...groups.values()];
+  return [...groups.values()].sort((a, b) => {
+    const orderA = Number((a.oneTime ?? a.subscription)?.cartOrder);
+    const orderB = Number((b.oneTime ?? b.subscription)?.cartOrder);
+    if (Number.isFinite(orderA) && Number.isFinite(orderB)) return orderA - orderB;
+    if (Number.isFinite(orderA)) return -1;
+    if (Number.isFinite(orderB)) return 1;
+    return 0;
+  });
 };
 
 function CartProductCard({
@@ -370,16 +378,9 @@ function EmptyCart() {
           <section className="border-t border-stone-200 px-4 pb-4 pt-4 sm:pt-5" aria-labelledby="cart-recommendations-title">
             <div className="mb-4 text-center"><h2 id="cart-recommendations-title" className="m-0 text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">You might like these</h2><p className="mt-1 text-xs text-slate-500 sm:text-sm">Fresh, healthy and full of goodness</p></div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {recommendations.map((product) => {
-                const price = Number(product.sellingPrice ?? 0); const mrp = Number(product.mrp ?? price); const slug = encodeURIComponent(productSlug(product));
-                const hasPrice = Number.isFinite(price) && price > 0; const hasSaving = hasPrice && Number.isFinite(mrp) && mrp > price;
-                return <article key={product.id} className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-                  <a href={`/product/${slug}`} aria-label={`View ${product.name}`} className="block aspect-[16/7] overflow-hidden bg-lime-50">
-                    {product.imageUrl ? <img src={product.imageUrl} alt={product.name} loading="lazy" className="h-full w-full object-cover transition duration-300 hover:scale-[1.02]" /> : <div className="flex h-full items-center justify-center text-sm text-slate-400">Fresh microgreens</div>}
-                  </a>
-                  <div className="p-3"><h3 className="m-0 truncate text-base font-semibold text-slate-900">{product.name}</h3><div className="mt-2 flex items-center justify-between gap-2"><div className="flex min-w-0 items-center gap-2">{hasPrice ? <strong className="text-base font-bold text-lime-700">{money(price, product.currency || "INR")}</strong> : <strong className="text-sm font-semibold text-lime-700">Freshly grown</strong>}{hasSaving ? <span className="whitespace-nowrap rounded-full bg-lime-50 px-2 py-1 text-xs font-semibold text-lime-700">Save {money(mrp - price, product.currency || "INR")}</span> : null}</div><a href={`/product/${slug}`} className="shrink-0 rounded-full bg-orange-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-orange-600">Details</a></div></div>
-                </article>;
-              })}
+              {recommendations.map((product) => (
+                <ProductCard key={product.id} product={product} showDescription={false} />
+              ))}
             </div>
           </section>
         ) : null}

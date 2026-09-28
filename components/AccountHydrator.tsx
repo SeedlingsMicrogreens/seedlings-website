@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
-import { onAuthStateChanged, signInAnonymously, signOut } from "firebase/auth";
+import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { collection, getCountFromServer, getDocsFromServer, query, where } from "firebase/firestore";
 import { getCustomerAccount } from "@/lib/customerAccount";
-import { clearStoredCustomerMobile, ensureClientOnboarding, getStoredCustomerMobile, normalizeIndianMobile } from "@/lib/clientOnboarding";
+import { ensureClientOnboarding, getStoredCustomerMobile, normalizeIndianMobile } from "@/lib/clientOnboarding";
 
 const DEMO_OTP_ENABLED = process.env.NEXT_PUBLIC_ENABLE_DEMO_OTP === 'true';
 const DEMO_OTP = process.env.NEXT_PUBLIC_DEMO_OTP || '';
@@ -32,69 +32,9 @@ function packLabel(weightGrams: number, quantity: number, packaging?: number) {
 }
 
 function renderLogin(root: HTMLElement) {
-  root.innerHTML = `
-    <main class="section">
-      <div class="container">
-        <section class="auth-wrap">
-          <div class="auth-card">
-            <span class="eyebrow">My Account</span>
-            <h1>Welcome back</h1>
-            <p>Sign in with your mobile number to view orders, addresses and subscriptions.</p>
-            <label>Mobile number<input type="tel" inputmode="numeric" maxlength="10" placeholder="10-digit mobile number" /></label>
-            <a class="btn primary" href="#" data-account-login>Send OTP</a>
-          </div>
-        </section>
-      </div>
-    </main>`;
-
-  const input = root.querySelector('input[type="tel"]') as HTMLInputElement | null;
-  const action = root.querySelector('[data-account-login]') as HTMLAnchorElement | null;
-  const card = root.querySelector('.auth-card') as HTMLElement | null;
-  if (!input || !action || !card) return;
-
-  let mobile = '';
-  let expiresAt = 0;
-  let timer: ReturnType<typeof setInterval> | null = null;
-  const stopTimer = () => { if (timer) clearInterval(timer); timer = null; };
-  const message = (text: string) => {
-    let el = card.querySelector('.auth-message') as HTMLElement | null;
-    if (!el) { el = document.createElement('p'); el.className='auth-message'; el.style.cssText='margin-top:12px;text-align:center;font-size:13px'; card.appendChild(el); }
-    el.textContent = text;
-  };
-  const showOtp = () => {
-    stopTimer();
-    // The OTP UI is a single instance. Never append another OTP section.
-    card.querySelector('.account-otp-row')?.remove();
-    expiresAt = Date.now() + 60000;
-    const row=document.createElement('div'); row.className='account-otp-row'; row.style.marginTop='14px';
-    row.innerHTML='<label>OTP<input type="text" inputmode="numeric" maxlength="4" placeholder="Enter 4-digit OTP"></label><p class="otp-timer" style="text-align:center;margin:10px 0;font-size:13px"></p><button class="btn outline" type="button" style="width:100%">Verify OTP</button>';
-    card.insertBefore(row, action);
-    const otp=row.querySelector('input') as HTMLInputElement;
-    const verify=row.querySelector('button') as HTMLButtonElement;
-    const timerText=row.querySelector('.otp-timer') as HTMLElement;
-    const tick=()=>{ const r=Math.max(0,Math.ceil((expiresAt-Date.now())/1000)); timerText.textContent=r?`OTP expires in 0:${String(r).padStart(2,'0')}`:'OTP expired'; if(!r){stopTimer();otp.disabled=true;verify.disabled=true;} };
-    timer=setInterval(tick,1000); tick();
-    verify.addEventListener('click', async()=>{
-      message(''); if(Date.now()>=expiresAt){message('OTP expired. Please request a new OTP.');return;}
-      if(!DEMO_OTP_ENABLED || !DEMO_OTP){message('Phone OTP authentication is not configured for this environment.');return;}
-      if(otp.value.trim()!==DEMO_OTP){message('Invalid OTP. Please enter the correct 4-digit OTP.');return;}
-      verify.disabled=true; verify.textContent='Verifying…';
-      try { await ensureClientOnboarding(mobile); if(!auth.currentUser) await signInAnonymously(auth); window.location.assign('/account'); }
-      catch(e){ console.error('Customer login failed',e); message('Unable to complete login. Please check your connection.'); verify.disabled=false; verify.textContent='Verify OTP'; }
-    });
-  };
-  action.addEventListener('click',(e)=>{
-    e.preventDefault(); message('');
-    const normalized=normalizeIndianMobile(input.value); if(!normalized){message('Enter a valid 10-digit Indian mobile number.');return;}
-    mobile=normalized;
-    if(!DEMO_OTP_ENABLED || !DEMO_OTP){message('Phone OTP authentication is not configured for this environment.');return;}
-    // Send OTP is a one-shot action for this login attempt. Hide it after sending
-    // so repeated clicks cannot create duplicate OTP inputs/verify buttons.
-    action.style.display='none';
-    showOtp();
-  });
-  action.removeAttribute('href'); action.style.cursor='pointer';
+  window.dispatchEvent(new CustomEvent("seedlings-open-login", { detail: { redirectTo: "/microgreens" } }));
 }
+
 
 export default function AccountHydrator({ children }: { children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -104,39 +44,6 @@ export default function AccountHydrator({ children }: { children: ReactNode }) {
     if (!root) return;
     let alive = true;
 
-    const wireAccountActions = () => {
-      const side = root.querySelector(".account-side") as HTMLElement | null;
-      if (!side || root.querySelector("[data-account-logout]")) return;
-
-      const logout = document.createElement("button");
-      logout.type = "button";
-      logout.dataset.accountLogout = "true";
-      logout.className = "account-logout";
-      logout.textContent = "↪ Logout";
-      logout.setAttribute("aria-label", "Logout");
-
-      const profile = Array.from(side.querySelectorAll("a")).find((a) =>
-        (a.getAttribute("href") || "").includes("profile")
-      );
-
-      if (profile) profile.insertAdjacentElement("afterend", logout);
-      else side.appendChild(logout);
-
-      logout.addEventListener("click", async () => {
-        logout.disabled = true;
-        logout.textContent = "Logging out…";
-        try {
-          await signOut(auth);
-          clearStoredCustomerMobile();
-          window.location.assign("/account");
-        } catch (error) {
-          console.error("Customer logout failed", error);
-          logout.disabled = false;
-          logout.textContent = "↪ Logout";
-        }
-      });
-    };
-
     const hydrate = async () => {
       const mobile = getStoredCustomerMobile();
       const user = auth.currentUser;
@@ -144,8 +51,6 @@ export default function AccountHydrator({ children }: { children: ReactNode }) {
         renderLogin(root);
         return;
       }
-      wireAccountActions();
-
       try {
         const [account, activeSubscriptionsSnapshot, orderCountSnapshot] = await Promise.all([
           getCustomerAccount(mobile, { bypassCache: true }),

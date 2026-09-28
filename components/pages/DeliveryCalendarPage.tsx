@@ -360,11 +360,11 @@ export default function DeliveryCalendarPage() {
   }, [monthEvents, selectedDate, view]);
 
   if (loading) {
-    return <><Header navItems={[]} /><main className="section"><div className="container"><div className="account-shell"><aside className="account-side"><a href="/account">⌂ Overview</a><a href="/orders">▣ My Orders</a><a href="/subscriptions">↻ My Subscriptions</a><a className="active" href="/delivery-calendar">▦ Delivery Calendar</a><a href="/addresses">⌖ My Addresses</a><a href="/profile">♙ My Profile</a></aside><section className="account-main"><div><div className="account-title"><div><h1>Delivery Calendar</h1><p className="muted">View and manage your upcoming deliveries</p></div></div><div className="delivery-calendar-skeleton" /></div></section></div></div></main><Footer navItems={[]} settings={null} /></>;
+    return <><Header navItems={[]} /><main className="section"><div className="container"><div className="account-shell"><aside className="account-side"><a href="/account">⌂ Overview</a><a href="/orders">▣ My Orders</a><a href="/subscriptions">↻ My Subscriptions</a><a className="active" href="/delivery-calendar">▦ Delivery Calendar</a><a href="/addresses">⌖ My Addresses</a><a href="/profile">♙ My Profile</a></aside><section className="account-main"><div><div className="account-title"><div><div className="eyebrow">Delivery Calendar</div><h1>Delivery Calendar</h1><p className="muted">View and manage your upcoming deliveries</p></div></div><div className="delivery-calendar-skeleton" /></div></section></div></div></main><Footer navItems={[]} settings={null} /></>;
   }
 
   if (signedOut || error || (!subscriptions.length && !deliveries.length)) {
-    return <><Header navItems={[]} /><main className="section"><div className="container"><div className="account-shell"><aside className="account-side"><a href="/account">⌂ Overview</a><a href="/orders">▣ My Orders</a><a href="/subscriptions">↻ My Subscriptions</a><a className="active" href="/delivery-calendar">▦ Delivery Calendar</a><a href="/addresses">⌖ My Addresses</a><a href="/profile">♙ My Profile</a></aside><section className="account-main"><div className="account-title"><div><h1>Delivery Calendar</h1><p className="muted">View and manage your upcoming deliveries</p></div></div><div className="panel"><h3>{signedOut ? 'Sign in to continue' : error ? 'Unable to load delivery calendar' : 'No active subscription'}</h3><p className="muted">{signedOut ? 'There are no customer deliveries to display until you sign in.' : error || 'There are no scheduled subscription deliveries for this customer.'}</p></div></section></div></div></main><Footer navItems={[]} settings={null} /></>;
+    return <><Header navItems={[]} /><main className="section"><div className="container"><div className="account-shell"><aside className="account-side"><a href="/account">⌂ Overview</a><a href="/orders">▣ My Orders</a><a href="/subscriptions">↻ My Subscriptions</a><a className="active" href="/delivery-calendar">▦ Delivery Calendar</a><a href="/addresses">⌖ My Addresses</a><a href="/profile">♙ My Profile</a></aside><section className="account-main"><div className="account-title"><div><div className="eyebrow">Delivery Calendar</div><h1>Delivery Calendar</h1><p className="muted">View and manage your upcoming deliveries</p></div></div><div className="panel"><h3>{signedOut ? 'Sign in to continue' : error ? 'Unable to load delivery calendar' : 'No active subscription'}</h3><p className="muted">{signedOut ? 'There are no customer deliveries to display until you sign in.' : error || 'There are no scheduled subscription deliveries for this customer.'}</p></div></section></div></div></main><Footer navItems={[]} settings={null} /></>;
   }
 
   return <>
@@ -384,7 +384,7 @@ export default function DeliveryCalendarPage() {
           <section className="account-main">
             <div className="delivery-calendar-main">
               <div className="account-title delivery-calendar-title">
-                <div><h1>Delivery Calendar</h1><p className="muted">View and manage your upcoming deliveries</p></div>
+                <div><div className="eyebrow">Delivery Calendar</div><h1>Delivery Calendar</h1><p className="muted">View and manage your upcoming deliveries</p></div>
               </div>
 
               <div className="delivery-calendar-controls">

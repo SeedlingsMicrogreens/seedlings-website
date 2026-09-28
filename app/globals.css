@@ -1424,6 +1424,11 @@ select:focus {
   min-width: 0
 }
 
+/* Shared logged-in Account welcome header */
+.account-welcome {
+  margin-bottom: 26px;
+}
+
 .account-title {
   display: flex;
   justify-content: space-between;
@@ -4580,6 +4585,7 @@ body:has(.floating-cart) .footer {
 @media(max-width: 700px) { .delivery-auth-section { padding-top: 28px; } .delivery-auth-card { padding: 24px 18px; border-radius: 18px; } .delivery-dashboard-heading { align-items: flex-start; } .delivery-logout { padding: 8px 12px; } .delivery-dashboard-content { padding-top: 22px; } .delivery-card { padding: 16px; } }
 
 /* Journey Seedlings Feedback */
+/* Journey Seedlings Feedback */
 .journey-feedback-section {
   background: #f8faf5;
 }
@@ -4602,9 +4608,7 @@ body:has(.floating-cart) .footer {
   align-items: stretch;
 }
 
-.journey-feedback-track::-webkit-scrollbar {
-  display: none;
-}
+.journey-feedback-track::-webkit-scrollbar { display: none; }
 
 .journey-feedback-card {
   flex: 0 0 calc((100% - 36px) / 3);
@@ -4620,7 +4624,7 @@ body:has(.floating-cart) .footer {
   flex-direction: column;
 }
 
-/* Text + image: image always stays at the top and the feedback text sits below it. */
+/* Image + text cards: media keeps its own aspect ratio and the copy gets a fixed, contained area. */
 .journey-feedback-content {
   display: flex;
   flex-direction: column;
@@ -4628,34 +4632,78 @@ body:has(.floating-cart) .footer {
   min-height: 0;
 }
 
-.journey-feedback-content .journey-feedback-media {
-  flex: 0 0 auto;
-}
+.journey-feedback-content .journey-feedback-media { flex: 0 0 auto; }
 
 .journey-feedback-media {
+  position: relative;
   width: 100%;
   aspect-ratio: 3 / 2;
-  background: #f0f5eb;
+  background: #edf2e8;
   overflow: hidden;
 }
 
 .journey-feedback-media img {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   display: block;
   object-fit: cover;
 }
 
-/* Media-only cards are vertically centered inside the same fixed-height card. */
+/* Media-only cards use the available card height without distorting the source media. */
 .journey-feedback-image-only,
 .journey-feedback-video {
-  margin: auto;
-  flex: 0 0 auto;
+  margin: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  aspect-ratio: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .journey-feedback-image-only {
+  background: #171a16;
+  isolation: isolate;
+}
+
+.journey-feedback-image-only::before {
+  content: "";
+  position: absolute;
+  inset: -18px;
+  background-image: var(--journey-feedback-bg);
+  background-size: cover;
+  background-position: center;
+  filter: blur(18px) brightness(.42);
+  transform: scale(1.08);
+}
+
+.journey-feedback-image-only img {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.journey-feedback-video {
+  background: #111;
+}
+
+.journey-feedback-video iframe {
   width: 100%;
-  aspect-ratio: 3 / 2;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  max-height: 100%;
+  border: 0;
+  display: block;
+  flex: 0 0 auto;
+}
+
+.journey-feedback-text-media img {
+  object-fit: cover;
 }
 
 .journey-feedback-copy {
@@ -4665,39 +4713,45 @@ body:has(.floating-cart) .footer {
   min-height: 0;
   flex-direction: column;
   justify-content: center;
-  padding: 28px 30px 30px;
+  padding: 20px 24px 22px;
+  overflow: hidden;
 }
 
 .journey-feedback-copy p {
   margin: 0;
   color: var(--brown-dark);
-  font: 600 19px/1.5 "Playfair Display", serif;
+  font: 600 18px/1.45 "Playfair Display", serif;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
 }
+
+.journey-feedback-read-more {
+  align-self: flex-start;
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--green-dark);
+  font: 700 14px/1.2 inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.journey-feedback-read-more:hover { color: var(--green); }
 
 .journey-feedback-quote-mark {
   color: #cfe7b5;
-  font: 800 58px/0.7 "Playfair Display", serif;
+  font: 800 46px/.7 "Playfair Display", serif;
   display: block;
-  height: 34px;
+  height: 26px;
 }
 
 .journey-feedback-quote-mark-end {
   align-self: flex-end;
-  margin-top: 10px;
-}
-
-.journey-feedback-video {
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  min-height: 0;
-  background: #111;
-}
-
-.journey-feedback-video iframe {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  display: block;
+  margin-top: 8px;
 }
 
 .journey-feedback-nav {
@@ -4719,22 +4773,10 @@ body:has(.floating-cart) .footer {
   line-height: 1;
 }
 
-.journey-feedback-nav:hover:not(:disabled) {
-  background: var(--green-tint);
-}
-
-.journey-feedback-nav:disabled {
-  opacity: .45;
-  cursor: default;
-}
-
-.journey-feedback-prev {
-  left: 0;
-}
-
-.journey-feedback-next {
-  right: 0;
-}
+.journey-feedback-nav:hover:not(:disabled) { background: var(--green-tint); }
+.journey-feedback-nav:disabled { opacity: .45; cursor: default; }
+.journey-feedback-prev { left: 0; }
+.journey-feedback-next { right: 0; }
 
 .journey-feedback-dots {
   position: absolute;
@@ -4757,9 +4799,63 @@ body:has(.floating-cart) .footer {
   transition: width .2s ease, background .2s ease;
 }
 
-.journey-feedback-dot.is-active {
-  width: 24px;
-  background: var(--green-dark);
+.journey-feedback-dot.is-active { width: 24px; background: var(--green-dark); }
+
+.journey-feedback-read-more-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(20, 25, 20, .58);
+  backdrop-filter: blur(5px);
+}
+
+.journey-feedback-read-more-modal[hidden] { display: none; }
+body.journey-feedback-modal-open { overflow: hidden; }
+
+.journey-feedback-read-more-dialog {
+  width: min(620px, 100%);
+  max-height: min(78vh, 640px);
+  overflow: auto;
+  background: #fffdf8;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  box-shadow: 0 24px 70px rgba(0,0,0,.22);
+}
+
+.journey-feedback-read-more-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.journey-feedback-read-more-head h3 { margin: 0; }
+
+.journey-feedback-read-more-close {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink);
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.journey-feedback-read-more-close:hover { background: #f1ede4; }
+
+.journey-feedback-read-more-body {
+  padding: 24px 22px 28px;
+  color: var(--brown-dark);
+  font: 500 18px/1.65 "Playfair Display", serif;
+  white-space: pre-wrap;
 }
 
 @media(max-width:1000px) and (min-width:701px) {
@@ -4770,41 +4866,14 @@ body:has(.floating-cart) .footer {
 }
 
 @media(max-width:700px) {
-  .journey-feedback-track {
-    gap: 0;
-  }
-
-  .journey-feedback-card {
-    flex-basis: 100%;
-    width: 100%;
-    height: 460px;
-  }
-
-  .journey-feedback-carousel {
-    padding: 0 0 30px;
-  }
-
-  .journey-feedback-copy {
-    padding: 24px 24px 28px;
-  }
-
-  .journey-feedback-copy p {
-    font-size: 18px;
-  }
-
-  .journey-feedback-nav {
-    top: 50%;
-    width: 38px;
-    height: 38px;
-  }
-
-  .journey-feedback-prev {
-    left: 10px;
-  }
-
-  .journey-feedback-next {
-    right: 10px;
-  }
+  .journey-feedback-track { gap: 0; }
+  .journey-feedback-card { flex-basis: 100%; width: 100%; height: 460px; }
+  .journey-feedback-carousel { padding: 0 0 30px; }
+  .journey-feedback-copy { padding: 18px 20px 22px; }
+  .journey-feedback-copy p { font-size: 17px; }
+  .journey-feedback-nav { top: 50%; width: 38px; height: 38px; }
+  .journey-feedback-prev { left: 10px; }
+  .journey-feedback-next { right: 10px; }
 }
 
 .feedback-modal-backdrop{position:fixed;inset:0;z-index:1000;background:rgba(24,31,24,.52);display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto}
@@ -5220,4 +5289,81 @@ body:has(.floating-cart) .footer {
   .cart-product-row-quantity { grid-row: auto; }
   .cart-product-row-price { grid-row: auto; }
   .cart-product-row-meta { margin: 8px 0 0; }
+}
+
+/* Customer login modal: shared, non-dismissible backdrop used by Account and Checkout. */
+.customer-login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.customer-login-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(30, 24, 18, .38);
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+}
+
+.customer-login-modal {
+  position: relative;
+  z-index: 1;
+  width: min(440px, calc(100vw - 32px));
+  background: rgba(255, 253, 248, .97);
+  border: 1px solid rgba(92, 72, 48, .22);
+  border-radius: 26px;
+  padding: 30px;
+  box-shadow: 0 24px 70px rgba(42, 31, 20, .28);
+}
+
+.customer-login-modal h2 {
+  font: 700 34px "Playfair Display", serif;
+  margin: 8px 0;
+}
+
+.customer-login-modal > p {
+  margin: 0 0 20px;
+  font-size: 13px;
+  color: var(--soft);
+}
+
+.customer-login-modal label {
+  display: block;
+  margin-top: 14px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.customer-login-modal input {
+  width: 100%;
+  margin-top: 7px;
+}
+
+.customer-login-action {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.customer-login-timer {
+  text-align: center;
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--soft);
+}
+
+.customer-login-message {
+  margin: 12px 0 0 !important;
+  color: #a33a2b !important;
+  text-align: center;
+  font-size: 13px !important;
+}
+
+@media (max-width: 700px) {
+  .customer-login-overlay { padding: 16px; }
+  .customer-login-modal { padding: 24px; border-radius: 22px; }
+  .customer-login-modal h2 { font-size: 30px; }
 }

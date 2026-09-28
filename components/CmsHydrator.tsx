@@ -165,12 +165,18 @@ function seedlingsFeedbackMarkup(items: Array<Record<string, unknown>>) {
       let body = '';
 
       if (type === 'video' && embedUrl) {
-        body = `<div class="journey-feedback-media journey-feedback-video"><iframe src="${esc(embedUrl)}" title="Seedlings feedback video" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>`;
+        body = `<div class="journey-feedback-media journey-feedback-video" aria-label="Feedback video"><iframe src="${esc(embedUrl)}" title="Seedlings feedback video" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>`;
       } else if (type === 'image' && imageUrl) {
-        body = `<div class="journey-feedback-media journey-feedback-image-only"><img src="${esc(imageUrl)}" alt="Seedlings customer feedback" loading="lazy" /></div>`;
+        body = `<div class="journey-feedback-media journey-feedback-image-only" style="--journey-feedback-bg:url('${esc(imageUrl)}')"><img src="${esc(imageUrl)}" alt="Seedlings customer feedback" loading="lazy" /></div>`;
       } else if (type === 'text') {
-        const media = imageUrl ? `<div class="journey-feedback-media"><img src="${esc(imageUrl)}" alt="Seedlings customer feedback" loading="lazy" /></div>` : '';
-        body = `<div class="journey-feedback-content">${media}<div class="journey-feedback-copy"><span class="journey-feedback-quote-mark" aria-hidden="true">“</span><p>${esc(textValue)}</p><span class="journey-feedback-quote-mark journey-feedback-quote-mark-end" aria-hidden="true">”</span></div></div>`;
+        const media = imageUrl
+          ? `<div class="journey-feedback-media journey-feedback-text-media"><img src="${esc(imageUrl)}" alt="Seedlings customer feedback" loading="lazy" /></div>`
+          : '';
+        const preview = textValue.length > 190 ? `${textValue.slice(0, 187).trimEnd()}…` : textValue;
+        const readMore = textValue.length > 190
+          ? `<button type="button" class="journey-feedback-read-more" data-feedback-read-more="${index}">Read more</button>`
+          : '';
+        body = `<div class="journey-feedback-content">${media}<div class="journey-feedback-copy"><span class="journey-feedback-quote-mark" aria-hidden="true">“</span><p>${esc(preview)}</p>${readMore}<span class="journey-feedback-quote-mark journey-feedback-quote-mark-end" aria-hidden="true">”</span></div></div>`;
       }
 
       if (!body) return '';
@@ -195,10 +201,10 @@ function renderSeedlingsFeedback(root: HTMLElement, items: Array<Record<string, 
   }
 
   section.hidden = false;
-  initializeSeedlingsFeedbackCarousel(root);
+  initializeSeedlingsFeedbackCarousel(root, items);
 }
 
-function initializeSeedlingsFeedbackCarousel(root: HTMLElement) {
+function initializeSeedlingsFeedbackCarousel(root: HTMLElement, sourceItems: Array<Record<string, unknown>>) {
   const carousel = root.querySelector('.journey-feedback-carousel') as HTMLElement | null;
   const track = carousel?.querySelector('.journey-feedback-track') as HTMLElement | null;
   const prev = carousel?.querySelector('.journey-feedback-prev') as HTMLButtonElement | null;
@@ -206,8 +212,80 @@ function initializeSeedlingsFeedbackCarousel(root: HTMLElement) {
   const dotsContainer = carousel?.querySelector('.journey-feedback-dots') as HTMLElement | null;
   if (!carousel || !track || !prev || !next || !dotsContainer) return;
 
-  const managedCarousel = carousel as HTMLElement & { __feedbackCleanup?: () => void };
+  const managedCarousel = carousel as HTMLElement & { __feedbackCleanup?: () => void; __feedbackModalCleanup?: () => void };
   managedCarousel.__feedbackCleanup?.();
+  managedCarousel.__feedbackModalCleanup?.();
+
+  const sortedItems = sourceItems.slice().sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0));
+  const readMoreButtons = () => Array.from(track.querySelectorAll<HTMLButtonElement>('[data-feedback-read-more]'));
+  let feedbackModal: HTMLElement | null = null;
+  const openFeedbackModal = (index: number) => {
+    const item = sortedItems[index];
+    const fullText = typeof item?.text === 'string' ? item.text.trim() : '';
+    if (!fullText) return;
+
+    let modal = feedbackModal || document.querySelector<HTMLElement>('.journey-feedback-read-more-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.className = 'journey-feedback-read-more-modal';
+      modal.innerHTML = `<div class="journey-feedback-read-more-dialog" role="dialog" aria-modal="true" aria-labelledby="journey-feedback-read-more-title"><div class="journey-feedback-read-more-head"><h3 id="journey-feedback-read-more-title">Customer feedback</h3><button type="button" class="journey-feedback-read-more-close" aria-label="Close">×</button></div><div class="journey-feedback-read-more-body"></div></div>`;
+      document.body.appendChild(modal);
+      modal.querySelector<HTMLButtonElement>('.journey-feedback-read-more-close')?.addEventListener('click', () => closeFeedbackModal());
+      modal.addEventListener('click', (event) => { if (event.target === modal) closeFeedbackModal(); });
+    }
+    feedbackModal = modal;
+    const body = modal.querySelector<HTMLElement>('.journey-feedback-read-more-body');
+    if (body) body.textContent = fullText;
+    modal.hidden = false;
+    document.body.classList.add('journey-feedback-modal-open');
+    modal.querySelector<HTMLButtonElement>('.journey-feedback-read-more-close')?.focus();
+  };
+  const closeFeedbackModal = () => {
+    const modal = feedbackModal;
+    if (modal) modal.hidden = true;
+    document.body.classList.remove('journey-feedback-modal-open');
+  };
+  const bindReadMore = () => {
+    readMoreButtons().forEach((button) => {
+      button.onclick = () => openFeedbackModal(Number(button.dataset.feedbackReadMore ?? -1));
+    });
+  };
+  bindReadMore();
+  const getFeedbackModal = () => feedbackModal || document.querySelector<HTMLElement>('.journey-feedback-read-more-modal');
+  const getFeedbackModalClose = () => getFeedbackModal()?.querySelector<HTMLButtonElement>('.journey-feedback-read-more-close');
+  const handleModalBackdropPointerDown = (event: PointerEvent) => {
+    const modal = getFeedbackModal();
+    if (event.target === modal) closeFeedbackModal();
+  };
+  const handleModalBackdropClick = (event: MouseEvent) => {
+    const modal = getFeedbackModal();
+    if (event.target === modal) closeFeedbackModal();
+  };
+  const handleModalKeyDown = (event: KeyboardEvent) => {
+    const modal = getFeedbackModal();
+    if (event.key === 'Escape' && modal && !modal.hidden) closeFeedbackModal();
+  };
+  document.addEventListener('keydown', handleModalKeyDown);
+  managedCarousel.__feedbackModalCleanup = () => {
+    const modal = getFeedbackModal();
+    closeFeedbackModal();
+    if (modal) {
+      modal.removeEventListener('pointerdown', handleModalBackdropPointerDown);
+      modal.removeEventListener('click', handleModalBackdropClick);
+      modal.remove();
+    }
+    document.removeEventListener('keydown', handleModalKeyDown);
+    feedbackModal = null;
+  };
+  const bindFeedbackModalHandlers = () => {
+    const modal = getFeedbackModal();
+    if (!modal) return;
+    const close = getFeedbackModalClose();
+    if (close) close.onclick = closeFeedbackModal;
+    modal.addEventListener('pointerdown', handleModalBackdropPointerDown);
+    modal.addEventListener('click', handleModalBackdropClick);
+  };
+  bindFeedbackModalHandlers();
 
   const cards = () => Array.from(track.querySelectorAll<HTMLElement>('.journey-feedback-card'));
   let currentIndex = 0;

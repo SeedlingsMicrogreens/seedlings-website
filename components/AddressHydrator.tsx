@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from 'react';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
-import { clearStoredCustomerMobile, getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
 import { getCustomerAccount, updateCustomerAddresses, type CustomerAddress } from '@/lib/customerAccount';
 import { confirmCustomerAddressDelete } from '@/lib/customerAlerts';
 
@@ -72,29 +72,9 @@ export default function AddressHydrator({ children }: { children: ReactNode }) {
     if (!root) return;
     let alive = true;
 
-    const wireLogout = () => {
-      const side = root.querySelector('.account-side');
-      if (!side || root.querySelector('[data-address-logout]')) return;
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.dataset.addressLogout = 'true';
-      button.className = 'account-logout';
-      button.textContent = '↪ Logout';
-      button.setAttribute('aria-label', 'Logout');
-      const profile = Array.from(side.querySelectorAll('a')).find(a => (a.getAttribute('href') || '').includes('profile'));
-      if (profile) profile.insertAdjacentElement('afterend', button); else side.appendChild(button);
-      button.addEventListener('click', async () => {
-        button.disabled = true;
-        button.textContent = 'Logging out…';
-        try { await signOut(auth); clearStoredCustomerMobile(); window.location.assign('/account'); }
-        catch (error) { console.error('Customer logout failed', error); button.disabled = false; button.textContent = '↪ Logout'; }
-      });
-    };
-
     const load = async () => {
       const mobile = getStoredCustomerMobile();
       if (!mobile || !auth.currentUser) { renderLogin(root); return; }
-      wireLogout();
       const grid = root.querySelector('.address-grid') as HTMLElement | null;
       if (!grid) return;
       const cached = readAddressCache(mobile);

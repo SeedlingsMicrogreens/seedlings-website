@@ -1,4 +1,21 @@
 
+## Journey Feedback UX — Media & Read More
+- Preserved the three CMS feedback content types: image-only, video/iframe-only, and image + text.
+- Media-only cards keep source aspect ratios and center media vertically instead of stretching it.
+- Image-only cards use a blurred/darkened version of the same image as the surrounding background so unused vertical space is intentional.
+- Video cards use a dark media background while keeping the iframe at its native 16:9 ratio.
+- Image + text cards show a short text preview inside the card; longer feedback uses a Read more modal for the complete text.
+- Prevented long feedback text from overflowing or changing carousel card geometry.
+## Cart — Empty Recommendations & Stable Item Order
+
+- Empty Cart recommendations now use the same **Add to cart / quantity (+/−) controls** as the Home Featured Microgreens cards.
+- When a recommended product is added, the quantity control updates in place without leaving the Cart page.
+- Cart item display order is now preserved with a stable cart-order value.
+- Changing packaging, subscription plan, subscription details, or other editable values no longer moves that cart item to the top/end of the list.
+- Existing cart item order is preserved when a product selection is replaced between one-time and subscription modes.
+- Existing checkout, delivery availability, pricing, payment, subscription, and inventory rules are unchanged.
+
+
 ## Phase 45 — Cart Checkout Action Simplification
 
 - Removed the cart-level Total display from the bottom checkout bar.
@@ -234,3 +251,39 @@ Older documents contain statements that no longer exactly describe the current r
 - Fixed `resolveCartDeliveryDates()` runtime crash when recording reservations.
 - The cart item kind uses `one-time` while the reservation map uses `oneTime`; reservation updates now explicitly map `subscription` and `one-time` to the correct reservation buckets.
 - No delivery-date, availability, cart, enquiry, payment, or pricing business rules changed.
+
+## Phase 47 — Account Area UI Consistency
+- Standardized the logged-in Account sidebar across Account, Orders, Subscriptions, Delivery Calendar, Addresses, Profile and Order Details.
+- Logout is now rendered on every Account-area page for logged-in customers instead of only being visible from Profile.
+- Kept the Account Overview welcome header (`Welcome back, <customer>`) and its existing dashboard layout unchanged.
+- Standardized Account-area branding to `Seedlings Microgreen` and the header cart presentation.
+- Standardized Account-area sidebar labels/icons and Subscription page naming (`My Subscriptions`).
+- Added the missing Delivery Calendar eyebrow/title hierarchy for consistency with the other Account pages.
+- No customer, order, subscription, delivery, address, profile, cart, payment, or Firebase business logic was intentionally changed.
+
+## Account UI consistency follow-up
+- Fixed duplicate Logout controls on Profile and Addresses by keeping logout ownership in the shared Account sidebar hydrator.
+- Restored the shared “Welcome back, <customer>” header and description on every logged-in Account page, not only Overview.
+- Preserved existing page-specific functionality and content below the shared header.
+
+## Phase 47 — Account Login & Checkout Authentication UX
+- Added a shared customer login modal with a translucent blurred backdrop.
+- Account navigation now opens the login modal when signed out and redirects to `/microgreens` after successful login.
+- Account page signed-out state now uses the shared modal instead of replacing the site with a standalone white login screen.
+- Checkout now opens the same login modal directly when authentication is required, while keeping checkout visible behind the modal.
+- Login modal cannot be dismissed by clicking the backdrop; successful checkout login returns to the checkout flow.
+- Improved logout responsiveness by clearing the local customer mobile immediately and avoiding a long blocking authentication wait before navigation.
+- Existing cart, checkout, subscription, order and customer authentication business logic is unchanged.
+
+## Account Welcome Header Consistency Fix
+- Removed the `Continue shopping` action from the shared Account welcome header; it was visually inconsistent across Account pages.
+- The shared `Welcome back, <customer name>` header now hydrates on Firebase auth-state restoration, so the customer name is shown consistently across all logged-in Account pages.
+- Kept the common Account navigation and existing page functionality unchanged.
+## Checkout Login Hydration Fix
+- After login from the Checkout page, explicitly notify the active Checkout hydrator after customer onboarding completes.
+- Prevents the Checkout page from remaining on its initial placeholder state until a manual browser refresh.
+- Existing authentication, cart and payment flows are unchanged.
+
+### Journey Feedback Read More Modal UX
+- The Read more feedback modal now closes from the close button or by clicking/tapping the backdrop outside the dialog.
+- Added Escape-key closing for standard modal behavior.
