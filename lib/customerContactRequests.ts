@@ -8,10 +8,19 @@ export type CustomerContactRequest = {
   name: string;
   mobile?: string;
   email?: string;
+  productId?: string;
   productName: string;
   message: string;
   source: CustomerEnquirySource;
   status?: 'open';
+  requestedQuantityGrams?: number;
+  requestedDeliveryDate?: string;
+  resolvedDeliveryDate?: string;
+  enquiryReason?: 'AVAILABILITY_SHORTAGE' | string;
+  contactRequired?: boolean;
+  pincode?: string;
+  address?: Record<string, unknown>;
+  cartContext?: Record<string, unknown>;
 };
 
 export async function createCustomerContactRequest(input: CustomerContactRequest) {
@@ -29,6 +38,15 @@ export async function createCustomerContactRequest(input: CustomerContactRequest
   };
 
   if (input.customerId) data.customerId = String(input.customerId).trim();
+  if (input.productId) data.productId = String(input.productId).trim();
+  if (input.requestedQuantityGrams !== undefined) data.requestedQuantityGrams = Math.max(0, Math.floor(Number(input.requestedQuantityGrams) || 0));
+  if (input.requestedDeliveryDate) data.requestedDeliveryDate = String(input.requestedDeliveryDate).trim();
+  if (input.resolvedDeliveryDate) data.resolvedDeliveryDate = String(input.resolvedDeliveryDate).trim();
+  if (input.enquiryReason) data.enquiryReason = String(input.enquiryReason).trim();
+  data.contactRequired = input.contactRequired !== false;
+  if (input.pincode) data.pincode = String(input.pincode).trim();
+  if (input.address) data.address = input.address;
+  if (input.cartContext) data.cartContext = input.cartContext;
   if (currentUser?.uid) data.authUid = currentUser.uid;
 
   if (!data.name) throw new Error('Name is required.');
@@ -41,21 +59,22 @@ export async function createCustomerContactRequest(input: CustomerContactRequest
 }
 
 export function buildShortageEnquiryMessage(args: {
-  mode: 'one-time' | 'subscription';
+  productName: string;
   requestedGrams: number;
-  shortageGrams: number;
-  deliveryDate?: string;
+  requestedDeliveryDate: string;
+  resolvedDeliveryDate?: string;
 }) {
-  const requested = Math.max(0, Math.floor(args.requestedGrams));
-  const shortage = Math.max(0, Math.floor(args.shortageGrams));
-  const deliveryDate = String(args.deliveryDate || '').trim();
-  const formattedDate = deliveryDate
-    ? new Date(`${deliveryDate}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
-    : 'the upcoming delivery';
+  const productName = String(args.productName || 'Product').trim() || 'Product';
+  const requested = Math.max(0, Math.floor(Number(args.requestedGrams) || 0));
+  const requestedDate = String(args.requestedDeliveryDate || '').trim();
+  const resolvedDate = String(args.resolvedDeliveryDate || '').trim();
+  const formatDate = (value: string) => value
+    ? new Date(`${value}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    : 'the requested date';
 
-  if (args.mode === 'subscription') {
-    return `We're currently experiencing high demand. My subscription order is for ${requested.toLocaleString()} gms, and ${shortage.toLocaleString()} gms is currently unavailable. Please contact me regarding the remaining quantity and the upcoming delivery on ${formattedDate}.`;
+  if (resolvedDate) {
+    return `Customer requested ${requested.toLocaleString()}g ${productName} for ${formatDate(requestedDate)}, but the full requested quantity was not available. Customer chose not to move the delivery date. The full quantity was available on ${formatDate(resolvedDate)}.`;
   }
 
-  return `We're currently experiencing high demand. My order is for ${requested.toLocaleString()} gms, and ${shortage.toLocaleString()} gms is currently unavailable. Please contact me regarding delivery of the remaining quantity on ${formattedDate}.`;
+  return `Customer requested ${requested.toLocaleString()}g ${productName} for ${formatDate(requestedDate)}, but the full requested quantity was not available. Customer chose not to move the delivery date.`;
 }

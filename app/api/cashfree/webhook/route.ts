@@ -31,8 +31,11 @@ export async function POST(request: Request) {
     const orderId = String(payload.data?.order?.order_id || '').trim();
     if (!orderId) return NextResponse.json({ received: true, ignored: true });
 
-    await verifyAndFinalizeCashfreePayment(orderId);
-    return NextResponse.json({ received: true });
+    const result = await verifyAndFinalizeCashfreePayment(orderId);
+    // The webhook is an authoritative server-side signal. A 2xx response means
+    // Cashfree has delivered the event; unresolved payments are recovered by the
+    // next webhook/status check rather than relying on a non-2xx response contract.
+    return NextResponse.json({ received: true, status: result.status }, { status: 200 });
   } catch (error) {
     console.error('Cashfree webhook failed', error);
     return NextResponse.json({ error: 'Webhook processing failed.' }, { status: 500 });

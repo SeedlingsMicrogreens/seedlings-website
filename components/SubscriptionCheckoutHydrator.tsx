@@ -9,12 +9,12 @@ import { getActiveSalesProducts, type SalesProduct } from '@/lib/salesProducts';
 import { createCustomerSubscription, loadActiveCustomerSubscriptionPlans, type CustomerSubscriptionPlan } from '@/lib/customerSubscriptions';
 import { confirmHarvestShortage, showCustomerSuccess } from '@/lib/customerAlerts';
 import { removeSubscriptionFromCart } from '@/lib/cart';
-import { checkProductAvailability, nextWeekSaturday } from '@/lib/customerOrderAvailability';
+import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate } from '@/lib/customerOrderAvailability';
 import { createCashfreeOrder } from '@/lib/cashfreeFunctions';
 import { openCashfreeCheckout } from '@/lib/cashfreeClient';
 
 const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]!));
-const money = (v: number, currency='INR') => { try { return new Intl.NumberFormat('en-IN', { style:'currency', currency, maximumFractionDigits:0 }).format(v); } catch { return `₹${v}`; } };
+const money = (v: number, currency='INR') => { try { return new Intl.NumberFormat('en-IN', { style:'currency', currency, minimumFractionDigits:2, maximumFractionDigits:2 }).format(v); } catch { return `₹${v}`; } };
 const addressText = (a: CustomerAddress) => {
   const seen = new Set<string>();
   return [a.addressLine1, a.addressLine2, a.landmark, a.city, a.state, a.pincode].map(v => String(v ?? '').trim()).filter(v => {
@@ -74,17 +74,16 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
         if (button) { button.disabled = true; button.textContent = 'Checking availability…'; }
         try {
           const create = async (shortageDecision?: 'continue' | 'contact') => createCustomerSubscription({ mobile, product, planId: plan.id, addressId, quantity, packaging: effectivePackaging, sellingOptionId: selectedSellingOption?.id, startDate, shortageDecision });
-          const availability = await checkProductAvailability({ product, quantity, packagingGrams: effectivePackaging, deliveryDate: startDate || nextWeekSaturday() });
-          let result;
-          try { result = await create(availability.hasShortage ? await confirmHarvestShortage({ mode: 'subscription', availableGrams: availability.availableGrams, requestedGrams: availability.requestedGrams, shortageGrams: availability.shortageGrams, deliveryDate: startDate || nextWeekSaturday() }) : undefined); }
-          catch (error) {
-            if (!(error instanceof Error) || error.message !== 'HARVEST_SHORTAGE_CONFIRMATION_REQUIRED') throw error;
-            // Server-side availability is authoritative. Re-check and show the
-            // customer-facing Yes/No shortage confirmation before retrying.
-            const retryAvailability = await checkProductAvailability({ product, quantity, packagingGrams: effectivePackaging, deliveryDate: startDate || nextWeekSaturday() });
-            const decision = retryAvailability.hasShortage ? await confirmHarvestShortage({ mode: 'subscription', availableGrams: retryAvailability.availableGrams, requestedGrams: retryAvailability.requestedGrams, shortageGrams: retryAvailability.shortageGrams, deliveryDate: startDate || nextWeekSaturday() }) : undefined;
-            result = await create(decision);
-          }
+          const requestedDate = startDate || nextWeekSaturday();
+          const resolution = await resolveProductDeliveryDate({ product, quantity, packagingGrams: effectivePackaging, requestedDate, kind: 'subscription', maxWeeks: 12 });
+          if (!resolution.deliveryDate || !resolution.availability) throw new Error('The complete requested subscription quantity is not currently available.');
+          const requestedAvailability = resolution.deliveryDate === requestedDate
+            ? resolution.availability
+            : await checkProductAvailability({ product, quantity, packagingGrams: effectivePackaging, deliveryDate: requestedDate });
+          const decision = requestedAvailability.hasShortage
+            ? await confirmHarvestShortage({ mode: 'subscription', availableGrams: requestedAvailability.availableGrams, requestedGrams: requestedAvailability.requestedGrams, shortageGrams: requestedAvailability.shortageGrams, deliveryDate: requestedDate, alternativeDeliveryDate: resolution.deliveryDate })
+            : undefined;
+          let result = await create(decision);
           if (result.contactRequired) {
             await showCustomerSuccess('We’ll contact you', 'Your contact request has been saved. Our team will contact you regarding the available quantity.');
             if (button) { button.disabled = false; button.textContent = 'Subscribe'; }
@@ -97,6 +96,8 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
             orderId: result.orderId,
             orderNumber: result.orderNumber,
             paymentStatus: 'pending',
+            paymentOrderIds: result.paymentOrderIds,
+            mobile,
             cashfreeOrderId: payment.cashfreeOrderId,
             total: payment.amount,
           }));

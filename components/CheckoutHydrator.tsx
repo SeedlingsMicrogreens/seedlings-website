@@ -18,7 +18,7 @@ import { createCashfreeOrder } from '@/lib/cashfreeFunctions';
 
 const KEY = 'seedlings_checkout_details';
 const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-const money = (v: number, c = 'INR') => { try { return new Intl.NumberFormat('en-IN', { style: 'currency', currency: c, maximumFractionDigits: 0 }).format(v); } catch { return `₹${v}`; } };
+const money = (v: number, c = 'INR') => { try { return new Intl.NumberFormat('en-IN', { style: 'currency', currency: c, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v); } catch { return `₹${v}`; } };
 const dateLabel = (v: string) => { try { return new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(`${v}T00:00:00`)); } catch { return v; } };
 const cleanOfferLabel = (v: unknown) => String(v ?? '').trim().replace(/\s+/g, ' ');
 const addressText = (a: CustomerAddress) => {
@@ -245,7 +245,43 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           if (message.includes('We are currently not available in this area')) {
             if (deliverySummary) deliverySummary.innerHTML = '<div class="summary-row"><span>Delivery</span><strong>Not available for this pincode</strong></div>';
             if (grandTotal) grandTotal.textContent = money(subtotal, currency);
-            await confirmPincodeUnavailable();
+            const selected = selectedAddress();
+            const cartContext = {
+              oneTimeItems: one.map(item => ({
+                productId: item.productId,
+                productName: item.name,
+                quantity: item.quantity,
+                packagingGrams: item.packaging,
+                deliveryDate: item.deliveryDate || '',
+              })),
+              subscriptionItems: subs.map(item => ({
+                productId: item.productId,
+                productName: item.name,
+                quantity: item.quantity,
+                packagingGrams: item.packaging,
+                planId: item.planId,
+                planName: item.planName,
+                deliveryDate: item.deliveryDate || item.startDate || '',
+              })),
+            };
+            await confirmPincodeUnavailable({
+              customerId: account.id,
+              name: account.name || '',
+              mobile,
+              email: account.email || '',
+              pincode,
+              productName: [...one.map(item => item.name), ...subs.map(item => item.name)].filter(Boolean).join(', ') || `Delivery serviceability - ${pincode}`,
+              address: selected ? {
+                id: selected.id,
+                addressLine1: selected.addressLine1 || '',
+                addressLine2: selected.addressLine2 || '',
+                landmark: selected.landmark || '',
+                city: selected.city || '',
+                state: selected.state || '',
+                pincode: selected.pincode || pincode,
+              } : { pincode },
+              cartContext,
+            });
             return;
           }
           if (deliverySummary) deliverySummary.innerHTML = `<div class="summary-row"><span>Delivery charge</span><strong>${esc(message || 'Unable to calculate delivery charges.')}</strong></div>`;
@@ -270,13 +306,14 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
         try {
           const cartNow = getUnifiedCart();
           const deliverySlot = [...cartNow.oneTimeItems.map(i => i.deliveryDate || ''), ...cartNow.subscriptionItems.map(i => i.deliveryDate || i.startDate || '')].filter(Boolean).sort()[0] || nextWeekSaturday();
+          if (!delivery) throw new Error('Delivery charges could not be calculated. Please verify the delivery address before proceeding.');
           if (button) button.textContent = 'Preparing Payment…';
           await updateCustomerName(mobile, name);
           account.name = name;
           const result = await createCustomerMixedCheckout({ mobile, addressId, deliverySlot, paymentMethod, oneTimeItems: cartNow.oneTimeItems, subscriptionItems: cartNow.subscriptionItems });
           const paymentData = await createCashfreeOrder(result.paymentOrderIds, mobile);
-          sessionStorage.setItem('seedlings_last_checkout', JSON.stringify({ ...result, cashfreeOrderId: paymentData.cashfreeOrderId }));
-          sessionStorage.setItem('seedlings_last_order', JSON.stringify({ orderId: result.primaryOrderId, orderNumber: result.primaryOrderNumber, total: result.total, paymentStatus: 'pending', cashfreeOrderId: paymentData.cashfreeOrderId }));
+          sessionStorage.setItem('seedlings_last_checkout', JSON.stringify({ ...result, mobile, cashfreeOrderId: paymentData.cashfreeOrderId }));
+          sessionStorage.setItem('seedlings_last_order', JSON.stringify({ orderId: result.primaryOrderId, orderNumber: result.primaryOrderNumber, paymentOrderIds: result.paymentOrderIds, mobile, total: result.total, paymentStatus: 'pending', cashfreeOrderId: paymentData.cashfreeOrderId }));
           if (button) button.textContent = 'Opening Payment…';
           await openCashfreeCheckout(paymentData.paymentSessionId);
         } catch (e) {

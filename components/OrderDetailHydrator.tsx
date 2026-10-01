@@ -6,6 +6,8 @@ import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firesto
 import { auth, db } from '@/lib/firebase';
 import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
 import OrderFeedbackModal from '@/components/OrderFeedbackModal';
+import { clearPendingCashfreePayment, completeCashfreePayment, createCashfreeOrder } from '@/lib/cashfreeFunctions';
+import { openCashfreeCheckout } from '@/lib/cashfreeClient';
 
 type OrderItem = {
   productName?: string;
@@ -33,6 +35,7 @@ type Order = {
   orderType?: string;
   subscriptionId?: string | null;
   paymentStatus?: string;
+  cashfreeOrderId?: string;
   paymentMethod?: string;
   deliveryAddress?: Record<string, unknown>;
   scheduledDeliveryDate?: unknown;
@@ -204,6 +207,8 @@ function renderOrder(panel: HTMLElement, order: Order, transaction?: PaymentTran
     <div class="panel">
       <h3>Payment</h3>
       <div class="transaction">${transactionRows}</div>
+      ${String(order.paymentStatus || '').toLowerCase() === 'failed' || String(order.status || '').toLowerCase() === 'payment_failed' ? `<button type="button" class="btn primary" data-retry-payment style="margin-top:14px;width:100%">Retry Payment</button>` : ''}
+      ${String(order.paymentStatus || '').toLowerCase() === 'pending' || String(order.status || '').toLowerCase() === 'pending_payment' ? `<button type="button" class="btn outline" data-check-payment style="margin-top:14px;width:100%">Check Payment Status</button><p class="muted" data-payment-status-message style="margin-top:12px">Payment is still being confirmed. You can leave this page; the payment status will be updated by the payment service.</p>` : ''}
     </div>
 
     ${subscriptionDeliveries.length ? `<div class="panel"><h3>Subscription Deliveries</h3>${subscriptionDeliveries.map((delivery) => {
@@ -282,6 +287,46 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
           renderOrder(panel, order, transaction, subscriptionDeliveries, feedbackIds);
           panel.querySelectorAll<HTMLButtonElement>('[data-feedback-order]').forEach(button => button.addEventListener('click', () => setFeedbackTarget({ orderId, orderNumber: String(order.orderNumber || order.id), customerId: mobile })));
           panel.querySelectorAll<HTMLButtonElement>('[data-feedback-delivery]').forEach(button => button.addEventListener('click', () => setFeedbackTarget({ orderId, orderNumber: String(order.orderNumber || order.id), customerId: mobile, subscriptionDeliveryId: button.dataset.feedbackDelivery || undefined })));
+          panel.querySelector<HTMLButtonElement>('[data-check-payment]')?.addEventListener('click', async (event) => {
+            const button = event.currentTarget as HTMLButtonElement;
+            const message = panel.querySelector<HTMLElement>('[data-payment-status-message]');
+            button.disabled = true;
+            button.textContent = 'Checking…';
+            try {
+              const result = await completeCashfreePayment(String(order.cashfreeOrderId || order.id));
+              if (result.status === 'paid') {
+                clearPendingCashfreePayment();
+                window.location.href = `/order-detail?order=${encodeURIComponent(orderId)}`;
+                return;
+              }
+              if (result.status === 'failed') {
+                clearPendingCashfreePayment();
+                window.location.href = `/order-detail?order=${encodeURIComponent(orderId)}`;
+                return;
+              }
+              button.disabled = false;
+              button.textContent = 'Check Payment Status';
+              if (message) message.textContent = 'Payment is still pending. You can leave this page and we will continue checking when you return.';
+            } catch (error) {
+              button.disabled = false;
+              button.textContent = 'Check Payment Status';
+              if (message) message.textContent = error instanceof Error ? error.message : 'Unable to check payment status.';
+            }
+          });
+
+          panel.querySelector<HTMLButtonElement>('[data-retry-payment]')?.addEventListener('click', async (event) => {
+            const button = event.currentTarget as HTMLButtonElement;
+            button.disabled = true;
+            button.textContent = 'Preparing Payment…';
+            try {
+              const payment = await createCashfreeOrder([orderId], mobile);
+              await openCashfreeCheckout(payment.paymentSessionId);
+            } catch (error) {
+              button.disabled = false;
+              button.textContent = 'Retry Payment';
+              renderState(panel, 'Unable to retry payment', error instanceof Error ? error.message : 'Unable to start payment again.', '<a class="btn mini" href="/orders">Back to My Orders</a>');
+            }
+          });
         }
       } catch (error) {
         if (!alive || currentRequest !== requestId) return;

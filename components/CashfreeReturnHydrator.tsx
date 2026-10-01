@@ -4,10 +4,14 @@ import React, { useEffect } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { clearCart } from '@/lib/cart';
-import { completeCashfreePayment } from '@/lib/cashfreeFunctions';
+import { clearPendingCashfreePayment, completeCashfreePayment, createCashfreeOrder } from '@/lib/cashfreeFunctions';
+import { openCashfreeCheckout } from '@/lib/cashfreeClient';
+import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
 
 type ReturnResult = {
   status: 'paid' | 'failed' | 'pending';
+  orderId?: string;
+  orderIds?: string[];
   orderNumber?: string;
   orderNumbers?: string[];
   message?: string;
@@ -45,6 +49,7 @@ function updateResult(root: HTMLElement | null, result: ReturnResult) {
 
   if (result.status === 'paid') {
     clearCart();
+    clearPendingCashfreePayment();
     if (title) title.textContent = 'Payment successful';
     if (copy) copy.textContent = 'Your payment was confirmed and your order has been confirmed.';
     if (number) number.textContent = result.orderNumber ? `Order: ${result.orderNumber}` : '';
@@ -59,8 +64,8 @@ function updateResult(root: HTMLElement | null, result: ReturnResult) {
     if (copy) copy.textContent = result.message || 'Your payment was not completed. Your cart has been kept so you can try again.';
     if (number) number.textContent = result.orderNumber ? `Order: ${result.orderNumber}` : '';
     if (orders) orders.textContent = combinedOrdersText;
-    if (action) { action.textContent = 'Return to checkout'; action.href = '/checkout'; }
-    if (secondary) { secondary.textContent = 'View my orders'; secondary.href = '/orders'; }
+    if (action) { action.textContent = 'Retry Payment'; action.href = '#retry-payment'; action.dataset.retryPayment = 'true'; }
+    if (secondary) { secondary.textContent = 'View my orders'; secondary.href = result.orderId ? `/order-detail?order=${encodeURIComponent(result.orderId)}` : '/orders'; }
     return;
   }
 
@@ -70,6 +75,15 @@ function updateResult(root: HTMLElement | null, result: ReturnResult) {
   if (orders) orders.textContent = combinedOrdersText;
   if (action) { action.textContent = 'View my orders'; action.href = '/orders'; }
   if (secondary) { secondary.textContent = 'Return to checkout'; secondary.href = '/checkout'; }
+}
+
+async function retryPaymentFromSession(): Promise<void> {
+  const saved = JSON.parse(sessionStorage.getItem('seedlings_last_checkout') || sessionStorage.getItem('seedlings_last_order') || '{}');
+  const orderIds = Array.isArray(saved.paymentOrderIds) ? saved.paymentOrderIds.map(String).filter(Boolean) : (saved.orderId ? [String(saved.orderId)] : []);
+  if (!orderIds.length) throw new Error('The previous payment order could not be recovered. Please return to Checkout.');
+  const mobile = String(saved.mobile || getStoredCustomerMobile() || '');
+  const payment = await createCashfreeOrder(orderIds, mobile);
+  await openCashfreeCheckout(payment.paymentSessionId);
 }
 
 function verifyOnce(orderId: string): Promise<ReturnResult> {
@@ -124,6 +138,7 @@ export default function CashfreeReturnHydrator({ children }: { children: React.R
 
       if (result.status === 'paid') {
         clearCart();
+        clearPendingCashfreePayment();
         sessionStorage.setItem('seedlings_last_order', JSON.stringify({
           orderId: result.orderNumber || '',
           orderNumber: result.orderNumber || '',
@@ -134,6 +149,16 @@ export default function CashfreeReturnHydrator({ children }: { children: React.R
       }
 
       updateResult(root, result);
+      if (result.status === 'failed') {
+        const retry = root?.querySelector('[data-retry-payment]') as HTMLAnchorElement | null;
+        retry?.addEventListener('click', async (event) => {
+          event.preventDefault();
+          retry.textContent = 'Preparing Payment…';
+          retry.style.pointerEvents = 'none';
+          try { await retryPaymentFromSession(); }
+          catch (error) { retry.textContent = 'Retry Payment'; retry.style.pointerEvents = ''; updateResult(root, { ...result, message: error instanceof Error ? error.message : 'Unable to retry payment.' }); }
+        }, { once: true });
+      }
     };
 
     void run();

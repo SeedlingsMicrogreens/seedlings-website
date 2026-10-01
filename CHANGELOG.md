@@ -1,4 +1,13 @@
 
+## Phase 51 — Payment Webhook / Browser-Independent Finalization
+- Registered Cashfree Notify URL on Website-created payment orders.
+- Added explicit `CASHFREE_WEBHOOK_URL` support for public local-development tunnels.
+- Kept webhook/server-side verification authoritative; browser return remains recovery/display only.
+- Added persistent client payment-attempt recovery so a confirmed payment can clear the local cart even when the browser never returns from Cashfree.
+- Added Check Payment Status for genuinely pending orders.
+- Preserved Retry Payment only for terminal failed payments.
+- Updated Website QA correction reference with the payment callback/cart recovery acceptance test.
+
 ## Journey Feedback UX — Media & Read More
 - Preserved the three CMS feedback content types: image-only, video/iframe-only, and image + text.
 - Media-only cards keep source aspect ratios and center media vertically instead of stretching it.
@@ -287,3 +296,16 @@ Older documents contain statements that no longer exactly describe the current r
 ### Journey Feedback Read More Modal UX
 - The Read more feedback modal now closes from the close button or by clicking/tapping the backdrop outside the dialog.
 - Added Escape-key closing for standard modal behavior.
+
+## Website QA Corrections — 2026-10-01
+
+- Unified full-quantity availability handling for subscription delivery dates; partial delivery is not permitted.
+- Added next-full-quantity-date resolution and updated shortage confirmation/enquiry messaging.
+- Fixed subscription creation to persist the resolved delivery date and never carry forward partial quantity.
+- Made Checkout monetary display use 2-decimal INR precision and block payment when delivery charges cannot be calculated.
+- Improved non-serviceable-pincode enquiry flow to create the enquiry directly instead of opening a blank Contact page.
+- Improved shortage enquiries with actual product, quantity, requested date, and alternative date information.
+- Added payment retry support from failed order details/payment return flow.
+- Reset payment_failed orders to pending_payment when a new Cashfree payment session is created.
+- Preserved Cashfree webhook/server-side finalization as the authoritative payment path and exposed order IDs in payment results for recovery.
+- Added WEBSITE-QA-CORRECTION-REFERENCE.md as the implementation source of truth for this correction set.

@@ -1,6 +1,6 @@
 import { addDoc, collection, doc, getDoc, getDocs, query, serverTimestamp, where } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import { checkProductsAvailability, nextWeekSaturday } from './customerOrderAvailability';
+import { checkProductsAvailability, resolveProductDeliveryDate } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
 
@@ -92,30 +92,52 @@ export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput)
     return [{
       product: { id: product.id, ...product.data() } as any,
       quantity: Number(raw.quantity),
-      deliveryDate: nextWeekSaturday(),
+      deliveryDate: deliverySlot,
     }];
   });
   const availabilityResults = await checkProductsAvailability(availabilityInputs);
   const shortage = availabilityResults.filter(Boolean).some((result: any) => result.hasShortage);
   if (shortage && !input.shortageDecision) throw new Error('HARVEST_SHORTAGE_CONFIRMATION_REQUIRED');
   if (shortage && input.shortageDecision === 'contact') {
-    const requestedGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.requestedGrams || 0), 0);
-    const availableGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.availableGrams || 0), 0);
-    const shortageGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.shortageGrams || 0), 0);
-    const shortageProductNames = availabilityResults
-      .map((result: any, index: number) => result?.hasShortage ? String(items[index]?.productName || 'Product') : '')
-      .filter(Boolean);
-    const contact = await createCustomerContactRequest({
-      customerId: authUid,
-      name: clean(customer.name) || 'Customer',
-      mobile: clean(customer.mobileNumber || customer.mobile || mobile),
-      email: clean(customer.email),
-      productName: [...new Set(shortageProductNames)].join(', ') || 'Product',
-      message: buildShortageEnquiryMessage({ mode: 'one-time', requestedGrams, shortageGrams, deliveryDate: nextWeekSaturday() }),
-      source: 'customer_checkout',
-      status: 'open',
-    });
-    return { contactRequired: true, contactRequestId: contact.id, orderId: '', orderNumber: '', paymentStatus: 'not_required', total: 0 };
+    const shortageResults = availabilityResults
+      .map((result: any, index: number) => ({ result, index }))
+      .filter(({ result }) => result?.hasShortage);
+    if (!shortageResults.length) throw new Error('Unable to identify the affected product for the shortage enquiry.');
+
+    const contactRequests = [];
+    for (const { result, index } of shortageResults) {
+      const affectedItem = items[index];
+      const affectedProduct = byId.get(clean(requestedItems[index]?.productId));
+      const requestedGrams = Number(result.requestedGrams || affectedItem?.weightGrams || 0);
+      const requestedProduct = affectedProduct ? ({ id: affectedProduct.id, ...affectedProduct.data() } as any) : null;
+      const resolved = requestedProduct
+        ? await resolveProductDeliveryDate({ product: requestedProduct, quantity: Number(requestedItems[index]?.quantity || 1), requestedDate: deliverySlot, kind: 'one-time', maxWeeks: 12 })
+        : { deliveryDate: null };
+      const resolvedDeliveryDate = resolved.deliveryDate && resolved.deliveryDate !== deliverySlot ? resolved.deliveryDate : undefined;
+      const contact = await createCustomerContactRequest({
+        customerId: authUid,
+        name: clean(customer.name) || 'Customer',
+        mobile: clean(customer.mobileNumber || customer.mobile || mobile),
+        email: clean(customer.email),
+        productId: clean(affectedProduct?.id || affectedItem?.productId),
+        productName: clean(affectedItem?.productName || affectedProduct?.data()?.name) || 'Product',
+        message: buildShortageEnquiryMessage({
+          productName: clean(affectedItem?.productName || affectedProduct?.data()?.name) || 'Product',
+          requestedGrams,
+          requestedDeliveryDate: deliverySlot,
+          resolvedDeliveryDate,
+        }),
+        source: 'customer_checkout',
+        status: 'open',
+        requestedQuantityGrams: requestedGrams,
+        requestedDeliveryDate: deliverySlot,
+        resolvedDeliveryDate,
+        enquiryReason: 'AVAILABILITY_SHORTAGE',
+        contactRequired: true,
+      });
+      contactRequests.push(contact.id);
+    }
+    return { contactRequired: true, contactRequestId: contactRequests[0], contactRequestIds: contactRequests, orderId: '', orderNumber: '', paymentStatus: 'not_required', total: 0 };
   }
   const requestedAvailabilityGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.requestedGrams || 0), 0);
   const availableAvailabilityGrams = availabilityResults.filter(Boolean).reduce((sum: number, result: any) => sum + Number(result.availableGrams || 0), 0);
@@ -142,8 +164,8 @@ export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput)
     paymentMethod: clean(input.paymentMethod) || 'online',
     status: 'pending_payment',
     deliveryAddress: address,
-    scheduledDeliveryDate: nextWeekSaturday(),
-    deliveryDate: nextWeekSaturday(),
+    scheduledDeliveryDate: deliverySlot,
+    deliveryDate: deliverySlot,
     deliverySlot,
     notes: clean(input.notes),
     orderType: 'one_time',

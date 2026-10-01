@@ -401,6 +401,41 @@ export async function resolveCartDeliveryDates(args: Array<{
   };
 }
 
+/**
+ * Resolves the first Saturday on which the COMPLETE requested quantity can be
+ * fulfilled. Partial delivery is never accepted. This is shared by subscription
+ * creation and can also be used by other single-item flows that need the same
+ * business rule.
+ */
+export async function resolveProductDeliveryDate(args: {
+  product: SalesProduct;
+  quantity: number;
+  packagingGrams?: number;
+  requestedDate?: string;
+  kind?: 'subscription' | 'one-time';
+  maxWeeks?: number;
+}): Promise<{ requestedDate: string; deliveryDate: string | null; availability: AvailabilityResult | null }> {
+  const requestedDate = args.requestedDate || nextWeekSaturday();
+  const resolution = await resolveCartDeliveryDates([{
+    key: `single:${args.kind || 'one-time'}:${args.product.id}`,
+    kind: args.kind || 'one-time',
+    product: args.product,
+    quantity: args.quantity,
+    packagingGrams: args.packagingGrams,
+    requestedDate,
+    name: args.product.name,
+  }], { maxWeeks: args.maxWeeks || 12 });
+  const resolved = resolution.items[0];
+  if (!resolved?.deliveryDate) return { requestedDate, deliveryDate: null, availability: null };
+  const availability = await checkProductAvailability({
+    product: args.product,
+    quantity: args.quantity,
+    packagingGrams: args.packagingGrams,
+    deliveryDate: resolved.deliveryDate,
+  });
+  return { requestedDate, deliveryDate: resolved.deliveryDate, availability };
+}
+
 /** Calculates customer-facing availability for one product. */
 export async function checkProductAvailability(args: {
   product: SalesProduct;

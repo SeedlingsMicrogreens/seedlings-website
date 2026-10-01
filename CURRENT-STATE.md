@@ -23,7 +23,7 @@ For Admin ↔ Website shared data and cross-application workflows, see `SYSTEM-I
 ### Server-side operations
 The current source contains Next.js Route Handlers under `app/api`, including Cashfree payment routes and subscription delivery actions. These routes use server-side Firebase Admin SDK code under `lib/server`.
 
-The repository also contains a separate `functions/` Firebase Functions project with Cashfree functions. Do not assume that the older documentation statement that Functions were removed is still authoritative; the actual current source contains both mechanisms. Any future removal/consolidation requires an explicit requirement and verification of deployment usage.
+Firebase Functions are not part of the Website payment architecture. Do not introduce or reintroduce Firebase Functions for these flows. Next.js Route Handlers under `app/api` and the existing `lib/server` services are the authoritative server-side implementation.
 
 ## 2. Core customer flows
 
@@ -134,7 +134,7 @@ The cart navigation preserves the SVG cart icon while the item count is rendered
 - Mixed checkout delivery remains the Pincode Master delivery charge multiplied by subscription deliveries; no separate one-time delivery charge is shown.
 - Subscription order totals include the allocated price-offer discount.
 
-### Phase 46 follow-up — delivery-date resolution and confirmation
+### QA correction — full-quantity delivery-date resolution and confirmation
 - Cart checkout now performs a smart delivery-date availability check before navigating to `/checkout`.
 - Every one-time and subscription item receives an actual first delivery date. Full quantity is required for a date; partial quantity is not silently placed.
 - Subscription items have priority when competing for the same production inventory, followed by one-time items.
@@ -149,3 +149,22 @@ The cart navigation preserves the SVG cart icon while the item count is rendered
 ## Phase 46 Bug Fix
 - Fixed checkout crash in `lib/customerOrderAvailability.ts` caused by indexing the reservation map with the cart kind value `one-time` instead of its `oneTime` key.
 - Smart delivery-date resolution now records reservations into the correct subscription/one-time bucket.
+
+### QA correction — subscription availability
+- Subscription creation now uses the same full-quantity delivery-date resolution as the Cart flow.
+- If the complete requested quantity is unavailable on the requested date, the Website finds the next date where the complete quantity is available.
+- The customer is never offered a partial delivery.
+- Yes accepts the updated date; No creates a shortage enquiry and does not create the subscription/order.
+- The resolved full quantity is stored on the subscription/order.
+
+### QA correction — payment finalization
+- Cashfree webhook/server-side verification is authoritative; browser return is recovery/display only.
+- Pending finalization locks are not terminal, so later webhook/recovery processing can resolve a previously pending payment.
+- Webhook responses remain retryable while Cashfree payment status is pending.
+- Failed payments expose Retry Payment from the payment result and order detail.
+- USER_DROPPED is presented as an abandoned/closed payment attempt rather than a generic failure.
+
+### QA correction — checkout money and enquiries
+- Checkout displays INR amounts with two decimal places and blocks payment when delivery-charge calculation has failed.
+- Non-serviceable pincode enquiries are created directly with customer/pincode context instead of opening a blank Contact page.
+- Shortage enquiries include the actual product, requested quantity, requested date and resolved alternative date.

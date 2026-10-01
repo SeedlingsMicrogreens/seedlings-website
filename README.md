@@ -4,7 +4,7 @@
 Customer-facing Next.js website for the Seedlings Microgreens platform. The site covers catalogue/microgreen browsing, product detail, cart, checkout, orders, subscriptions, delivery calendar, account/profile, addresses and enquiries.
 
 ## Current source
-The supplied Phase 31 repository is the source of truth for the implementation. Before changing established behavior, check `CURRENT-STATE.md` and `DEVELOPMENT-RULES.md`, then inspect the actual code.
+The latest supplied Website repository is the source of truth for the implementation. For the current QA correction set, follow `WEBSITE-QA-CORRECTION-REFERENCE.md`. Before changing established behavior, check `CURRENT-STATE.md` and `DEVELOPMENT-RULES.md`, then inspect the actual code.
 
 ## Stack
 - Next.js 16.3.4

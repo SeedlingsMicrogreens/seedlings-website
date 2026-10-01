@@ -1,7 +1,7 @@
 import { collection, doc, getDoc, getDocs, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { type SalesProduct } from './salesProducts';
-import { checkProductAvailability, nextWeekSaturday } from './customerOrderAvailability';
+import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
 import { PACKAGING_OPTIONS } from './packaging';
@@ -123,19 +123,43 @@ export async function createCustomerSubscription(input: {
     ? (packaging >= 1000 && packaging % 1000 === 0 ? `${packaging / 1000}kg box` : `${packaging}g box`)
     : (packaging >= 1000 && packaging % 1000 === 0 ? `${packaging / 1000}kg box` : `${packaging}g box`);
 
-  const availability = await checkProductAvailability({ product: input.product, quantity: input.quantity, packagingGrams: packaging, deliveryDate: firstDelivery });
-  const firstDeliveryWeightGrams = availability.hasShortage ? Math.max(0, Math.min(availability.availableGrams, availability.requestedGrams)) : availability.requestedGrams;
-  if (availability.hasShortage && !input.shortageDecision) {
+  const resolvedDelivery = await resolveProductDeliveryDate({
+    product: input.product,
+    quantity: input.quantity,
+    packagingGrams: packaging,
+    requestedDate: firstDelivery,
+    kind: 'subscription',
+    maxWeeks: 12,
+  });
+  if (!resolvedDelivery.deliveryDate || !resolvedDelivery.availability) {
+    throw new Error(`The complete requested subscription quantity is not available for the next 12 weeks.`);
+  }
+  const requestedAvailability = resolvedDelivery.deliveryDate === firstDelivery
+    ? resolvedDelivery.availability
+    : await checkProductAvailability({ product: input.product, quantity: input.quantity, packagingGrams: packaging, deliveryDate: firstDelivery });
+  if (requestedAvailability.hasShortage && !input.shortageDecision) {
     throw new Error('HARVEST_SHORTAGE_CONFIRMATION_REQUIRED');
   }
-  if (availability.hasShortage && input.shortageDecision === 'contact') {
+  const availability = resolvedDelivery.availability;
+  const actualFirstDelivery = requestedAvailability.hasShortage && input.shortageDecision === 'continue'
+    ? resolvedDelivery.deliveryDate
+    : firstDelivery;
+  const firstDeliveryWeightGrams = availability.requestedGrams;
+
+  if (requestedAvailability.hasShortage && input.shortageDecision === 'contact') {
     const contact = await createCustomerContactRequest({
       customerId: authUid,
       name: clean(customer.name) || 'Customer',
       mobile,
       email: clean(customer.email),
+      productId: clean(input.product.id),
       productName: clean(input.product.name) || 'Product',
-      message: buildShortageEnquiryMessage({ mode: 'subscription', requestedGrams: availability.requestedGrams, shortageGrams: availability.shortageGrams, deliveryDate: firstDelivery }),
+      message: buildShortageEnquiryMessage({ productName: clean(input.product.name) || 'Product', requestedGrams: requestedAvailability.requestedGrams, requestedDeliveryDate: firstDelivery, resolvedDeliveryDate: resolvedDelivery.deliveryDate }),
+      requestedQuantityGrams: requestedAvailability.requestedGrams,
+      requestedDeliveryDate: firstDelivery,
+      resolvedDeliveryDate: resolvedDelivery.deliveryDate,
+      enquiryReason: 'AVAILABILITY_SHORTAGE',
+      contactRequired: true,
       source: 'customer_checkout',
       status: 'open',
     });
@@ -160,16 +184,16 @@ export async function createCustomerSubscription(input: {
     frequency,
     totalDeliveries: deliveries,
     deliveriesGenerated: 0,
-    nextDeliveryDate: firstDelivery,
+    nextDeliveryDate: actualFirstDelivery,
     deliveryDay: 6,
-    startDate: input.startDate || dateOnly(new Date()),
-    endDate,
+    startDate: actualFirstDelivery,
+    endDate: (() => { const value = new Date(`${actualFirstDelivery}T00:00:00`); value.setDate(value.getDate() + (deliveries - 1) * 7); return dateOnly(value); })(),
     deliveryAddress: address,
     requiresCustomerContact: input.shortageDecision === 'contact',
     availabilityRequestedGrams: availability.requestedGrams,
     availabilityAvailableGrams: availability.availableGrams,
-    availabilityShortageGrams: availability.shortageGrams,
-    carryForwardQuantityGrams: availability.shortageGrams,
+    availabilityShortageGrams: requestedAvailability.hasShortage ? requestedAvailability.shortageGrams : 0,
+    carryForwardQuantityGrams: 0,
     availabilityDecision: input.shortageDecision || 'continue',
     status: 'pending_payment',
     paymentStatus: 'pending',
@@ -183,9 +207,11 @@ export async function createCustomerSubscription(input: {
     subscriptions: [{ planId: input.planId, planName: clean(plan.name) || frequency }],
   });
   const delivery = deliveryCharges.subscriptions[0];
-  const deliveryFee = delivery?.termCharge || 0;
-  const deliveryFeePerDelivery = delivery?.perDeliveryCharge || 0;
-  const total = unitPrice * input.quantity;
+  const roundMoney = (value: number) => Number(Number(value || 0).toFixed(2));
+  const deliveryFee = roundMoney(delivery?.termCharge || 0);
+  const deliveryFeePerDelivery = roundMoney(delivery?.perDeliveryCharge || 0);
+  const subtotal = roundMoney(unitPrice * input.quantity);
+  const total = roundMoney(subtotal + deliveryFee);
   subscription.deliveryFeePerDelivery = deliveryFeePerDelivery;
   subscription.deliveryChargeDetails = delivery?.snapshot || {};
 
@@ -206,20 +232,20 @@ export async function createCustomerSubscription(input: {
       weightGrams: firstDeliveryWeightGrams,
       quantity: input.quantity,
       unitPrice,
-      lineTotal: unitPrice * input.quantity,
+      lineTotal: subtotal,
       imageUrl: clean(input.product.imageUrl),
     }],
-    subtotal: total,
+    subtotal,
     deliveryFee,
     discount: 0,
-    total: total + deliveryFee,
+    total,
     currency: 'INR',
     paymentStatus: 'pending',
     paymentMethod: 'online',
     status: 'pending_payment',
     deliveryAddress: address,
-    scheduledDeliveryDate: firstDelivery,
-    deliveryDate: firstDelivery,
+    scheduledDeliveryDate: actualFirstDelivery,
+    deliveryDate: actualFirstDelivery,
     notes: '',
     orderType: 'subscription',
     subscriptionId: subscriptionRef.id,
@@ -238,8 +264,8 @@ export async function createCustomerSubscription(input: {
     requiresCustomerContact: input.shortageDecision === 'contact',
     availabilityRequestedGrams: availability.requestedGrams,
     availabilityAvailableGrams: availability.availableGrams,
-    availabilityShortageGrams: availability.shortageGrams,
-    carryForwardQuantityGrams: availability.shortageGrams,
+    availabilityShortageGrams: requestedAvailability.hasShortage ? requestedAvailability.shortageGrams : 0,
+    carryForwardQuantityGrams: 0,
     availabilityDecision: input.shortageDecision || 'continue',
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),

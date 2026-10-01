@@ -55,3 +55,10 @@ export function cashfreeReturnUrl() {
   const siteUrl = getConfig().siteUrl;
   return siteUrl ? `${siteUrl}/payment/cashfree-return` : undefined;
 }
+
+export function cashfreeWebhookUrl() {
+  const explicit = process.env.CASHFREE_WEBHOOK_URL?.trim().replace(/\/$/, '');
+  if (explicit) return explicit;
+  const siteUrl = getConfig().siteUrl;
+  return siteUrl ? `${siteUrl}/api/cashfree/webhook` : undefined;
+}

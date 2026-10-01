@@ -1,6 +1,6 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/server/firebaseAdmin';
-import { cashfreeRequest, cashfreeReturnUrl } from '@/lib/server/cashfree';
+import { cashfreeRequest, cashfreeReturnUrl, cashfreeWebhookUrl } from '@/lib/server/cashfree';
 import { HttpError } from '@/lib/server/httpError';
 
 const clean = (value: unknown) => typeof value === 'string' ? value.trim() : '';
@@ -35,7 +35,7 @@ export async function createCashfreePaymentSession(input: {orderIds?: unknown[];
     }
   }
 
-  const total = orders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+  const total = Number(orders.reduce((sum, order) => sum + Number(order.total || 0), 0).toFixed(2));
   if (!Number.isFinite(total) || total < 1) throw new HttpError(400, 'Invalid payment amount.');
 
   const primaryOrderId = orderIds[0];
@@ -86,6 +86,7 @@ export async function createCashfreePaymentSession(input: {orderIds?: unknown[];
 
   const cashfreeOrderId = `seedlings_${primaryOrderId}_${Date.now()}`.slice(0, 45);
   const returnUrl = cashfreeReturnUrl();
+  const webhookUrl = cashfreeWebhookUrl();
   let response: CashfreeCreateOrderResponse;
   try {
     response = await cashfreeRequest<CashfreeCreateOrderResponse>('/pg/orders', {
@@ -99,7 +100,7 @@ export async function createCashfreePaymentSession(input: {orderIds?: unknown[];
         customer_phone: mobile,
         customer_name: clean(orders[0].customerName) || 'Seedlings Customer',
       },
-      ...(returnUrl ? { order_meta: { return_url: `${returnUrl}?order_id=${encodeURIComponent(cashfreeOrderId)}` } } : {}),
+      ...(returnUrl || webhookUrl ? { order_meta: { ...(returnUrl ? { return_url: `${returnUrl}?order_id=${encodeURIComponent(cashfreeOrderId)}` } : {}), ...(webhookUrl ? { notify_url: webhookUrl } : {}) } } : {}),
       order_note: `Seedlings payment for ${orderIds.length} order${orderIds.length === 1 ? '' : 's'}`,
       order_tags: { source: 'seedlings_website', channel: 'mobile_or_web', primary_order_id: primaryOrderId },
     }),
@@ -126,6 +127,7 @@ export async function createCashfreePaymentSession(input: {orderIds?: unknown[];
       cashfreePaymentSessionId: response.payment_session_id,
       cashfreeOrderStatus: response.order_status || 'ACTIVE',
       paymentStatus: 'pending',
+      status: 'pending_payment',
       paymentAuthUid: uid,
       updatedAt: FieldValue.serverTimestamp(),
     });

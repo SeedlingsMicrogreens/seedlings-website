@@ -4,7 +4,7 @@ import { cashfreeRequest } from '@/lib/server/cashfree';
 
 type CashfreeOrder = { order_id?: string; order_amount?: number; order_currency?: string; order_status?: string };
 type CashfreePayment = { cf_payment_id?: string | number; payment_status?: string; payment_amount?: number; payment_currency?: string; payment_time?: string; payment_completion_time?: string; payment_message?: string; error_details?: Record<string, unknown> | null };
-export type CashfreePaymentResult = { status: 'paid'|'failed'|'pending'; cashfreeOrderId: string; orderNumber: string; orderNumbers: string[]; paymentId?: string; message: string };
+export type CashfreePaymentResult = { status: 'paid'|'failed'|'pending'; cashfreeOrderId: string; orderId?: string; orderIds?: string[]; orderNumber: string; orderNumbers: string[]; paymentId?: string; message: string };
 type OrderData = Record<string, unknown>;
 
 function getSnapshotData(snapshot: { id: string; data: () => OrderData | undefined }) {
@@ -46,10 +46,15 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
     const updatedAtMs = Number(lock.updatedAtMs || 0);
 
     if (lockStatus === 'completed') {
-      return {
-        action: 'completed' as const,
-        result: lock.result as CashfreePaymentResult | undefined,
-      };
+      const cachedResult = lock.result as CashfreePaymentResult | undefined;
+      // SUCCESS/FAILED are terminal. A cached PENDING result is deliberately
+      // reprocessed later so a later webhook or recovery request can resolve it.
+      if (cachedResult?.status === 'paid' || cachedResult?.status === 'failed') {
+        return {
+          action: 'completed' as const,
+          result: cachedResult,
+        };
+      }
     }
 
     const processingFresh = lockStatus === 'processing' && updatedAtMs > 0 && (nowMs - updatedAtMs) < 2 * 60 * 1000;
@@ -101,6 +106,7 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
   const latestPayment = payments[payments.length - 1];
   const payment = successfulPayment || latestPayment;
   const paymentId = payment?.cf_payment_id != null ? String(payment.cf_payment_id) : undefined;
+  const gatewayPaymentStatus = String(payment?.payment_status || '').toUpperCase();
   const expectedAmount = internalSnapshot.docs.reduce((sum, snapshot) => sum + Number(getSnapshotData(snapshot).total || 0), 0);
   const cashfreeOrderAmount = Number(order.order_amount || 0);
   if (!Number.isFinite(expectedAmount) || Math.abs(cashfreeOrderAmount - expectedAmount) > 0.01) throw new Error('Cashfree payment amount does not match the Seedlings order total.');
@@ -181,19 +187,25 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
   const result: CashfreePaymentResult = {
     status,
     cashfreeOrderId,
+    orderId: primarySnapshot.id,
+    orderIds: internalSnapshot.docs.map(snapshot => snapshot.id),
     orderNumber: primaryOrderNumber,
     orderNumbers: internalSnapshot.docs.map(snapshot => String(getSnapshotData(snapshot).orderNumber || snapshot.id)),
     paymentId,
     message: orderAlreadyPaidByAnotherAttempt && status === 'paid'
       ? 'Payment was received again for an order that is already paid. The duplicate payment has been recorded for reconciliation.'
-      : status === 'paid' ? 'Payment successful.' : status === 'failed' ? payment?.payment_message || 'Payment failed.' : 'Payment is still pending.',
+      : status === 'paid' ? 'Payment successful.' : status === 'failed'
+        ? (gatewayPaymentStatus === 'USER_DROPPED'
+          ? 'The payment attempt was closed or abandoned before completion. Your order was not confirmed. You can retry the payment.'
+          : payment?.payment_message || 'Payment failed. You can retry the payment.')
+        : 'Payment is still pending.',
   };
 
   // Complete the finalization lock in the same atomic Firestore batch as all
   // payment/order/subscription writes. A repeated webhook or browser return can
   // therefore safely return the exact same result without re-finalizing.
   batch.set(finalizationLockRef, {
-    status: 'completed',
+    status: status === 'pending' ? 'pending' : 'completed',
     gatewayOrderId: cashfreeOrderId,
     result,
     updatedAtMs: Date.now(),

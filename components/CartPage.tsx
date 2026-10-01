@@ -28,7 +28,7 @@ import {
 } from "@/lib/salesProducts";
 import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
 import { getCustomerAccount } from "@/lib/customerAccount";
-import { createCustomerContactRequest } from "@/lib/customerContactRequests";
+import { buildShortageEnquiryMessage, createCustomerContactRequest } from "@/lib/customerContactRequests";
 import {
   loadActiveCustomerSubscriptionPlans,
   type CustomerSubscriptionPlan,
@@ -525,18 +525,33 @@ export default function CartPage() {
       return;
     }
 
-    const removedNames = [...new Set(removed.map((item) => item.name))];
-    const enquiryMessage = `We are currently experiencing high demand. ${removedNames.join(", ")} could not be fulfilled for the requested delivery date of ${formatDate(requestedDate)}. The product${removedNames.length > 1 ? "s" : ""} ${removedNames.length > 1 ? "are" : "is"} currently unavailable for that date. Please contact me regarding availability and the next possible delivery date.`;
-    await createCustomerContactRequest({
-      customerId: account.id,
-      name: String(account.name || "Customer"),
-      mobile,
-      email: String(account.email || ""),
-      productName: removedNames.join(", "),
-      message: enquiryMessage,
-      source: "customer_checkout",
-      status: "open",
-    });
+    for (const item of removed) {
+      const cartItem = item.kind === 'subscription'
+        ? currentCart.subscriptionItems.find((x) => `subscription:${x.productId}:${x.planId}:${x.startDate}` === item.key)
+        : currentCart.oneTimeItems.find((x) => `one-time:${x.productId}` === item.key);
+      const quantity = Math.max(0, Number(cartItem?.quantity || 1) * Number(cartItem?.packaging || 0));
+      await createCustomerContactRequest({
+        customerId: account.id,
+        name: String(account.name || "Customer"),
+        mobile,
+        email: String(account.email || ""),
+        productId: String(item.productId || cartItem?.productId || ""),
+        productName: String(item.name || "Product"),
+        message: buildShortageEnquiryMessage({
+          productName: String(item.name || "Product"),
+          requestedGrams: quantity,
+          requestedDeliveryDate: item.requestedDate,
+          resolvedDeliveryDate: item.deliveryDate || undefined,
+        }),
+        source: "customer_checkout",
+        status: "open",
+        requestedQuantityGrams: quantity,
+        requestedDeliveryDate: item.requestedDate,
+        resolvedDeliveryDate: item.deliveryDate || undefined,
+        enquiryReason: "AVAILABILITY_SHORTAGE",
+        contactRequired: true,
+      });
+    }
 
     for (const item of removed) {
       if (item.kind === "subscription") {
