@@ -1,3 +1,10 @@
+## Checkout — Product Offer Display Simplification
+- Removed the separate **Product offer** row from Checkout Order Summary.
+- When a price offer applies, the product line now shows the original price struck through and the offer price beside it.
+- Kept the single **You saved ₹X with the <offer> offer** message as the only explicit saving message.
+- Removed the duplicate `− ₹X` amount from the saving message.
+- Preserved all existing offer calculations and final payable amount.
+
 
 ## Phase 51 — Payment Webhook / Browser-Independent Finalization
 - Registered Cashfree Notify URL on Website-created payment orders.
@@ -309,3 +316,13 @@ Older documents contain statements that no longer exactly describe the current r
 - Reset payment_failed orders to pending_payment when a new Cashfree payment session is created.
 - Preserved Cashfree webhook/server-side finalization as the authoritative payment path and exposed order IDs in payment results for recovery.
 - Added WEBSITE-QA-CORRECTION-REFERENCE.md as the implementation source of truth for this correction set.
+
+## Delivery Charge Rules — Unique Delivery Dates
+- Removed subscription-plan delivery-charge overrides from customer checkout calculation.
+- Delivery charge now comes only from the active Pincode/Geolocation Master.
+- A pincode delivery charge is applied once per unique delivery date across one-time and subscription items.
+- Same-date one-time products share one delivery charge.
+- Different one-time delivery dates each receive a delivery charge.
+- Subscription delivery dates are charged once each, with overlapping subscriptions sharing the same delivery-date charge.
+- One-time + subscription items sharing a delivery date are charged only once for that date.
+- Customer-facing subscription plan/product screens no longer display plan-level delivery-charge values.

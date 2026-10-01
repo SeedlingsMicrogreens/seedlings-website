@@ -45,8 +45,6 @@ type SubscriptionPlan = {
   price?: number;
   sellingOptions?: SubscriptionPlanSellingOption[];
   deliveriesPerTerm?: number | string;
-  deliveryChargeMode?: "included" | "per_delivery" | "free" | string;
-  deliveryCharge?: number;
   description?: string;
   active?: boolean;
 };
@@ -719,10 +717,7 @@ function SubscriptionSheet({
                     ? `${Number(plan.deliveriesPerTerm)} deliveries / term`
                     : "Ongoing deliveries"}{" "}
                   ·{" "}
-                  {plan.deliveryChargeMode === "per_delivery" &&
-                  Number(plan.deliveryCharge ?? 0) > 0
-                    ? `+ ${money(Number(plan.deliveryCharge))} / delivery`
-                    : "Delivery included"}
+Delivery charge based on delivery address
                 </small>
               </button>
             ))}

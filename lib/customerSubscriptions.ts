@@ -2,7 +2,7 @@ import { collection, doc, getDoc, getDocs, query, serverTimestamp, updateDoc, wh
 import { db, auth } from './firebase';
 import { type SalesProduct } from './salesProducts';
 import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate } from './customerOrderAvailability';
-import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
+import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from './deliveryCharges';
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
 import { PACKAGING_OPTIONS } from './packaging';
 
@@ -16,8 +16,6 @@ export type CustomerSubscriptionPlan = {
   price?: number;
   deliveriesPerTerm?: number;
   description?: string;
-  deliveryChargeMode?: 'included' | 'per_delivery' | 'free' | string;
-  deliveryCharge?: number;
   active?: boolean;
   productIds?: string[];
   salesProductIds?: string[];
@@ -204,7 +202,11 @@ export async function createCustomerSubscription(input: {
   const deliveryCharges = await calculateCheckoutDeliveryCharges({
     pincode: String((address as Record<string, unknown>).pincode || ''),
     oneTime: false,
-    subscriptions: [{ planId: input.planId, planName: clean(plan.name) || frequency }],
+    subscriptions: [{
+      planId: input.planId,
+      planName: clean(plan.name) || frequency,
+      deliveryDates: getWeeklyDeliveryDates(actualFirstDelivery, deliveries),
+    }],
   });
   const delivery = deliveryCharges.subscriptions[0];
   const roundMoney = (value: number) => Number(Number(value || 0).toFixed(2));

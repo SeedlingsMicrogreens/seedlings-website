@@ -145,7 +145,7 @@ export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput)
   const subtotal = items.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
   const mrpSubtotal = items.reduce((sum, item) => sum + Number(item.mrp || item.unitPrice || 0) * Number(item.quantity || 0), 0);
   const productSavings = Math.max(0, mrpSubtotal - subtotal);
-  const deliveryCharges = await calculateCheckoutDeliveryCharges({ pincode: String((address as Record<string, unknown>).pincode || ''), oneTime: true, subscriptions: [] });
+  const deliveryCharges = await calculateCheckoutDeliveryCharges({ pincode: String((address as Record<string, unknown>).pincode || ''), oneTime: true, oneTimeDates: [deliverySlot], subscriptions: [] });
   const deliveryFee = deliveryCharges.oneTime.finalCharge;
   const total = subtotal + deliveryFee;
 

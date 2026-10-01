@@ -1,4 +1,4 @@
-import { collection, documentId, getDocs, query, where } from 'firebase/firestore';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from './firebase';
 
 const clean = (value: unknown) => typeof value === 'string' ? value.trim() : '';
@@ -12,7 +12,7 @@ export type DeliveryChargeResult = {
   baseCharge: number;
   savings: number;
   isFree: boolean;
-  source: 'geolocation' | 'subscription_plan' | 'none';
+  source: 'geolocation' | 'none';
   sourceId: string;
   sourceName: string;
   snapshot: Record<string, unknown>;
@@ -20,6 +20,8 @@ export type DeliveryChargeResult = {
   termCharge: number;
   termSavings: number;
   deliveriesPerTerm: number;
+  deliveryDates: string[];
+  chargedDeliveryDates: string[];
   offerName?: string;
 };
 
@@ -30,102 +32,145 @@ export type CheckoutDeliveryCharges = {
   subscriptionTotal: number;
   total: number;
   savingsTotal: number;
+  uniqueDeliveryDates: string[];
 };
 
-export type DeliveryChargeSubscriptionInput = { planId: string; planName?: string };
+export type DeliveryChargeSubscriptionInput = {
+  planId: string;
+  planName?: string;
+  deliveryDates: string[];
+};
 
-/** Pincode Master is the only base delivery-charge source for customer checkout. */
+function uniqueDates(values: unknown[]): string[] {
+  return [...new Set(values.map(clean).filter(Boolean))].sort();
+}
+
+export function getWeeklyDeliveryDates(startDate: string, count: number): string[] {
+  const start = clean(startDate);
+  const total = Math.max(1, Math.floor(Number(count) || 1));
+  if (!start) return [];
+  const result: string[] = [];
+  const date = new Date(`${start}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return [];
+  for (let index = 0; index < total; index += 1) {
+    const current = new Date(date);
+    current.setUTCDate(current.getUTCDate() + index * 7);
+    result.push(current.toISOString().slice(0, 10));
+  }
+  return result;
+}
+
+/**
+ * Delivery charge is based only on the active Pincode/Geolocation Master.
+ * A delivery charge is applied once for each unique delivery date across the
+ * complete checkout cart. Subscription-plan delivery-charge settings are not
+ * used here.
+ */
 export async function calculateCheckoutDeliveryCharges(input: {
   pincode: string;
   oneTime: boolean;
+  oneTimeDates?: string[];
   subscriptions: DeliveryChargeSubscriptionInput[];
 }): Promise<CheckoutDeliveryCharges> {
   const pincode = clean(input.pincode).replace(/\D/g, '').slice(0, 6);
   if (!/^\d{6}$/.test(pincode)) throw new Error('A valid 6-digit pincode is required to calculate delivery charges.');
 
-  const planIds = [...new Set(input.subscriptions.map((entry) => clean(entry.planId)).filter(Boolean))];
-  const planChunks: string[][] = [];
-  for (let i = 0; i < planIds.length; i += 30) planChunks.push(planIds.slice(i, i + 30));
+  const oneTimeDates = input.oneTime ? uniqueDates(input.oneTimeDates || []) : [];
+  if (input.oneTime && !oneTimeDates.length) throw new Error('At least one one-time delivery date is required to calculate delivery charges.');
 
-  const [geoSnap, planSnaps] = await Promise.all([
-    // Pincode Master normally stores the normalized 6-digit pincode. Query it
-    // directly instead of downloading every configured location.
-    getDocs(query(collection(db, 'geolocations'), where('pincode', '==', pincode))),
-    Promise.all(planChunks.map((chunk) =>
-      getDocs(query(collection(db, 'subscriptionPlans'), where(documentId(), 'in', chunk)))
-    )),
-  ]);
+  const subscriptionInputs = input.subscriptions.map((entry) => ({
+    ...entry,
+    planId: clean(entry.planId),
+    planName: clean(entry.planName) || clean(entry.planId),
+    deliveryDates: uniqueDates(entry.deliveryDates || []),
+  }));
+  if (subscriptionInputs.some((entry) => !entry.deliveryDates.length)) {
+    throw new Error('At least one subscription delivery date is required to calculate delivery charges.');
+  }
+
+  const geoSnap = await getDocs(query(collection(db, 'geolocations'), where('pincode', '==', pincode)));
   let geoDocs = geoSnap.docs;
   // Legacy records may contain a formatted/non-string pincode. Preserve the
-  // previous normalization behavior as a compatibility fallback only when the
-  // targeted query returns nothing.
-  if (!geoDocs.length) {
-    geoDocs = (await getDocs(collection(db, 'geolocations'))).docs;
-  }
+  // previous normalization fallback only when the targeted query returns nothing.
+  if (!geoDocs.length) geoDocs = (await getDocs(collection(db, 'geolocations'))).docs;
+
   const matches = geoDocs.filter((d) => {
     const x = d.data() || {};
     return x.active === true && clean(x.pincode).replace(/\D/g, '') === pincode;
   });
-  const planDocs = planSnaps.flatMap((snapshot) => snapshot.docs);
   if (matches.length > 1) throw new Error(`Multiple active pincodes are configured for ${pincode}.`);
   if (!matches.length) throw new Error('We are currently not available in this area. We are working on it and would be happy to contact you.');
 
   const geoDoc = matches[0];
   const geo = geoDoc.data() || {};
   const baseCharge = nonNegative(geo.deliveryCharge);
-  const baseResult = (kind: 'one_time_order' | 'subscription'): DeliveryChargeResult => ({
-    finalCharge: baseCharge,
-    baseCharge,
-    savings: 0,
-    isFree: baseCharge === 0,
-    source: 'geolocation',
-    sourceId: geoDoc.id,
-    sourceName: clean(geo.locationName) || `Pincode ${pincode}`,
-    snapshot: { id: geoDoc.id, locationName: clean(geo.locationName), pincode, deliveryCharge: baseCharge, active: true, scope: kind },
-    perDeliveryCharge: baseCharge,
-    termCharge: baseCharge,
-    termSavings: 0,
-    deliveriesPerTerm: 1,
+  const sourceName = clean(geo.locationName) || `Pincode ${pincode}`;
+  const snapshotBase = {
+    id: geoDoc.id,
+    locationName: sourceName,
+    pincode,
+    deliveryCharge: baseCharge,
+    active: true,
+  };
+
+  // One-time delivery dates get their charge first. Subscription dates that
+  // fall on the same dates are delivered together and must not add another
+  // delivery charge.
+  const chargedDates = new Set<string>();
+  const oneTimeChargedDates = oneTimeDates.filter((date) => {
+    if (chargedDates.has(date)) return false;
+    chargedDates.add(date);
+    return true;
   });
 
-  const oneTime = input.oneTime ? baseResult('one_time_order') : { finalCharge: 0, baseCharge: 0, savings: 0, isFree: true, source: 'none' as const, sourceId: '', sourceName: '', snapshot: {}, perDeliveryCharge: 0, termCharge: 0, termSavings: 0, deliveriesPerTerm: 1 };
-  const subscriptions = input.subscriptions.map((entry) => {
-    const base = baseResult('subscription');
-    const planDoc = planDocs.find((d) => d.id === entry.planId);
-    if (!planDoc) throw new Error(`Subscription plan "${entry.planName || entry.planId}" was not found.`);
-    const plan = planDoc.data() || {};
-    if (plan.active !== true) throw new Error(`Subscription plan "${entry.planName || plan.name || entry.planId}" is no longer active.`);
-    const mode = clean(plan.deliveryChargeMode).toLowerCase();
-    const deliveriesPerTerm = Math.max(1, Number(plan.deliveriesPerTerm) || 1);
-    const mixedCart = input.oneTime && input.subscriptions.length > 0;
-    let final = base.finalCharge;
-    let source: DeliveryChargeResult['source'] = base.source;
-    let sourceId = base.sourceId;
-    let sourceName = base.sourceName;
+  const makeResult = (deliveryDates: string[], chargedDeliveryDates: string[], extra: Record<string, unknown> = {}): DeliveryChargeResult => {
+    const finalCharge = baseCharge;
+    const termCharge = finalCharge * chargedDeliveryDates.length;
+    return {
+      finalCharge,
+      baseCharge,
+      savings: 0,
+      isFree: baseCharge === 0,
+      source: 'geolocation',
+      sourceId: geoDoc.id,
+      sourceName,
+      snapshot: { ...snapshotBase, ...extra, deliveryDates, chargedDeliveryDates, termCharge },
+      perDeliveryCharge: finalCharge,
+      termCharge,
+      termSavings: 0,
+      deliveriesPerTerm: deliveryDates.length,
+      deliveryDates,
+      chargedDeliveryDates,
+    };
+  };
 
-    // Mixed checkout rule: when one-time and subscription items are in the
-    // same cart, do not charge a separate one-time delivery fee and do not
-    // apply the subscription plan's free/included delivery rule. The single
-    // checkout delivery charge is the Pincode Master charge per subscription
-    // delivery, multiplied by the number of deliveries in the term.
-    if (!mixedCart && (mode === 'free' || mode === 'included')) {
-      final = 0; source = 'subscription_plan'; sourceId = planDoc.id; sourceName = clean(plan.name) || entry.planName || 'Subscription plan';
-    } else if (!mixedCart && mode === 'per_delivery' && Number.isFinite(Number(plan.deliveryCharge)) && Number(plan.deliveryCharge) >= 0) {
-      final = Math.min(base.finalCharge, nonNegative(plan.deliveryCharge));
-      if (final !== base.finalCharge) { source = 'subscription_plan'; sourceId = planDoc.id; sourceName = clean(plan.name) || entry.planName || 'Subscription plan'; }
-    }
-    const savingsPerDelivery = Math.max(0, base.finalCharge - final);
-    const termCharge = final * deliveriesPerTerm;
-    const termSavings = savingsPerDelivery * deliveriesPerTerm;
-    return { ...base, finalCharge: final, savings: savingsPerDelivery, isFree: final === 0, source, sourceId, sourceName, perDeliveryCharge: final, termCharge, termSavings, deliveriesPerTerm, planId: entry.planId, planName: clean(plan.name) || entry.planName || entry.planId, snapshot: { ...base.snapshot, planId: planDoc.id, planName: clean(plan.name) || entry.planName || planDoc.id, deliveryChargeMode: mode, planDeliveryCharge: nonNegative(plan.deliveryCharge), deliveriesPerTerm, baseChargePerDelivery: base.finalCharge, finalChargePerDelivery: final, termCharge, savingsPerDelivery, termSavings } };
+  const oneTime = makeResult(oneTimeDates, oneTimeChargedDates, { scope: 'one_time_order' });
+
+  const subscriptions = subscriptionInputs.map((entry) => {
+    const chargedForThisSubscription = entry.deliveryDates.filter((date) => {
+      if (chargedDates.has(date)) return false;
+      chargedDates.add(date);
+      return true;
+    });
+    const result = makeResult(entry.deliveryDates, chargedForThisSubscription, {
+      scope: 'subscription',
+      planId: entry.planId,
+      planName: entry.planName,
+    });
+    return { ...result, planId: entry.planId, planName: entry.planName };
   });
+
+  const uniqueDeliveryDates = [...chargedDates].sort();
+  const oneTimeTotal = oneTime.termCharge;
+  const subscriptionTotal = subscriptions.reduce((sum, item) => sum + item.termCharge, 0);
 
   return {
     oneTime,
     subscriptions,
-    oneTimeTotal: oneTime.finalCharge,
-    subscriptionTotal: subscriptions.reduce((sum, item) => sum + item.termCharge, 0),
-    total: oneTime.finalCharge + subscriptions.reduce((sum, item) => sum + item.termCharge, 0),
-    savingsTotal: subscriptions.reduce((sum, item) => sum + item.termSavings, 0),
+    oneTimeTotal,
+    subscriptionTotal,
+    total: oneTimeTotal + subscriptionTotal,
+    savingsTotal: 0,
+    uniqueDeliveryDates,
   };
 }
