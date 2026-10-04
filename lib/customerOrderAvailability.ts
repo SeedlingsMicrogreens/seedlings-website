@@ -1,5 +1,5 @@
 import { collection, documentId, getDocs, query, where, type QuerySnapshot, type DocumentData } from 'firebase/firestore';
-import { db } from './firebase';
+import { auth, db } from './firebase';
 import type { SalesProduct } from './salesProducts';
 
 export type AvailabilityResult = {
@@ -13,6 +13,9 @@ export type AvailabilityResult = {
   availableGrams: number;
   shortageGrams: number;
   hasShortage: boolean;
+  highDemand: boolean;
+  thresholdGrams: number;
+  committedDemandGrams: number;
 };
 
 function dateOnly(date: Date) {
@@ -99,6 +102,9 @@ type AvailabilityContext = {
   subscriptionCommitted: Record<string, number>;
   oneTimeCommitted: Record<string, number>;
   salesProductById: Map<string, SalesProduct>;
+  thresholdGrams: number;
+  committedDemandGrams: number;
+  startedBatchProductIds: Set<string>;
 };
 
 async function fetchByIds(collectionName: string, ids: string[]) {
@@ -127,10 +133,29 @@ function requestedProductionQuantities(product: SalesProduct, quantityInput: num
   return requested;
 }
 
+let productionThresholdPromise: Promise<number> | null = null;
+
+async function getProductionThresholdGrams() {
+  if (!auth.currentUser) return 0;
+  if (!productionThresholdPromise) {
+    productionThresholdPromise = fetch('/api/customer/production-threshold', { cache: 'no-store' })
+      .then(async response => {
+        if (!response.ok) throw new Error('Unable to load production threshold.');
+        const data = await response.json() as { thresholdGrams?: unknown };
+        return number(data.thresholdGrams);
+      })
+      .catch(error => {
+        productionThresholdPromise = null;
+        throw error;
+      });
+  }
+  return productionThresholdPromise;
+}
+
 async function loadAvailabilityContext(deliveryDate: string, requestedProductIds: string[], preloadedBatches?: QuerySnapshot<DocumentData>): Promise<AvailabilityContext> {
   const requestedProductIdSet = new Set(requestedProductIds);
 
-  const [productsDocs, batchesSnap, subscriptionsSnap, ordersSnap] = await Promise.all([
+  const [productsDocs, batchesSnap, subscriptionsSnap, ordersSnap, thresholdGrams] = await Promise.all([
     fetchByIds('products', requestedProductIds),
     // Batch items contain the calculated harvest/ready date inside the batch
     // item array, so Firestore cannot safely filter that nested value without
@@ -144,6 +169,7 @@ async function loadAvailabilityContext(deliveryDate: string, requestedProductIds
       where('nextDeliveryDate', '==', deliveryDate),
     )),
     getDocs(query(collection(db, 'orders'), where('scheduledDeliveryDate', '==', deliveryDate))),
+    getProductionThresholdGrams(),
   ]);
 
   const relevantSalesProductIds = new Set<string>();
@@ -168,6 +194,8 @@ async function loadAvailabilityContext(deliveryDate: string, requestedProductIds
   const harvestAvailable: Record<string, number> = {};
   const subscriptionCommitted: Record<string, number> = {};
   const oneTimeCommitted: Record<string, number> = {};
+  const startedBatchProductIds = new Set<string>();
+
 
   for (const doc of productsDocs) {
     const data = doc.data() || {};
@@ -177,15 +205,18 @@ async function loadAvailabilityContext(deliveryDate: string, requestedProductIds
   for (const batchDoc of batchesSnap.docs) {
     const batch = batchDoc.data() || {};
     const batchStatus = normalize(batch.status).toLowerCase().replace(/\s+/g, '');
-    if (batchStatus === 'completed' || batchStatus === 'harvested' || batchStatus === 'completed_harvested') continue;
+    if (['completed', 'harvested', 'completed_harvested', 'closed'].includes(batchStatus)) continue;
+    const started = ['inprogress', 'growing', 'ready', 'partiallyharvested'].includes(batchStatus);
     const items = Array.isArray(batch.items) ? batch.items : [];
     for (const raw of items) {
       if (!raw || typeof raw !== 'object') continue;
       const item = raw as Record<string, unknown>;
       const productId = normalize(item.productId);
-      if (!productId || !requestedProductIdSet.has(productId) || ['harvested', 'failed'].includes(normalize(item.status))) continue;
+      const itemStatus = normalize(item.status).toLowerCase().replace(/\s+/g, '');
+      if (!productId || !requestedProductIdSet.has(productId) || ['harvested', 'failed'].includes(itemStatus)) continue;
       const readyDate = normalize(item.expectedReadyDate);
-      if (readyDate && readyDate <= deliveryDate) {
+      if (readyDate && readyDate <= deliveryDate && started) {
+        startedBatchProductIds.add(productId);
         const expectedUsable = number(item.expectedUsableYieldGrams);
         harvestAvailable[productId] = (harvestAvailable[productId] || 0) + expectedUsable;
       }
@@ -206,7 +237,7 @@ async function loadAvailabilityContext(deliveryDate: string, requestedProductIds
         const baseComponentGrams = number(component.quantityGrams);
         const perPack = packaging > 0 && baseTotal > 0 ? packaging * (baseComponentGrams / baseTotal) : baseComponentGrams;
         const grams = perPack * quantity;
-        if (component.productId && requestedProductIdSet.has(component.productId) && grams > 0) {
+        if (component.productId && grams > 0) {
           subscriptionCommitted[component.productId] = (subscriptionCommitted[component.productId] || 0) + grams;
         }
       }
@@ -217,7 +248,7 @@ async function loadAvailabilityContext(deliveryDate: string, requestedProductIds
     const grams = number(subscription.weightGrams) > 0
       ? number(subscription.weightGrams)
       : number(subscription.weightGrams) * quantity;
-    if (legacyProductionId && requestedProductIdSet.has(legacyProductionId) && grams > 0) {
+    if (legacyProductionId && grams > 0) {
       subscriptionCommitted[legacyProductionId] = (subscriptionCommitted[legacyProductionId] || 0) + grams;
     }
   }
@@ -229,11 +260,14 @@ async function loadAvailabilityContext(deliveryDate: string, requestedProductIds
     if (normalize(order.orderType) === 'subscription' || normalize(order.subscriptionId)) continue;
     const requirements = itemProductionRequirements(order, salesProductById);
     for (const [productId, grams] of Object.entries(requirements)) {
-      if (requestedProductIdSet.has(productId)) oneTimeCommitted[productId] = (oneTimeCommitted[productId] || 0) + grams;
+      oneTimeCommitted[productId] = (oneTimeCommitted[productId] || 0) + grams;
     }
   }
 
-  return { harvestAvailable, subscriptionCommitted, oneTimeCommitted, salesProductById };
+  const committedDemandGrams = Object.values(subscriptionCommitted).reduce((sum, grams) => sum + number(grams), 0)
+    + Object.values(oneTimeCommitted).reduce((sum, grams) => sum + number(grams), 0);
+
+  return { harvestAvailable, subscriptionCommitted, oneTimeCommitted, salesProductById, thresholdGrams, committedDemandGrams, startedBatchProductIds };
 }
 
 function calculateAvailability(args: {
@@ -245,20 +279,28 @@ function calculateAvailability(args: {
 }): AvailabilityResult {
   const requested = requestedProductionQuantities(args.product, args.quantity, args.packagingGrams);
   const availableForOneTime: Record<string, number> = {};
-  let requestedGrams = 0;
+  const requestedEntries = Object.entries(requested);
+  const requestedGrams = requestedEntries.reduce((sum, [, grams]) => sum + number(grams), 0);
   let availableGrams = Number.POSITIVE_INFINITY;
-  for (const [productId, grams] of Object.entries(requested)) {
-    requestedGrams += grams;
-    const harvest = args.context.harvestAvailable[productId] || 0;
-    const subscription = args.context.subscriptionCommitted[productId] || 0;
-    const oneTime = args.context.oneTimeCommitted[productId] || 0;
-    const available = Math.max(0, harvest - subscription - oneTime);
-    availableForOneTime[productId] = available;
-    availableGrams = Math.min(availableGrams, Math.min(grams, available));
+  let highDemand = false;
+  for (const [productId, grams] of requestedEntries) {
+    const hasStartedBatch = args.context.startedBatchProductIds.has(productId);
+    if (!hasStartedBatch) {
+      const remainingThreshold = Math.max(0, args.context.thresholdGrams - args.context.committedDemandGrams);
+      if (args.context.committedDemandGrams + requestedGrams > args.context.thresholdGrams) highDemand = true;
+      availableForOneTime[productId] = remainingThreshold;
+    } else {
+      const harvest = args.context.harvestAvailable[productId] || 0;
+      const subscription = args.context.subscriptionCommitted[productId] || 0;
+      const oneTime = args.context.oneTimeCommitted[productId] || 0;
+      availableForOneTime[productId] = Math.max(0, harvest - subscription - oneTime);
+    }
+    availableGrams = Math.min(availableGrams, Math.min(grams, availableForOneTime[productId] || 0));
   }
   if (!Number.isFinite(availableGrams)) availableGrams = 0;
-  const hasShortage = Object.entries(requested).some(([productId, grams]) => (availableForOneTime[productId] || 0) < grams);
+  const hasShortage = highDemand || Object.entries(requested).some(([productId, grams]) => (availableForOneTime[productId] || 0) < grams);
   const shortageGrams = Object.entries(requested).reduce((sum, [productId, grams]) => sum + Math.max(0, grams - (availableForOneTime[productId] || 0)), 0);
+
   return {
     deliveryDate: args.deliveryDate,
     requestedByProductionProduct: requested,
@@ -270,6 +312,9 @@ function calculateAvailability(args: {
     availableGrams,
     shortageGrams,
     hasShortage,
+    highDemand,
+    thresholdGrams: args.context.thresholdGrams,
+    committedDemandGrams: args.context.committedDemandGrams,
   };
 }
 
@@ -281,6 +326,8 @@ export type CartDeliveryResolutionItem = {
   requestedDate: string;
   deliveryDate: string | null;
   available: boolean;
+  highDemand?: boolean;
+  thresholdGrams?: number;
 };
 
 export type CartDeliveryResolution = {
@@ -302,7 +349,15 @@ function availableForCartItem(
   kind: 'subscription' | 'one-time',
   reservations: { subscription: Record<string, number>; oneTime: Record<string, number> },
 ) {
+  const requestedTotal = Object.values(requested).reduce((sum, grams) => sum + number(grams), 0);
+  const reservationTotal = Object.values(reservations.subscription).reduce((sum, grams) => sum + number(grams), 0)
+    + Object.values(reservations.oneTime).reduce((sum, grams) => sum + number(grams), 0);
   for (const [productId, grams] of Object.entries(requested)) {
+    const hasStartedBatch = context.startedBatchProductIds.has(productId);
+    if (!hasStartedBatch) {
+      if (context.committedDemandGrams + reservationTotal + requestedTotal > context.thresholdGrams) return false;
+      continue;
+    }
     const harvest = context.harvestAvailable[productId] || 0;
     const committedSubscription = (context.subscriptionCommitted[productId] || 0) + (reservations.subscription[productId] || 0);
     const committedOneTime = kind === 'one-time'
@@ -356,6 +411,8 @@ export async function resolveCartDeliveryDates(args: Array<{
   for (const item of ordered) {
     const requested = requestedProductionQuantities(item.product, item.quantity, item.packagingGrams);
     let deliveryDate: string | null = null;
+    let highDemand = false;
+    let thresholdForHighDemand = 0;
 
     const itemRequestedDate = item.requestedDate || requestedDate;
     const candidates = Array.from({ length: maxWeeks }, (_, index) => addWeeks(itemRequestedDate, index));
@@ -367,6 +424,15 @@ export async function resolveCartDeliveryDates(args: Array<{
         contextByDate.set(candidate, context);
       }
       const reservations = reservationsByDate.get(candidate) || { subscription: {}, oneTime: {} };
+      const requestedTotal = Object.values(requested).reduce((sum, grams) => sum + number(grams), 0);
+      const reservationTotal = Object.values(reservations.subscription).reduce((sum, grams) => sum + number(grams), 0)
+        + Object.values(reservations.oneTime).reduce((sum, grams) => sum + number(grams), 0);
+      const usesThreshold = Object.keys(requested).some(productId => !context.startedBatchProductIds.has(productId));
+      if (usesThreshold && context.committedDemandGrams + reservationTotal + requestedTotal > context.thresholdGrams) {
+        highDemand = true;
+        thresholdForHighDemand = context.thresholdGrams;
+        break;
+      }
       if (!availableForCartItem(context, requested, item.kind, reservations)) continue;
 
       deliveryDate = candidate;
@@ -388,6 +454,7 @@ export async function resolveCartDeliveryDates(args: Array<{
       requestedDate: itemRequestedDate,
       deliveryDate,
       available: Boolean(deliveryDate),
+      ...(highDemand ? { highDemand: true, thresholdGrams: thresholdForHighDemand } : {}),
     });
   }
 
@@ -414,7 +481,7 @@ export async function resolveProductDeliveryDate(args: {
   requestedDate?: string;
   kind?: 'subscription' | 'one-time';
   maxWeeks?: number;
-}): Promise<{ requestedDate: string; deliveryDate: string | null; availability: AvailabilityResult | null }> {
+}): Promise<{ requestedDate: string; deliveryDate: string | null; availability: AvailabilityResult | null; highDemand?: boolean; thresholdGrams?: number }> {
   const requestedDate = args.requestedDate || nextWeekSaturday();
   const resolution = await resolveCartDeliveryDates([{
     key: `single:${args.kind || 'one-time'}:${args.product.id}`,
@@ -426,7 +493,7 @@ export async function resolveProductDeliveryDate(args: {
     name: args.product.name,
   }], { maxWeeks: args.maxWeeks || 12 });
   const resolved = resolution.items[0];
-  if (!resolved?.deliveryDate) return { requestedDate, deliveryDate: null, availability: null };
+  if (!resolved?.deliveryDate) return { requestedDate, deliveryDate: null, availability: null, highDemand: Boolean(resolved?.highDemand), thresholdGrams: resolved?.thresholdGrams || 0 };
   const availability = await checkProductAvailability({
     product: args.product,
     quantity: args.quantity,

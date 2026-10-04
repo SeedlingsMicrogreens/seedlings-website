@@ -115,3 +115,49 @@ export async function confirmPincodeUnavailable(args?: {
   }
   return result.isConfirmed;
 }
+
+export async function confirmHighDemandEnquiry(args: {
+  customerId?: string;
+  name?: string;
+  mobile?: string;
+  email?: string;
+  address?: Record<string, unknown>;
+  items: Array<{ productId: string; productName: string; requestedGrams: number; requestedDeliveryDate: string; thresholdGrams: number }>;
+}) {
+  const { default: Swal } = await import('sweetalert2');
+  const safe = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char] || char));
+  const rows = args.items.map(item => `<li style="margin:6px 0;text-align:left"><strong>${safe(item.productName)}</strong> — ${Math.floor(item.requestedGrams).toLocaleString()}g for ${safe(item.requestedDeliveryDate)}</li>`).join('');
+  const result = await Swal.fire({
+    icon: 'info',
+    title: 'We are currently facing high demand',
+    html: `<p style="margin:0 0 10px">We cannot fulfil the requested quantity right now.</p><ul style="padding-left:20px;margin:0 0 12px">${rows}</ul><p style="margin:0">Would you like us to contact you regarding this request?</p>`,
+    showCancelButton: true,
+    confirmButtonText: 'Send Enquiry',
+    cancelButtonText: 'Continue shopping',
+    reverseButtons: true,
+    allowOutsideClick: false,
+  });
+  if (!result.isConfirmed) return false;
+
+  const { createCustomerContactRequest, buildHighDemandEnquiryMessage } = await import('@/lib/customerContactRequests');
+  for (const item of args.items) {
+    await createCustomerContactRequest({
+      customerId: args.customerId,
+      name: String(args.name || 'Customer'),
+      mobile: String(args.mobile || ''),
+      email: String(args.email || ''),
+      productId: item.productId,
+      productName: item.productName,
+      message: buildHighDemandEnquiryMessage(item),
+      source: 'customer_checkout',
+      status: 'open',
+      requestedQuantityGrams: item.requestedGrams,
+      requestedDeliveryDate: item.requestedDeliveryDate,
+      enquiryReason: 'HIGH_DEMAND',
+      contactRequired: true,
+      address: args.address,
+    });
+  }
+  await Swal.fire({ icon: 'success', title: 'Enquiry submitted', text: 'Your enquiry has been submitted. Our team will contact you.', confirmButtonText: 'OK' });
+  return true;
+}

@@ -10,7 +10,7 @@ import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
 import { getUnifiedCart, clearCart } from '@/lib/cart';
 import { createCustomerMixedCheckout } from '@/lib/customerMixedCheckout';
 import { nextWeekSaturday } from '@/lib/customerOrderAvailability';
-import { confirmPincodeUnavailable, showCustomerSuccess } from '@/lib/customerAlerts';
+import { confirmHighDemandEnquiry, confirmPincodeUnavailable, showCustomerSuccess } from '@/lib/customerAlerts';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates, type CheckoutDeliveryCharges } from '@/lib/deliveryCharges';
 import { calculateCustomerOffers, type CheckoutOfferResult } from '@/lib/offers';
 import { openCashfreeCheckout } from '@/lib/cashfreeClient';
@@ -328,6 +328,36 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           if (button) button.textContent = 'Opening Payment…';
           await openCashfreeCheckout(paymentData.paymentSessionId);
         } catch (e) {
+          if (e instanceof Error && e.message.startsWith('HIGH_DEMAND_ENQUIRY_REQUIRED:')) {
+            try {
+              const demandEntries = JSON.parse(e.message.slice('HIGH_DEMAND_ENQUIRY_REQUIRED:'.length)) as Array<{ key: string; thresholdGrams: number; committedDemandGrams: number }>;
+              const demandByKey = new Map(demandEntries.map(entry => [entry.key, entry]));
+              const latestCart = getUnifiedCart();
+              const latestDeliverySlot = [...latestCart.oneTimeItems.map(i => i.deliveryDate || ''), ...latestCart.subscriptionItems.map(i => i.deliveryDate || i.startDate || '')].filter(Boolean).sort()[0] || nextWeekSaturday();
+              const selected = [
+                ...latestCart.oneTimeItems.map(item => ({ key: `one-time:${item.productId}`, item, requestedDeliveryDate: item.deliveryDate || latestDeliverySlot })),
+                ...latestCart.subscriptionItems.map(item => ({ key: `subscription:${item.productId}:${item.planId}:${item.startDate}`, item, requestedDeliveryDate: item.deliveryDate || item.startDate || latestDeliverySlot })),
+              ].filter(entry => demandByKey.has(entry.key));
+              const submitted = await confirmHighDemandEnquiry({
+                customerId: account.id,
+                name: account.name || name,
+                mobile,
+                email: account.email || '',
+                address: selectedAddress() ? { ...selectedAddress() } : undefined,
+                items: selected.map(({ key, item, requestedDeliveryDate }) => ({
+                  productId: item.productId,
+                  productName: item.name,
+                  requestedGrams: Number(item.packaging || item.weightGrams || 0) * Number(item.quantity || 1),
+                  requestedDeliveryDate,
+                  thresholdGrams: demandByKey.get(key)?.thresholdGrams || 0,
+                })),
+              });
+              if (button) { button.disabled = false; button.textContent = 'Proceed to Pay'; }
+              return;
+            } catch {
+              // Fall through to the normal checkout error message.
+            }
+          }
           if (e instanceof Error && e.message === 'DELIVERY_DATE_RECHECK_REQUIRED') {
             window.location.href = '/cart';
             return;

@@ -33,7 +33,7 @@ export default function Footer({ navItems = [], settings = null }: { navItems?: 
   return <footer className="footer">
     <div className="container footer-top">
       <div><a className="brand" href="/"><span className="brand-mark">S</span><span>{siteName}</span></a><p>Fresh microgreens, grown with care.</p></div>
-      <div><h3>Explore</h3><a href="/microgreens">{label(navItems, 'footerMicrogreens', 'Microgreens')}</a><a href="/our-journey">{label(navItems, 'footerJourney', 'Our Journey')}</a><a href="/contact">{label(navItems, 'footerContact', 'Contact')}</a><a href="/account">{label(navItems, 'footerAccount', 'My Account')}</a><a href={deliveryAuthenticated ? '/deliveries' : '/delivery-login'}>{deliveryAuthenticated ? 'Delivery Partner Dashboard' : 'Delivery Partner Login'}</a></div>
+      <div><h3>Explore</h3><a href="/microgreens">{label(navItems, 'footerMicrogreens', 'Microgreens')}</a><a href="/our-journey">{label(navItems, 'footerJourney', 'Our Journey')}</a><a href="/contact">{label(navItems, 'footerContact', 'Contact')}</a><a href="/profile">{label(navItems, 'footerAccount', 'My Profile')}</a><a href={deliveryAuthenticated ? '/deliveries' : '/delivery-login'}>{deliveryAuthenticated ? 'Delivery Partner Dashboard' : 'Delivery Partner Login'}</a></div>
       <div><h3>Contact</h3><a href={`tel:${phone.replace(/\s+/g, '')}`}>{phone}</a><a href={`mailto:${email}`}>{email}</a><a href="/contact">Send an enquiry</a></div>
     </div>
     <div className="container footer-bottom"><span>© 2026 {footerSiteName}</span><span>{tagline}</span></div>

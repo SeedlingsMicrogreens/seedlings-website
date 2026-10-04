@@ -7,7 +7,7 @@ import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
 import { getCustomerAccount, type CustomerAccount, type CustomerAddress } from '@/lib/customerAccount';
 import { getActiveSalesProducts, type SalesProduct } from '@/lib/salesProducts';
 import { createCustomerSubscription, loadActiveCustomerSubscriptionPlans, type CustomerSubscriptionPlan } from '@/lib/customerSubscriptions';
-import { confirmHarvestShortage, showCustomerSuccess } from '@/lib/customerAlerts';
+import { confirmHarvestShortage, confirmHighDemandEnquiry, showCustomerSuccess } from '@/lib/customerAlerts';
 import { removeSubscriptionFromCart } from '@/lib/cart';
 import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate } from '@/lib/customerOrderAvailability';
 import { createCashfreeOrder } from '@/lib/cashfreeFunctions';
@@ -76,6 +76,22 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
           const create = async (shortageDecision?: 'continue' | 'contact') => createCustomerSubscription({ mobile, product, planId: plan.id, addressId, quantity, packaging: effectivePackaging, sellingOptionId: selectedSellingOption?.id, startDate, shortageDecision });
           const requestedDate = startDate || nextWeekSaturday();
           const resolution = await resolveProductDeliveryDate({ product, quantity, packagingGrams: effectivePackaging, requestedDate, kind: 'subscription', maxWeeks: 12 });
+          if (resolution.highDemand) {
+            const submitted = await confirmHighDemandEnquiry({
+              customerId: account.id,
+              name: account.name || '',
+              mobile,
+              email: account.email || '',
+              address: addresses.find((a) => a.id === addressId) ? { ...addresses.find((a) => a.id === addressId) } : undefined,
+              items: [{ productId: product.id, productName: product.name || 'Product', requestedGrams: effectivePackaging * quantity, requestedDeliveryDate: requestedDate, thresholdGrams: resolution.thresholdGrams || 0 }],
+            });
+            if (submitted) {
+              if (button) { button.disabled = false; button.textContent = 'Subscribe'; }
+              return;
+            }
+            if (button) { button.disabled = false; button.textContent = 'Subscribe'; }
+            return;
+          }
           if (!resolution.deliveryDate || !resolution.availability) throw new Error('The complete requested subscription quantity is not currently available.');
           const requestedAvailability = resolution.deliveryDate === requestedDate
             ? resolution.availability

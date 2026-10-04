@@ -3,6 +3,8 @@ import { auth, db } from './firebase';
 
 export type CustomerEnquirySource = 'customer_checkout' | 'contact_page';
 
+export type CustomerEnquiryReason = 'AVAILABILITY_SHORTAGE' | 'HIGH_DEMAND' | 'NON_SERVICEABLE_PINCODE' | string;
+
 export type CustomerContactRequest = {
   customerId?: string;
   name: string;
@@ -16,7 +18,7 @@ export type CustomerContactRequest = {
   requestedQuantityGrams?: number;
   requestedDeliveryDate?: string;
   resolvedDeliveryDate?: string;
-  enquiryReason?: 'AVAILABILITY_SHORTAGE' | string;
+  enquiryReason?: CustomerEnquiryReason;
   contactRequired?: boolean;
   pincode?: string;
   address?: Record<string, unknown>;
@@ -56,6 +58,22 @@ export async function createCustomerContactRequest(input: CustomerContactRequest
 
   const ref = await addDoc(collection(db, 'enquiries'), data);
   return { id: ref.id };
+}
+
+export function buildHighDemandEnquiryMessage(args: {
+  productName: string;
+  requestedGrams: number;
+  requestedDeliveryDate: string;
+  thresholdGrams: number;
+}) {
+  const productName = String(args.productName || 'Product').trim() || 'Product';
+  const requested = Math.max(0, Math.floor(Number(args.requestedGrams) || 0));
+  const threshold = Math.max(0, Math.floor(Number(args.thresholdGrams) || 0));
+  const requestedDate = String(args.requestedDeliveryDate || '').trim();
+  const formatDate = (value: string) => value
+    ? new Date(`${value}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    : 'the requested delivery date';
+  return `Customer requested ${requested.toLocaleString()}g ${productName} for ${formatDate(requestedDate)}, but current demand is above the production threshold of ${threshold.toLocaleString()}g. Customer requested to be contacted regarding the requested quantity.`;
 }
 
 export function buildShortageEnquiryMessage(args: {

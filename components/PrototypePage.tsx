@@ -49,6 +49,20 @@ export default function PrototypePage({ page }: { page: keyof typeof pages }) {
   const file = path.join(process.cwd(), 'public', 'prototype', pages[page]);
   const source = fs.readFileSync(file, 'utf8');
   const body = source.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] ?? source;
-  const html = rewriteLinks(body.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ''));
-  return <CmsHydrator page={page as Page}><div dangerouslySetInnerHTML={{ __html: html }} /></CmsHydrator>;
+  // Prototype HTML still contains the original static header/footer. Account-family
+  // pages must never render those legacy implementations because the website has
+  // one shared React Header. Strip the legacy chrome and render the shared layout
+  // here so all PrototypePage-backed routes use the exact same header.
+  const content = body
+    .replace(/<header\b[^>]*>[\s\S]*?<\/header>/gi, '')
+    .replace(/<footer\b[^>]*>[\s\S]*?<\/footer>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+  const html = rewriteLinks(content);
+  return (
+    <CmsHydrator page={page as Page}>
+      <Header />
+      <div dangerouslySetInnerHTML={{ __html: html }} />
+      <Footer />
+    </CmsHydrator>
+  );
 }

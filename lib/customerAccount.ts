@@ -27,6 +27,7 @@ export type CustomerAccount = {
   deliveryDay?: string;
   status?: string;
   onboardingStatus?: string;
+  profilePhotoUrl?: string;
   addresses?: CustomerAddress[];
 };
 
@@ -111,5 +112,11 @@ export async function updateCustomerAddresses(mobile: string, addresses: Custome
     addresses,
     updatedAt: serverTimestamp(),
   });
+  clearCustomerAccountCache(mobile);
+}
+
+export async function updateCustomerProfilePhoto(mobile: string, profilePhotoUrl: string) {
+  const ref = doc(db, 'customers', mobile);
+  await updateDoc(ref, { profilePhotoUrl: profilePhotoUrl.trim(), updatedAt: serverTimestamp() });
   clearCustomerAccountCache(mobile);
 }

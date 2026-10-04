@@ -129,6 +129,25 @@ export async function createCustomerSubscription(input: {
     kind: 'subscription',
     maxWeeks: 12,
   });
+  if (resolvedDelivery.highDemand) {
+    if (input.shortageDecision !== 'contact') throw new Error('HIGH_DEMAND_ENQUIRY_REQUIRED');
+    const contact = await createCustomerContactRequest({
+      customerId: authUid,
+      name: clean(customer.name) || 'Customer',
+      mobile,
+      email: clean(customer.email),
+      productId: clean(input.product.id),
+      productName: clean(input.product.name) || 'Product',
+      message: `Customer requested ${Number(resolvedDelivery.availability?.requestedGrams || packaging * input.quantity).toLocaleString()}g ${clean(input.product.name) || 'Product'} for ${firstDelivery}, but current demand is above the production threshold of ${Number(resolvedDelivery.thresholdGrams || 0).toLocaleString()}g. Customer requested to be contacted regarding the requested quantity.`,
+      requestedQuantityGrams: Number(resolvedDelivery.availability?.requestedGrams || packaging * input.quantity),
+      requestedDeliveryDate: firstDelivery,
+      enquiryReason: 'HIGH_DEMAND',
+      contactRequired: true,
+      source: 'customer_checkout',
+      status: 'open',
+    });
+    return { contactRequired: true, contactRequestId: contact.id, id: '', subscriptionNumber: '', orderId: '', orderNumber: '', status: 'contact_required', paymentStatus: 'not_required', paymentOrderIds: [], frequency, nextDeliveryDate: firstDelivery };
+  }
   if (!resolvedDelivery.deliveryDate || !resolvedDelivery.availability) {
     throw new Error(`The complete requested subscription quantity is not available for the next 12 weeks.`);
   }

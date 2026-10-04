@@ -10,6 +10,17 @@ service cloud.firestore {
       return signedIn() && data.authUid == request.auth.uid;
     }
 
+    function profile() {
+      return get(/databases/$(database)/documents/userProfiles/$(request.auth.uid)).data;
+    }
+
+    function admin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/userProfiles/$(request.auth.uid))
+        && profile().status == 'active'
+        && profile().role in ['ADMIN', 'SUPER_ADMIN', 'OPERATIONS'];
+    }
+
     function pendingOrder(data) {
       return data.paymentStatus == 'pending'
         && data.status == 'pending_payment';
@@ -163,6 +174,77 @@ service cloud.firestore {
     }
     match /paymentCreationLocks/{id} {
       allow read, write: if false;
+    }
+
+
+    // Customer notification records are server/admin-created. Customers may only
+    // read and mark their own notifications as read. Recipient UID is the primary
+    // ownership check; authUids on the customer record keeps older/admin-created
+    // notifications addressable across the customer's browser sessions.
+    match /notifications/{notificationId} {
+      allow read: if admin() || (signedIn()
+        && (
+          resource.data.recipientUid == request.auth.uid
+          || (
+            resource.data.recipientCustomerId is string
+            && exists(/databases/$(database)/documents/customers/$(resource.data.recipientCustomerId))
+            && (
+              get(/databases/$(database)/documents/customers/$(resource.data.recipientCustomerId)).data.authUid == request.auth.uid
+              || (
+                get(/databases/$(database)/documents/customers/$(resource.data.recipientCustomerId)).data.authUids is list
+                && get(/databases/$(database)/documents/customers/$(resource.data.recipientCustomerId)).data.authUids.hasAny([request.auth.uid])
+              )
+            )
+          )
+        ));
+      allow update: if admin() || (signedIn()
+        && (
+          resource.data.recipientUid == request.auth.uid
+          || (
+            resource.data.recipientCustomerId is string
+            && exists(/databases/$(database)/documents/customers/$(resource.data.recipientCustomerId))
+            && (
+              get(/databases/$(database)/documents/customers/$(resource.data.recipientCustomerId)).data.authUid == request.auth.uid
+              || (
+                get(/databases/$(database)/documents/customers/$(resource.data.recipientCustomerId)).data.authUids is list
+                && get(/databases/$(database)/documents/customers/$(resource.data.recipientCustomerId)).data.authUids.hasAny([request.auth.uid])
+              )
+            )
+          )
+        )
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'readAt']));
+      allow create, delete: if false;
+    }
+
+    match /customerPushSubscriptions/{subscriptionId} {
+      allow read: if admin() || (signedIn() && resource.data.authUid == request.auth.uid);
+      allow create: if admin() || (signedIn()
+        && request.resource.data.authUid == request.auth.uid
+        && request.resource.data.customerId is string
+        && request.resource.data.token is string
+        && request.resource.data.platform == 'web'
+        && exists(/databases/$(database)/documents/customers/$(request.resource.data.customerId))
+        && (
+          get(/databases/$(database)/documents/customers/$(request.resource.data.customerId)).data.authUid == request.auth.uid
+          || (
+            get(/databases/$(database)/documents/customers/$(request.resource.data.customerId)).data.authUids is list
+            && get(/databases/$(database)/documents/customers/$(request.resource.data.customerId)).data.authUids.hasAny([request.auth.uid])
+          )
+        ));
+      allow update: if admin() || (signedIn()
+        && resource.data.authUid == request.auth.uid
+        && request.resource.data.authUid == resource.data.authUid
+        && request.resource.data.customerId == resource.data.customerId
+        && request.resource.data.token == resource.data.token
+        && exists(/databases/$(database)/documents/customers/$(request.resource.data.customerId))
+        && (
+          get(/databases/$(database)/documents/customers/$(request.resource.data.customerId)).data.authUid == request.auth.uid
+          || (
+            get(/databases/$(database)/documents/customers/$(request.resource.data.customerId)).data.authUids is list
+            && get(/databases/$(database)/documents/customers/$(request.resource.data.customerId)).data.authUids.hasAny([request.auth.uid])
+          )
+        ));
+      allow delete: if admin() || (signedIn() && resource.data.authUid == request.auth.uid);
     }
 
     // Everything else is denied by default. Admin SDK is not subject to these rules.

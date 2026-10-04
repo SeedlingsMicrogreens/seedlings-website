@@ -1,4 +1,4 @@
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { arrayUnion, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 import { auth, db } from './firebase';
 import { mergeGuestCartIntoCustomer } from './cart';
@@ -21,12 +21,16 @@ export async function ensureClientOnboarding(mobile: string) {
   const normalizedMobile = normalizeIndianMobile(mobile);
   if (!normalizedMobile) throw new Error('Invalid mobile number.');
 
-  await ensureAnonymousAuth();
-
+  const authUser = await ensureAnonymousAuth();
   const customerRef = doc(db, CUSTOMERS_COLLECTION, normalizedMobile);
   const existing = await getDoc(customerRef);
 
   if (existing.exists()) {
+    await setDoc(customerRef, {
+      authUid: authUser.uid,
+      authUids: arrayUnion(authUser.uid),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
     mergeGuestCartIntoCustomer(normalizedMobile);
     localStorage.setItem(CUSTOMER_MOBILE_KEY, normalizedMobile);
     return { customerId: existing.id, isNew: false };
@@ -36,6 +40,8 @@ export async function ensureClientOnboarding(mobile: string) {
     mobile: normalizedMobile,
     countryCode: '+91',
     phoneE164: `+91${normalizedMobile}`,
+    authUid: authUser.uid,
+    authUids: [authUser.uid],
     onboardingStatus: 'active',
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),

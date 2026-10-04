@@ -1,5 +1,6 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/server/firebaseAdmin';
+import { sendCustomerNotificationPush } from '@/lib/server/customerNotifications';
 import { cashfreeRequest } from '@/lib/server/cashfree';
 
 type CashfreeOrder = { order_id?: string; order_amount?: number; order_currency?: string; order_status?: string };
@@ -69,7 +70,20 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
     return { action: 'acquired' as const };
   });
 
-  if (lockResult.action === 'completed' && lockResult.result) return lockResult.result;
+  if (lockResult.action === 'completed' && lockResult.result) {
+    const cached = lockResult.result;
+    await Promise.allSettled((cached.orderIds || []).map(async (orderId) => {
+      const orderSnapshot = await db.collection('orders').doc(orderId).get();
+      if (!orderSnapshot.exists) return;
+      const data = orderSnapshot.data() || {};
+      const isSubscriptionOrder = String(data.orderType || '').toLowerCase() === 'subscription';
+      const event = cached.status === 'failed'
+        ? 'payment_failed'
+        : isSubscriptionOrder ? 'subscription_activated' : 'order_placed';
+      await sendCustomerNotificationPush(`${orderId}_${event}`);
+    }));
+    return cached;
+  }
   if (lockResult.action === 'processing') {
     return {
       status: 'pending',
@@ -121,6 +135,7 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
   const subscriptionSnapshots = await Promise.all(subscriptionIds.map(id => db.collection('subscriptions').doc(id).get()));
   const batch = db.batch();
   const now = FieldValue.serverTimestamp();
+  const notificationIdsToPush: string[] = [];
 
   for (const orderSnapshot of internalSnapshot.docs) {
     const orderData = getSnapshotData(orderSnapshot);
@@ -140,6 +155,54 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
     if (effectiveStatus === 'paid' && !alreadyPaid) orderUpdate.paidAt = payment?.payment_completion_time || payment?.payment_time || now;
     if (effectiveStatus === 'failed') orderUpdate.paymentFailureMessage = payment?.payment_message || payment?.error_details || 'Payment failed.';
     if (!orderAlreadyPaidByAnotherAttempt || effectiveStatus !== 'paid') batch.update(orderSnapshot.ref, orderUpdate);
+
+    // The successful payment finalization is the authoritative "order placed"
+    // event. Create the customer notification in the same atomic batch so browser
+    // return/webhook races cannot create duplicate notifications.
+    if (status === 'paid' && !alreadyPaid && !orderAlreadyPaidByAnotherAttempt) {
+      const notificationEvent = isSubscriptionOrder ? 'subscription_activated' : 'order_placed';
+      const notificationRef = db.collection('notifications').doc(`${orderSnapshot.id}_${notificationEvent}`);
+      batch.set(notificationRef, {
+        source: 'transaction',
+        event: notificationEvent,
+        type: isSubscriptionOrder ? 'subscription' : 'one_time_order',
+        title: isSubscriptionOrder ? 'Subscription activated' : 'Order placed successfully',
+        message: isSubscriptionOrder
+          ? `Your subscription has been activated successfully. Order ${orderData.orderNumber || orderSnapshot.id} is confirmed.`
+          : `Your order ${orderData.orderNumber || orderSnapshot.id} has been placed successfully.`,
+        recipientCustomerId: String(orderData.customerId || ''),
+        recipientUid: String(orderData.paymentAuthUid || ''),
+        orderId: orderSnapshot.id,
+        orderNumber: String(orderData.orderNumber || orderSnapshot.id),
+        subscriptionId: isSubscriptionOrder ? String(orderData.subscriptionId || '') : null,
+        read: false,
+        status: 'sent',
+        pushStatus: 'not_attempted',
+        createdAt: now,
+        sentAt: now,
+      }, { merge: true });
+      notificationIdsToPush.push(notificationRef.id);
+    } else if (status === 'failed' && !alreadyPaid) {
+      const notificationRef = db.collection('notifications').doc(`${orderSnapshot.id}_payment_failed`);
+      batch.set(notificationRef, {
+        source: 'transaction',
+        event: 'payment_failed',
+        type: isSubscriptionOrder ? 'subscription' : 'one_time_order',
+        title: 'Payment failed',
+        message: `Payment for order ${orderData.orderNumber || orderSnapshot.id} failed. You can retry the payment.`,
+        recipientCustomerId: String(orderData.customerId || ''),
+        recipientUid: String(orderData.paymentAuthUid || ''),
+        orderId: orderSnapshot.id,
+        orderNumber: String(orderData.orderNumber || orderSnapshot.id),
+        subscriptionId: isSubscriptionOrder ? String(orderData.subscriptionId || '') : null,
+        read: false,
+        status: 'sent',
+        pushStatus: 'not_attempted',
+        createdAt: now,
+        sentAt: now,
+      }, { merge: true });
+      notificationIdsToPush.push(notificationRef.id);
+    }
 
     const transactionId = `${cashfreeOrderId}_${paymentId || 'no-payment'}_${orderSnapshot.id}`;
     batch.set(db.collection('paymentTransactions').doc(transactionId), {
@@ -213,5 +276,9 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
   }, { merge: true });
 
   await batch.commit();
+
+  // Firestore notification records are the source of truth. Push delivery is a
+  // best-effort channel and can be retried safely because notification IDs are deterministic.
+  await Promise.allSettled(notificationIdsToPush.map((id) => sendCustomerNotificationPush(id)));
   return result;
 }

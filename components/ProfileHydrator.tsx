@@ -3,13 +3,17 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { auth } from "@/lib/firebase";
 import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
-import { getCachedCustomerAccount, getCustomerAccount, updateCustomerProfile } from "@/lib/customerAccount";
+import { getCachedCustomerAccount, getCustomerAccount, updateCustomerProfile, updateCustomerProfilePhoto } from "@/lib/customerAccount";
+import { deleteFromCloudinary, uploadToCloudinary } from "@/lib/cloudinary";
 
 const FIXED_DELIVERY_DAY = "Saturday";
 const PLACEHOLDER = "Not provided";
 
 function renderLogin(root: HTMLElement) {
-  root.innerHTML = `<main class="section"><div class="container"><section class="auth-wrap"><div class="auth-card"><span class="eyebrow">My Profile</span><h1>Sign in to view your profile</h1><p>Your profile information is available after you sign in.</p><a class="btn primary" href="/account">Go to Account</a></div></section></div></main>`;
+  root.innerHTML = `<main class="section"><div class="container"><section class="auth-wrap"><div class="auth-card"><span class="eyebrow">My Profile</span><h1>Sign in to view your profile</h1><p>Your profile information is available after you sign in.</p><button class="btn primary" type="button" data-profile-login>Login</button></div></section></div></main>`;
+  root.querySelector<HTMLButtonElement>("[data-profile-login]")?.addEventListener("click", () => {
+    window.dispatchEvent(new CustomEvent("seedlings-open-login", { detail: { redirectTo: "/profile" } }));
+  });
 }
 
 export default function ProfileHydrator({ children }: { children: ReactNode }) {
@@ -38,7 +42,12 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
       const emailInput = inputs[2] || null;
       const daySelect = form.querySelector("select") as HTMLSelectElement | null;
       const saveButton = form.querySelector("button") as HTMLButtonElement | null;
-      if (!nameInput || !mobileInput || !emailInput || !daySelect || !saveButton) return;
+      const photoInput = root.querySelector<HTMLInputElement>("[data-profile-photo-input]");
+      const photoPreview = root.querySelector<HTMLElement>("[data-profile-photo-preview]");
+      const photoChoose = root.querySelector<HTMLButtonElement>("[data-profile-photo-choose]");
+      const photoRemove = root.querySelector<HTMLButtonElement>("[data-profile-photo-remove]");
+      const photoMessage = root.querySelector<HTMLElement>("[data-profile-photo-message]");
+      if (!nameInput || !mobileInput || !emailInput || !daySelect || !saveButton || !photoInput || !photoPreview || !photoChoose || !photoRemove || !photoMessage) return;
 
       // Phase 1 has Saturday as the only delivery day. This is not a customer
       // preference selector yet; it is a fixed business rule.
@@ -52,6 +61,16 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
       mobileInput.placeholder = "Mobile number";
       mobileInput.disabled = true;
 
+      let customerPhotoUrl = "";
+
+      const renderPhoto = (url: string) => {
+        if (!photoPreview) return;
+        const safeUrl = String(url || "").trim();
+        photoPreview.innerHTML = safeUrl ? `<img src="${safeUrl.replace(/"/g, '&quot;')}" alt="Profile photo">` : `<img src="/profile-default.jpg" alt="Default profile photo">`;
+        photoRemove.hidden = !safeUrl;
+        photoChoose.textContent = safeUrl ? "Change photo" : "Upload photo";
+      };
+
       const applyCustomer = (customer: Awaited<ReturnType<typeof getCustomerAccount>> | null) => {
         if (!alive) return;
         nameInput.value = customer?.name?.trim() || "";
@@ -60,6 +79,8 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
         emailInput.placeholder = PLACEHOLDER;
         mobileInput.value = customer?.phoneE164 || customer?.mobileNumber || customer?.mobile || `+91 ${mobile}`;
         daySelect.value = FIXED_DELIVERY_DAY;
+        customerPhotoUrl = customer?.profilePhotoUrl?.trim() || "";
+        renderPhoto(customerPhotoUrl);
       };
 
       let message = form.querySelector("[data-profile-message]") as HTMLElement | null;
@@ -79,6 +100,87 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
       // leave editable fields blank so their placeholders are visible.
       const cached = getCachedCustomerAccount(mobile);
       applyCustomer(cached === undefined ? null : cached);
+
+      if (photoChoose.dataset.profileWired !== "true") {
+        photoChoose.dataset.profileWired = "true";
+        photoChoose.addEventListener("click", () => photoInput.click());
+        photoInput.addEventListener("change", async () => {
+          const file = photoInput.files?.[0];
+          if (!file) return;
+          photoMessage.textContent = "";
+          if (!file.type.startsWith("image/")) { photoMessage.textContent = "Please select an image file."; photoInput.value = ""; return; }
+          if (file.size > 5 * 1024 * 1024) { photoMessage.textContent = "Profile photo must be 5 MB or smaller."; photoInput.value = ""; return; }
+          const previous = photoChoose.textContent;
+          photoChoose.disabled = true;
+          photoRemove.disabled = true;
+          photoChoose.textContent = "Uploading…";
+          try {
+            const previousUrl = customerPhotoUrl;
+            const url = await uploadToCloudinary(file);
+            await updateCustomerProfilePhoto(mobile, url);
+
+            if (previousUrl && previousUrl !== url) {
+              try {
+                await deleteFromCloudinary(previousUrl);
+              } catch (deleteError) {
+                // Do not leave the customer pointing at the new image while the old
+                // Cloudinary asset remains. Restore the previous reference and try
+                // to clean up the newly uploaded asset as well.
+                try { await updateCustomerProfilePhoto(mobile, previousUrl); } catch {}
+                try { await deleteFromCloudinary(url); } catch {}
+                throw deleteError;
+              }
+            }
+
+            customerPhotoUrl = url;
+            renderPhoto(url);
+            photoMessage.textContent = "Profile photo updated successfully.";
+            window.dispatchEvent(new CustomEvent("seedlings-customer-authenticated", { detail: { mobile } }));
+          } catch (error) {
+            console.error("Profile photo upload failed", error);
+            photoMessage.textContent = error instanceof Error ? error.message : "Unable to upload your profile photo.";
+          } finally {
+            photoChoose.disabled = false;
+            photoRemove.disabled = false;
+            photoChoose.textContent = previous || "Upload photo";
+            photoInput.value = "";
+          }
+        });
+        photoRemove.addEventListener("click", async () => {
+          photoMessage.textContent = "";
+          photoChoose.disabled = true;
+          photoRemove.disabled = true;
+          photoRemove.textContent = "Removing…";
+          try {
+            const previousUrl = customerPhotoUrl;
+            if (previousUrl) {
+              // Clear the profile reference first, then delete the asset. If the
+              // Cloudinary deletion fails, restore the old reference so the
+              // customer never loses a working photo.
+              await updateCustomerProfilePhoto(mobile, "");
+              try {
+                await deleteFromCloudinary(previousUrl);
+              } catch (deleteError) {
+                try { await updateCustomerProfilePhoto(mobile, previousUrl); } catch {}
+                throw deleteError;
+              }
+            } else {
+              await updateCustomerProfilePhoto(mobile, "");
+            }
+            customerPhotoUrl = "";
+            renderPhoto("");
+            photoMessage.textContent = "Profile photo removed.";
+            window.dispatchEvent(new CustomEvent("seedlings-customer-authenticated", { detail: { mobile } }));
+          } catch (error) {
+            console.error("Profile photo removal failed", error);
+            photoMessage.textContent = error instanceof Error ? error.message : "Unable to remove your profile photo.";
+          } finally {
+            photoChoose.disabled = false;
+            photoRemove.disabled = false;
+            photoRemove.textContent = "Remove photo";
+          }
+        });
+      }
 
       if (saveButton.dataset.profileWired !== "true") {
         saveButton.dataset.profileWired = "true";

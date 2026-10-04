@@ -96,8 +96,10 @@ export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput)
     }];
   });
   const availabilityResults = await checkProductsAvailability(availabilityInputs);
+  const highDemand = availabilityResults.filter(Boolean).some((result: any) => result.highDemand);
+  if (highDemand && input.shortageDecision !== 'contact') throw new Error('HIGH_DEMAND_ENQUIRY_REQUIRED');
   const shortage = availabilityResults.filter(Boolean).some((result: any) => result.hasShortage);
-  if (shortage && !input.shortageDecision) throw new Error('HARVEST_SHORTAGE_CONFIRMATION_REQUIRED');
+  if (shortage && !highDemand && !input.shortageDecision) throw new Error('HARVEST_SHORTAGE_CONFIRMATION_REQUIRED');
   if (shortage && input.shortageDecision === 'contact') {
     const shortageResults = availabilityResults
       .map((result: any, index: number) => ({ result, index }))
@@ -121,7 +123,9 @@ export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput)
         email: clean(customer.email),
         productId: clean(affectedProduct?.id || affectedItem?.productId),
         productName: clean(affectedItem?.productName || affectedProduct?.data()?.name) || 'Product',
-        message: buildShortageEnquiryMessage({
+        message: result?.highDemand
+          ? `Customer requested ${requestedGrams.toLocaleString()}g ${clean(affectedItem?.productName || affectedProduct?.data()?.name) || 'Product'} for ${deliverySlot}, but current demand is above the production threshold of ${Number(result?.thresholdGrams || 0).toLocaleString()}g. Customer requested to be contacted regarding the requested quantity.`
+          : buildShortageEnquiryMessage({
           productName: clean(affectedItem?.productName || affectedProduct?.data()?.name) || 'Product',
           requestedGrams,
           requestedDeliveryDate: deliverySlot,
@@ -132,7 +136,7 @@ export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput)
         requestedQuantityGrams: requestedGrams,
         requestedDeliveryDate: deliverySlot,
         resolvedDeliveryDate,
-        enquiryReason: 'AVAILABILITY_SHORTAGE',
+        enquiryReason: result?.highDemand ? 'HIGH_DEMAND' : 'AVAILABILITY_SHORTAGE',
         contactRequired: true,
       });
       contactRequests.push(contact.id);

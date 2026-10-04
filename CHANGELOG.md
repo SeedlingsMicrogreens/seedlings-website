@@ -1,3 +1,28 @@
+## Notifications — Automatic Web Push Registration
+- Removed the separate **Enable browser notifications** button from the Notifications page.
+- Web Push registration now runs automatically for an already-authenticated customer when the common Website header loads.
+- If browser notification permission is already granted, the FCM token is registered/refreshed silently.
+- If permission has not been decided, the browser permission request is attempted automatically; browser restrictions are handled silently without introducing a different notification-page UX.
+- Existing in-app notification UI and FCM token/customer mapping remain unchanged.
+
+
+## Website — Profile Navigation & Customer Profile Photo
+- Replaced the header Account and Shop Fresh actions with a Profile dropdown; no search was added.
+- Moved existing Account navigation items into the Profile dropdown and removed the Account left-side navigation.
+- Account-related pages now use the full available content width.
+- Added logged-out Profile → Login behavior and logged-in profile navigation/logout.
+- Added customer profile photo choose, upload, replace and remove flow using the same Cloudinary upload approach as Admin.
+- Stored customer profile photo URL separately as `profilePhotoUrl`; removed photos clear the customer profile reference.
+## Production Threshold Fallback — No Started Batch
+
+- Added customer-order capacity fallback using the sum of active Rack Location `thresholdGrams` values.
+- A batch is treated as production capacity only when its batch status is started/in progress; a Not Started or absent batch uses the threshold rule.
+- When a started batch exists and is short, the existing next-delivery-week availability flow remains in place.
+- When no started batch exists, committed demand for the requested delivery week plus the new request is compared with the total threshold.
+- Requests within threshold continue normally. Requests above threshold stop checkout and offer a direct **Send Enquiry** action; no order is created.
+- High-demand enquiries are stored with `enquiryReason: HIGH_DEMAND`, requested quantity/date, product and customer details.
+- Rack Location threshold values are read server-side through a protected Next.js API route; customer clients do not directly read the internal `locations` collection.
+
 ## Checkout — Product Offer Display Simplification
 - Removed the separate **Product offer** row from Checkout Order Summary.
 - When a price offer applies, the product line now shows the original price struck through and the offer price beside it.
@@ -326,3 +351,5 @@ Older documents contain statements that no longer exactly describe the current r
 - Subscription delivery dates are charged once each, with overlapping subscriptions sharing the same delivery-date charge.
 - One-time + subscription items sharing a delivery date are charged only once for that date.
 - Customer-facing subscription plan/product screens no longer display plan-level delivery-charge values.
+- Fixed customer profile photo lifecycle so Remove Photo deletes the Cloudinary asset before clearing the Firestore reference; replacing a photo cleans up the previous Cloudinary asset and rolls back the new upload/reference when cleanup fails.
+- Added authenticated server-side Cloudinary destroy endpoint using server-only API credentials; Cloudinary secrets are never exposed to the browser.
