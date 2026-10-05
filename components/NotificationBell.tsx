@@ -27,7 +27,7 @@ function timeLabel(value: CustomerNotification['createdAt']) {
 }
 
 function targetFor(item: CustomerNotification) {
-  if (item.orderId) return `/order-detail?orderId=${encodeURIComponent(item.orderId)}`;
+  if (item.orderId) return `/order-detail?order=${encodeURIComponent(item.orderId)}`;
   if (item.subscriptionId) return `/subscriptions?subscriptionId=${encodeURIComponent(item.subscriptionId)}`;
   return '/notifications';
 }

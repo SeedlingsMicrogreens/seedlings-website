@@ -69,7 +69,7 @@ export async function sendCustomerNotificationPush(notificationIdValue: string) 
   }
 
   const url = notification.orderId
-    ? `/order-detail?orderId=${encodeURIComponent(String(notification.orderId))}`
+    ? `/order-detail?order=${encodeURIComponent(String(notification.orderId))}`
     : notification.subscriptionId
       ? `/subscriptions?subscriptionId=${encodeURIComponent(String(notification.subscriptionId))}`
       : '/notifications';

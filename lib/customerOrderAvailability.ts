@@ -136,18 +136,23 @@ function requestedProductionQuantities(product: SalesProduct, quantityInput: num
 let productionThresholdPromise: Promise<number> | null = null;
 
 async function getProductionThresholdGrams() {
-  if (!auth.currentUser) return 0;
+  const user = auth.currentUser;
+  if (!user) throw new Error('Your login session expired. Please sign in again.');
+
   if (!productionThresholdPromise) {
-    productionThresholdPromise = fetch('/api/customer/production-threshold', { cache: 'no-store' })
-      .then(async response => {
-        if (!response.ok) throw new Error('Unable to load production threshold.');
-        const data = await response.json() as { thresholdGrams?: unknown };
-        return number(data.thresholdGrams);
+    productionThresholdPromise = user.getIdToken().then((idToken) =>
+      fetch('/api/customer/production-threshold', {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${idToken}` },
       })
-      .catch(error => {
-        productionThresholdPromise = null;
-        throw error;
-      });
+    ).then(async response => {
+      if (!response.ok) throw new Error('Unable to load production threshold.');
+      const data = await response.json() as { thresholdGrams?: unknown };
+      return number(data.thresholdGrams);
+    }).catch(error => {
+      productionThresholdPromise = null;
+      throw error;
+    });
   }
   return productionThresholdPromise;
 }

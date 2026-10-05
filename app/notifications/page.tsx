@@ -75,7 +75,7 @@ export default function NotificationsPage() {
     if (!item.read) {
       try { await markCustomerNotificationRead(item.id); } catch (err) { console.error(err); }
     }
-    if (item.orderId) window.location.assign(`/order-detail?orderId=${encodeURIComponent(item.orderId)}`);
+    if (item.orderId) window.location.assign(`/order-detail?order=${encodeURIComponent(item.orderId)}`);
     else if (item.subscriptionId) window.location.assign(`/subscriptions?subscriptionId=${encodeURIComponent(item.subscriptionId)}`);
   };
 
