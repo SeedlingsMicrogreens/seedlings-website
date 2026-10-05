@@ -1,5 +1,5 @@
-import { arrayUnion, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { signInAnonymously } from 'firebase/auth';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { signInWithCustomToken } from 'firebase/auth';
 import { auth, db } from './firebase';
 import { mergeGuestCartIntoCustomer } from './cart';
 
@@ -11,45 +11,36 @@ export function normalizeIndianMobile(value: string): string {
   return digits.length === 10 ? digits : '';
 }
 
-async function ensureAnonymousAuth() {
-  if (auth.currentUser) return auth.currentUser;
-  const credential = await signInAnonymously(auth);
-  return credential.user;
-}
-
-export async function ensureClientOnboarding(mobile: string) {
+export async function ensureClientOnboarding(mobile: string, otp: string): Promise<{ customerId: string; isNew: boolean }> {
   const normalizedMobile = normalizeIndianMobile(mobile);
   if (!normalizedMobile) throw new Error('Invalid mobile number.');
+  if (!/^\d{4}$/.test(String(otp || '').trim())) throw new Error('Invalid OTP.');
 
-  const authUser = await ensureAnonymousAuth();
-  const customerRef = doc(db, CUSTOMERS_COLLECTION, normalizedMobile);
-  const existing = await getDoc(customerRef);
-
-  if (existing.exists()) {
-    await setDoc(customerRef, {
-      authUid: authUser.uid,
-      authUids: arrayUnion(authUser.uid),
-      updatedAt: serverTimestamp(),
-    }, { merge: true });
-    mergeGuestCartIntoCustomer(normalizedMobile);
-    localStorage.setItem(CUSTOMER_MOBILE_KEY, normalizedMobile);
-    return { customerId: existing.id, isNew: false };
+  const response = await fetch('/api/customer/auth/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mobile: normalizedMobile, otp: String(otp).trim() }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || typeof payload.customToken !== 'string') {
+    throw new Error(String(payload.error || 'Unable to complete login.'));
   }
 
+  // Authenticate before accessing the customer document. Firestore rules require
+  // the customer to have a verified Firebase Auth identity for customer data.
+  await signInWithCustomToken(auth, payload.customToken);
+  const before = await getDoc(doc(db, CUSTOMERS_COLLECTION, normalizedMobile));
+  const customerRef = doc(db, CUSTOMERS_COLLECTION, normalizedMobile);
   await setDoc(customerRef, {
     mobile: normalizedMobile,
     countryCode: '+91',
     phoneE164: `+91${normalizedMobile}`,
-    authUid: authUser.uid,
-    authUids: [authUser.uid],
-    onboardingStatus: 'active',
-    createdAt: serverTimestamp(),
+    authUid: auth.currentUser?.uid || payload.authUid,
     updatedAt: serverTimestamp(),
-  });
-
+  }, { merge: true });
   mergeGuestCartIntoCustomer(normalizedMobile);
   localStorage.setItem(CUSTOMER_MOBILE_KEY, normalizedMobile);
-  return { customerId: customerRef.id, isNew: true };
+  return { customerId: normalizedMobile, isNew: !before.exists() };
 }
 
 export function getStoredCustomerMobile(): string {

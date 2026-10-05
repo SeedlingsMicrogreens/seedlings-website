@@ -10,6 +10,19 @@ service cloud.firestore {
       return signedIn() && data.authUid == request.auth.uid;
     }
 
+    function ownCustomer(data) {
+      return signedIn()
+        && data.customerId is string
+        && exists(/databases/$(database)/documents/customers/$(data.customerId))
+        && (
+          get(/databases/$(database)/documents/customers/$(data.customerId)).data.authUid == request.auth.uid
+          || (
+            get(/databases/$(database)/documents/customers/$(data.customerId)).data.authUids is list
+            && get(/databases/$(database)/documents/customers/$(data.customerId)).data.authUids.hasAny([request.auth.uid])
+          )
+        );
+    }
+
     function profile() {
       return get(/databases/$(database)/documents/userProfiles/$(request.auth.uid)).data;
     }
@@ -62,24 +75,27 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Customers remain readable/updatable by the authenticated customer session.
-    // The application currently uses an anonymous Firebase session, so mobile-number
-    // ownership cannot be proven by Firestore rules alone. Sensitive payment/order
-    // collections below therefore additionally require the per-session authUid.
+    // Customers are owned by the shared Firebase Auth identity used by Website and Mobile.
     match /customers/{mobile} {
-      allow read: if signedIn();
+      allow read: if signedIn() && (
+        resource.data.authUid == request.auth.uid
+        || (resource.data.authUids is list && resource.data.authUids.hasAny([request.auth.uid]))
+      );
       allow create: if signedIn()
-        && request.resource.data.mobile == mobile;
+        && request.resource.data.mobile == mobile
+        && request.resource.data.authUid == request.auth.uid;
       allow update: if signedIn()
         && resource.data.mobile == mobile
-        && request.resource.data.mobile == resource.data.mobile;
+        && resource.data.authUid == request.auth.uid
+        && request.resource.data.mobile == resource.data.mobile
+        && request.resource.data.authUid == request.auth.uid;
       allow delete: if false;
     }
 
     // Customers may create only their own pending checkout records. They cannot
     // mark anything paid/confirmed, alter an existing payment, or delete orders.
     match /orders/{orderId} {
-      allow read: if signedIn() && ownAuthUid(resource.data);
+      allow read: if signedIn() && (ownAuthUid(resource.data) || ownCustomer(resource.data));
       allow create: if signedIn()
         && ownAuthUid(request.resource.data)
         && pendingOrder(request.resource.data)
@@ -103,7 +119,7 @@ service cloud.firestore {
     // The document ID is intentionally not user-controlled for uniqueness; the
     // application checks for an existing feedback record before showing the form.
     match /orderFeedback/{feedbackId} {
-      allow read: if signedIn() && ownAuthUid(get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data);
+      allow read: if signedIn() && (ownAuthUid(get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data) || ownCustomer(get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data));
       allow create: if signedIn()
         && request.resource.data.customerId == get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.customerId
         && ownAuthUid(get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data)
@@ -120,7 +136,7 @@ service cloud.firestore {
     }
 
     match /subscriptions/{subscriptionId} {
-      allow read: if signedIn() && ownAuthUid(resource.data);
+      allow read: if signedIn() && (ownAuthUid(resource.data) || ownCustomer(resource.data));
       allow create: if signedIn()
         && ownAuthUid(request.resource.data)
         && pendingSubscription(request.resource.data)
@@ -158,7 +174,7 @@ service cloud.firestore {
         && request.resource.data.productName.size() > 0
         && request.resource.data.message.size() > 0
         && (!signedIn() || request.resource.data.authUid == request.auth.uid);
-      allow read: if signedIn() && ownAuthUid(resource.data);
+      allow read: if signedIn() && (ownAuthUid(resource.data) || ownCustomer(resource.data));
       allow update, delete: if false;
     }
 

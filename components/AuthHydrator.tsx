@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from 'react';
-import { onAuthStateChanged, signInAnonymously, signOut } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import {
   clearStoredCustomerMobile,
@@ -139,8 +139,7 @@ export default function AuthHydrator({ children }: { children: ReactNode }) {
         verify.textContent = 'Verifying…';
         try {
           const normalized = normalizeIndianMobile(currentMobile);
-          await ensureClientOnboarding(normalized);
-          if (!auth.currentUser) await signInAnonymously(auth);
+          await ensureClientOnboarding(normalized, otp);
           renderSignedIn(normalized);
         } catch (error) {
           console.error('Customer onboarding failed', error);

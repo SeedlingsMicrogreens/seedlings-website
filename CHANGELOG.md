@@ -1,3 +1,10 @@
+## Customer Authentication — Shared Website / Mobile Firebase Identity
+- Customer OTP verification now resolves an existing Firebase phone identity before creating a new deterministic customer UID.
+- Website and Mobile therefore receive the same Firebase `authUid` for the same customer mobile number.
+- Customer Firestore access is authenticated with the shared UID before customer data is read or written.
+- Removed the previous anonymous-auth dependency from the customer login flow.
+
+
 ## Notifications — Automatic Web Push Registration
 - Removed the separate **Enable browser notifications** button from the Notifications page.
 - Web Push registration now runs automatically for an already-authenticated customer when the common Website header loads.

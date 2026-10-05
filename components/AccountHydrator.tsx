@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
-import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { collection, getCountFromServer, getDocsFromServer, query, where } from "firebase/firestore";
 import { getCustomerAccount } from "@/lib/customerAccount";

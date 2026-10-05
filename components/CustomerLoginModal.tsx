@@ -84,11 +84,8 @@ export default function CustomerLoginModal() {
     setBusy(true);
     try {
       const normalized = normalizeIndianMobile(mobile);
-      await ensureClientOnboarding(normalized);
-      // CheckoutHydrator can miss the initial Firebase auth event because
-      // onboarding also creates the anonymous session before the customer
-      // mobile is persisted. Explicitly notify the active page after the
-      // complete login/onboarding sequence so it can hydrate immediately.
+      await ensureClientOnboarding(normalized, otp);
+      // Explicitly notify the active page after the complete login/onboarding sequence so it can hydrate immediately.
       window.dispatchEvent(new CustomEvent('seedlings-customer-authenticated', { detail: { mobile: normalized } }));
       setOpen(false);
       setBusy(false);
