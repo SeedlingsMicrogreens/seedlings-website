@@ -1,3 +1,4 @@
+- 2026-10-07 — Cashfree API CORS: added OPTIONS handling and CORS response headers for `/api/cashfree/*`, including Authorization and Content-Type headers, so approved browser/mobile-web callers receive the real API error instead of a browser CORS failure.
 ## Customer Authentication — Shared Website / Mobile Firebase Identity
 - Customer OTP verification now resolves an existing Firebase phone identity before creating a new deterministic customer UID.
 - Website and Mobile therefore receive the same Firebase `authUid` for the same customer mobile number.
