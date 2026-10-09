@@ -1,3 +1,4 @@
+import { customerAuthOptions, withCustomerAuthCors } from '../cors';
 import { NextResponse } from 'next/server';
 import { createHash } from 'node:crypto';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -31,7 +32,7 @@ async function resolveCustomerAuthUid(mobile: string): Promise<string> {
   return (await auth.createUser({ uid, phoneNumber })).uid;
 }
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
     const mobile = normalizeIndianMobile(String(body?.mobile || ''));
@@ -67,4 +68,13 @@ export async function POST(request: Request) {
     console.error('Customer OTP verification failed', error);
     return NextResponse.json({ error: 'Unable to complete login.' }, { status: 500 });
   }
+}
+
+
+export async function POST(request: Request) {
+  return withCustomerAuthCors(await handlePost(request), request);
+}
+
+export async function OPTIONS(request: Request) {
+  return customerAuthOptions(request);
 }

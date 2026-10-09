@@ -1,3 +1,4 @@
+import { customerAuthOptions, withCustomerAuthCors } from '../cors';
 import { NextResponse } from 'next/server';
 import { createHash, randomInt } from 'node:crypto';
 import { adminDb } from '@/lib/server/firebaseAdmin';
@@ -82,7 +83,7 @@ async function sendSms(mobile: string, otp: string): Promise<void> {
   // in opt-in debug mode for diagnosis, without logging the request's OTP or API key.
 }
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
     const mobile = normalizeIndianMobile(String(body?.mobile || ''));
@@ -135,4 +136,13 @@ export async function POST(request: Request) {
       : 'Unknown error');
     return NextResponse.json({ error: 'Unable to send OTP.' }, { status: 500 });
   }
+}
+
+
+export async function POST(request: Request) {
+  return withCustomerAuthCors(await handlePost(request), request);
+}
+
+export async function OPTIONS(request: Request) {
+  return customerAuthOptions(request);
 }

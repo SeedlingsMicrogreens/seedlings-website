@@ -376,3 +376,9 @@ Older documents contain statements that no longer exactly describe the current r
 - Customer-facing subscription plan/product screens no longer display plan-level delivery-charge values.
 - Fixed customer profile photo lifecycle so Remove Photo deletes the Cloudinary asset before clearing the Firestore reference; replacing a photo cleans up the previous Cloudinary asset and rolls back the new upload/reference when cleanup fails.
 - Added authenticated server-side Cloudinary destroy endpoint using server-only API credentials; Cloudinary secrets are never exposed to the browser.
+
+
+## Customer OTP CORS fix
+- Added explicit CORS response headers and OPTIONS preflight handling to send-otp and verify-otp.
+- Allows known local development origins (Expo web and local Website) and the deployed Website origin.
+- OTP generation, server-side CUSTOMER_OTP_DEMO_MODE, SMS provider configuration, OTP verification, and Firebase Custom Token behavior are unchanged.
