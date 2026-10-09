@@ -11,12 +11,25 @@ export function normalizeIndianMobile(value: string): string {
   return digits.length === 10 ? digits : '';
 }
 
+export async function requestCustomerOtp(mobile: string, resend = false): Promise<{ demo: boolean; demoOtp?: string; expiresAt?: string }> {
+  const normalizedMobile = normalizeIndianMobile(mobile);
+  if (!normalizedMobile) throw new Error('Invalid mobile number.');
+  const response = await fetch('/api/customer/auth/send-otp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mobile: normalizedMobile, resend }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.success !== true) throw new Error(String(payload.error || 'Unable to send OTP.'));
+  return { demo: payload.demo === true, demoOtp: typeof payload.demoOtp === 'string' ? payload.demoOtp : undefined, expiresAt: payload.expiresAt };
+}
+
 export async function ensureClientOnboarding(mobile: string, otp: string): Promise<{ customerId: string; isNew: boolean }> {
   const normalizedMobile = normalizeIndianMobile(mobile);
   if (!normalizedMobile) throw new Error('Invalid mobile number.');
   if (!/^\d{4}$/.test(String(otp || '').trim())) throw new Error('Invalid OTP.');
 
-  const response = await fetch('/api/customer/auth/verify', {
+  const response = await fetch('/api/customer/auth/verify-otp', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mobile: normalizedMobile, otp: String(otp).trim() }),

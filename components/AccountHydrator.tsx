@@ -5,10 +5,7 @@ import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { collection, getCountFromServer, getDocsFromServer, query, where } from "firebase/firestore";
 import { getCustomerAccount } from "@/lib/customerAccount";
-import { ensureClientOnboarding, getStoredCustomerMobile, normalizeIndianMobile } from "@/lib/clientOnboarding";
-
-const DEMO_OTP_ENABLED = process.env.NEXT_PUBLIC_ENABLE_DEMO_OTP === 'true';
-const DEMO_OTP = process.env.NEXT_PUBLIC_DEMO_OTP || '';
+import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
 
 function formatDate(value: string) {
   if (!value) return "—";

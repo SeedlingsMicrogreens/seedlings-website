@@ -3,16 +3,16 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
+import Swal from 'sweetalert2';
 import {
   clearStoredCustomerMobile,
   ensureClientOnboarding,
+  requestCustomerOtp,
   getStoredCustomerMobile,
   normalizeIndianMobile,
 } from '@/lib/clientOnboarding';
 
-const DEMO_OTP_ENABLED = process.env.NEXT_PUBLIC_ENABLE_DEMO_OTP === 'true';
-const DEMO_OTP = process.env.NEXT_PUBLIC_DEMO_OTP || '';
-const OTP_VALIDITY_SECONDS = 60;
+const OTP_VALIDITY_SECONDS = 120;
 
 function setText(root: HTMLElement, selector: string, text: string) {
   const el = root.querySelector(selector);
@@ -126,15 +126,6 @@ export default function AuthHydrator({ children }: { children: ReactNode }) {
           setError(root, 'Enter the 4-digit OTP.');
           return;
         }
-        if (!DEMO_OTP_ENABLED || !DEMO_OTP) {
-          setError(root, 'Phone OTP authentication is not configured for this environment.');
-          return;
-        }
-        if (otp !== DEMO_OTP) {
-          setError(root, 'Invalid OTP. Please enter the correct 4-digit OTP.');
-          return;
-        }
-
         verify.disabled = true;
         verify.textContent = 'Verifying…';
         try {
@@ -168,16 +159,22 @@ export default function AuthHydrator({ children }: { children: ReactNode }) {
         return;
       }
 
-      if (!DEMO_OTP_ENABLED || !DEMO_OTP) {
-        setError(root, 'Phone OTP authentication is not configured for this environment.');
-        return;
-      }
-
       currentMobile = normalized;
       action.style.pointerEvents = 'none';
-      action.textContent = 'OTP sent';
-      showOtp();
-      action.style.pointerEvents = '';
+      action.textContent = 'Sending…';
+      try {
+        const result = await requestCustomerOtp(normalized);
+        showOtp();
+        if (result.demo && result.demoOtp) {
+          await Swal.fire({ icon: 'info', title: 'Demo OTP', text: result.demoOtp, confirmButtonText: 'OK' });
+        }
+        action.textContent = 'OTP sent';
+      } catch (error) {
+        setError(root, error instanceof Error ? error.message : 'Unable to send OTP.');
+        action.textContent = 'Send OTP';
+      } finally {
+        action.style.pointerEvents = '';
+      }
     };
 
     action.removeAttribute('href');

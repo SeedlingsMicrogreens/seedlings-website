@@ -1,3 +1,18 @@
+## Customer OTP error handling correction
+- Display an incorrect-OTP message when `/api/customer/auth/verify-otp` returns `Invalid OTP`, instead of replacing it with a generic connection error.
+- Clear the OTP field after an incorrect attempt so the customer can re-enter it without reopening the login modal.
+- Handle expired OTP and rate-limit responses with user-facing messages; keep the login modal open on verification failure.
+
+## SMS URL generation correction
+- Construct BulkSMS URL in the exact parameter order and casing from the user-confirmed working URL: `user`, `key`, `mobile`, `message`, `senderid`, `accusage`, `entityid`, `tempid`.
+- Avoid `URLSearchParams` encoding/reordering for this legacy provider endpoint.
+- OTP remains dynamically inserted into the approved message template. Credentials remain server-side and redacted from logs.
+
+## Customer OTP SMS provider URL fix
+- Use the provider-required `http://sms.bulkssms.com/submitsms.jsp` URL while its HTTPS certificate is expired.
+- Match provider parameter names (`entityid`, `tempid`) and use the configured 10-digit mobile number.
+- Use the required Seedlings Microgreen OTP message template.
+
 - 2026-10-07 — Cashfree API CORS: added OPTIONS handling and CORS response headers for `/api/cashfree/*`, including Authorization and Content-Type headers, so approved browser/mobile-web callers receive the real API error instead of a browser CORS failure.
 ## Customer Authentication — Shared Website / Mobile Firebase Identity
 - Customer OTP verification now resolves an existing Firebase phone identity before creating a new deterministic customer UID.

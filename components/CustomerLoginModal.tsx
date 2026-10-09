@@ -2,11 +2,9 @@
 
 import { useEffect, useState } from 'react';
 
-import { ensureClientOnboarding, normalizeIndianMobile } from '@/lib/clientOnboarding';
+import { ensureClientOnboarding, normalizeIndianMobile, requestCustomerOtp } from '@/lib/clientOnboarding';
 
-const DEMO_OTP_ENABLED = process.env.NEXT_PUBLIC_ENABLE_DEMO_OTP === 'true';
-const DEMO_OTP = process.env.NEXT_PUBLIC_DEMO_OTP || '';
-const OTP_VALIDITY_SECONDS = 60;
+const OTP_VALIDITY_SECONDS = 120;
 
 type LoginRequest = { redirectTo?: string | null };
 
@@ -20,6 +18,7 @@ export default function CustomerLoginModal() {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [remaining, setRemaining] = useState(0);
+  const [demoOtp, setDemoOtp] = useState<string | null>(null);
 
   useEffect(() => {
     const onRequest = (event: Event) => {
@@ -31,6 +30,7 @@ export default function CustomerLoginModal() {
       setExpiresAt(0);
       setRemaining(0);
       setMessage('');
+      setDemoOtp(null);
       setBusy(false);
       setOpen(true);
     };
@@ -49,21 +49,26 @@ export default function CustomerLoginModal() {
 
   if (!open) return null;
 
-  const sendOtp = () => {
+  const sendOtp = async () => {
     setMessage('');
     const normalized = normalizeIndianMobile(mobile);
     if (!normalized) {
       setMessage('Enter a valid 10-digit Indian mobile number.');
       return;
     }
-    if (!DEMO_OTP_ENABLED || !DEMO_OTP) {
-      setMessage('Phone OTP authentication is not configured for this environment.');
-      return;
+    setBusy(true);
+    try {
+      const result = await requestCustomerOtp(normalized);
+      setMobile(normalized);
+      setOtp('');
+      setExpiresAt(Date.now() + OTP_VALIDITY_SECONDS * 1000);
+      setSent(true);
+      setDemoOtp(result.demo && result.demoOtp ? String(result.demoOtp) : null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to send OTP.');
+    } finally {
+      setBusy(false);
     }
-    setMobile(normalized);
-    setOtp('');
-    setExpiresAt(Date.now() + OTP_VALIDITY_SECONDS * 1000);
-    setSent(true);
   };
 
   const verifyOtp = async () => {
@@ -76,11 +81,6 @@ export default function CustomerLoginModal() {
       setMessage('Enter the 4-digit OTP.');
       return;
     }
-    if (otp.trim() !== DEMO_OTP) {
-      setMessage('Invalid OTP. Please enter the correct 4-digit OTP.');
-      return;
-    }
-
     setBusy(true);
     try {
       const normalized = normalizeIndianMobile(mobile);
@@ -91,8 +91,22 @@ export default function CustomerLoginModal() {
       setBusy(false);
       if (redirectTo) window.location.assign(redirectTo);
     } catch (error) {
-      console.error('Customer login failed', error);
-      setMessage('Unable to complete login. Please check your connection and try again.');
+      const errorMessage = error instanceof Error ? error.message.trim() : '';
+      const normalizedError = errorMessage.toLowerCase();
+
+      // Invalid OTP is an expected validation response, not a generic login/network failure.
+      if (normalizedError.includes('invalid otp')) {
+        setOtp('');
+        setMessage('The OTP you entered is incorrect. Please check it and try again.');
+      } else if (normalizedError.includes('otp expired') || normalizedError.includes('expired otp')) {
+        setMessage('This OTP has expired. Please request a new OTP.');
+      } else if (normalizedError.includes('too many') || normalizedError.includes('rate limit')) {
+        setMessage(errorMessage || 'Too many attempts. Please wait before trying again.');
+      } else if (errorMessage) {
+        setMessage(errorMessage);
+      } else {
+        setMessage('Unable to complete login. Please check your connection and try again.');
+      }
       setBusy(false);
     }
   };
@@ -147,6 +161,7 @@ export default function CustomerLoginModal() {
           </>
         )}
 
+        {demoOtp && <div className="customer-login-message customer-login-demo-otp" role="status" aria-live="polite"><strong>Demo OTP:</strong> <span>{demoOtp}</span></div>}
         {message && <p className="customer-login-message" role="alert">{message}</p>}
       </section>
     </div>
