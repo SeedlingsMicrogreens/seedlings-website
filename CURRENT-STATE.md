@@ -146,6 +146,21 @@ The cart navigation preserves the SVG cart icon while the item count is rendered
 - Server-side checkout revalidates the resolved dates and sends the customer back to Cart if availability changed after confirmation.
 - One-time products with different resolved delivery dates are stored in separate order documents so delivery assignments remain date-correct; the single one-time delivery charge is allocated once.
 
+### Customer availability — batch first, threshold fallback
+Implemented in `lib/customerAvailabilityMath.ts` (pure rules) and loaded by `lib/customerOrderAvailability.ts`.
+
+For each component Microgreen of a cart item and the item's delivery date:
+- **Applicable batch** (`selectBatchSupply`): batch status `in_progress` or `completed_harvested` (Admin values), not `delivered`; item not `not_started`/`failed`.
+  - Started item: applies when `expectedReadyDate` ≤ delivery date; supply = `expectedUsableYieldGrams` (planned).
+  - Harvested item: applies when harvested (`actualReadyDate`, else batch `harvestDate`) on or before the delivery date and the batch is not closed/delivered (even with 0 g left); supply = `batchStockGrams` (reduced by Admin packing and waste), else net `actualYieldGrams` (gross `actualHarvestGrams` − wastage). Product `stockGrams` already contains this harvest, so it only caps harvested supply and is never added.
+  - `not_started`, `closed` and delivered batches are not applicable. Admin must close finished batches; an open harvested batch with 0 g keeps that Microgreen on the batch rule (0 g available).
+- **With an applicable batch:** available = batch supply − not-yet-packed committed subscription and one-time grams for that Microgreen and date. The threshold is not consulted.
+- **Without an applicable batch:** threshold fallback — total committed demand for the date + request > total Rack Location threshold ⇒ high-demand enquiry.
+- Committed demand: paid (or legacy confirmed/fulfilment-status) orders and active subscriptions for the delivery date; cancelled/unpaid excluded; delivered/handed-over remain committed. Packed grams are not deducted again. A subscription delivery is counted once (the subscription while scheduled for the date, otherwise its generated order).
+- Combo component grams match Admin packing: `percentage` (legacy `quantityGrams` ratio), rounded per component with the remainder on the last component; each component is evaluated separately and any short component makes the combo short.
+- Proceed to Checkout (`planCheckoutShortageDecisions`): high demand → enquiry popup; shortage with a later full-quantity date → harvest-shortage popup (decline → enquiry + remove from cart, accept → that date); shortage with no later full-quantity date → "Requested quantity is not available" popup (send enquiry + remove from cart, or keep in cart; checkout never opens). Only the remaining date changes reach the generic delivery-date popup.
+- Known limitation: harvested stock is pooled across dates (as in Admin FIFO packing); demand for earlier, not-yet-packed delivery dates is not deducted when checking a later date.
+
 ## Phase 46 Bug Fix
 - Fixed checkout crash in `lib/customerOrderAvailability.ts` caused by indexing the reservation map with the cart kind value `one-time` instead of its `oneTime` key.
 - Smart delivery-date resolution now records reservations into the correct subscription/one-time bucket.

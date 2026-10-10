@@ -37,6 +37,36 @@ export async function confirmHarvestShortage(args: {
   return result.isConfirmed ? 'continue' as const : 'contact' as const;
 }
 
+/** Harvest shortage when no later delivery date can supply the complete quantity. */
+export async function confirmHarvestShortageWithoutAlternative(args: {
+  mode: HarvestShortageMode;
+  requestedGrams: number;
+  shortageGrams: number;
+  deliveryDate?: string;
+}) {
+  const { default: Swal } = await import('sweetalert2');
+  const requested = Math.max(0, Math.floor(args.requestedGrams));
+  const shortage = Math.max(0, Math.floor(args.shortageGrams));
+  const requestedDate = String(args.deliveryDate || '').trim();
+  const requestedDateHtml = requestedDate
+    ? `<strong>${new Date(`${requestedDate}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</strong>`
+    : '<strong>the requested delivery date</strong>';
+  const quantityLabel = args.mode === 'subscription' ? 'subscription quantity' : 'order quantity';
+  const result = await Swal.fire({
+    icon: 'info',
+    title: 'Requested quantity is not available',
+    html: `The full ${quantityLabel} of <strong>${requested.toLocaleString()} gms</strong> is not available on ${requestedDateHtml}, and no later delivery date can supply the complete quantity right now.<br><br><span class="muted">${shortage.toLocaleString()} gms is currently unavailable. We will not deliver a partial quantity.</span><br><br>Would you like us to send an enquiry and remove this product from your cart?`,
+    showCancelButton: true,
+    confirmButtonText: 'Yes, send enquiry',
+    cancelButtonText: 'Keep in cart',
+    reverseButtons: true,
+    focusCancel: true,
+    allowOutsideClick: false,
+    allowEscapeKey: false,
+  });
+  return result.isConfirmed ? 'contact' as const : 'cancel' as const;
+}
+
 
 
 export async function showCustomerSuccess(title: string, text?: string) {

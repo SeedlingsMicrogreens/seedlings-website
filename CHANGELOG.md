@@ -36,12 +36,15 @@
 - Added logged-out Profile → Login behavior and logged-in profile navigation/logout.
 - Added customer profile photo choose, upload, replace and remove flow using the same Cloudinary upload approach as Admin.
 - Stored customer profile photo URL separately as `profilePhotoUrl`; removed photos clear the customer profile reference.
-## Production Threshold Fallback — No Started Batch
+## Production Threshold Fallback — Batch Precedence
 
 - Added customer-order capacity fallback using the sum of active Rack Location `thresholdGrams` values.
-- A batch is treated as production capacity only when its batch status is started/in progress; a Not Started or absent batch uses the threshold rule.
-- When a started batch exists and is short, the existing next-delivery-week availability flow remains in place.
-- When no started batch exists, committed demand for the requested delivery week plus the new request is compared with the total threshold.
+- Batch first, threshold second: a component Microgreen with an applicable batch for the delivery date is decided only by that batch's supply minus its committed demand; the threshold never overrides it. See `CURRENT-STATE.md` → *Customer availability — batch first, threshold fallback*.
+- Fixed batch selection that ignored Admin's stored `in_progress` status and added planned yield on top of product stock: started items now contribute planned usable yield; harvested items contribute remaining `batchStockGrams` (falling back to net `actualYieldGrams`), capped by product stock and never added to it.
+- Committed demand deducts only grams not yet packed (packing already reduced batch stock); delivered/handed-over orders remain committed, and subscription deliveries are counted once whether represented by the subscription or its generated order.
+- Combo component grams now follow Admin packing (`percentage`, legacy `quantityGrams` ratio fallback, per-component rounding).
+- Proceed to Checkout resolves the harvest-shortage popup before the generic delivery-date popup; an accepted later date is not asked again. A shortage with no later full-quantity date now shows a shortage popup offering an enquiry or keeping the item in the cart, instead of being placed on the requested date.
+- When no applicable batch exists, committed demand for the requested delivery week plus the new request is compared with the total threshold.
 - Requests within threshold continue normally. Requests above threshold stop checkout and offer a direct **Send Enquiry** action; no order is created.
 - High-demand enquiries are stored with `enquiryReason: HIGH_DEMAND`, requested quantity/date, product and customer details.
 - Rack Location threshold values are read server-side through a protected Next.js API route; customer clients do not directly read the internal `locations` collection.

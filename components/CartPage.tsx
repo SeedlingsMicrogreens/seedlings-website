@@ -21,7 +21,7 @@ import {
   type SubscriptionCartItem,
 } from "@/lib/cart";
 import { packagingLabel } from "@/lib/packaging";
-import { nextWeekSaturday, resolveCartDeliveryDates } from "@/lib/customerOrderAvailability";
+import { checkProductAvailability, nextWeekSaturday, resolveCartDeliveryDates } from "@/lib/customerOrderAvailability";
 import {
   getActiveSalesProducts,
   productSlug,
@@ -31,6 +31,8 @@ import {
 import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
 import { getCustomerAccount } from "@/lib/customerAccount";
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from "@/lib/customerContactRequests";
+import { confirmHarvestShortage, confirmHarvestShortageWithoutAlternative, confirmHighDemandEnquiry } from "@/lib/customerAlerts";
+import { planCheckoutShortageDecisions } from "@/lib/cartCheckoutDecisions";
 import {
   loadActiveCustomerSubscriptionPlans,
   type CustomerSubscriptionPlan,
@@ -483,11 +485,117 @@ export default function CartPage() {
           name: item.name,
         })),
       ].filter((item) => item.product), { maxWeeks: 12 });
-
       const dates: Record<string, string | null> = {};
       for (const item of resolution.items) dates[item.key] = item.deliveryDate;
 
-      if (!resolution.hasDateChanges && !resolution.hasUnavailableItems) {
+      const findCartItem = (item: (typeof resolution.items)[number]) => item.kind === "subscription"
+        ? currentCart.subscriptionItems.find((entry) => `subscription:${entry.productId}:${entry.planId}:${entry.startDate}` === item.key)
+        : currentCart.oneTimeItems.find((entry) => `one-time:${entry.productId}` === item.key);
+
+      const plan = await planCheckoutShortageDecisions(resolution.items, {
+        checkAvailability: async (item) => {
+          const cartItem = findCartItem(item);
+          const product = availableProductMap.get(item.productId);
+          if (!cartItem || !product) return null;
+          return checkProductAvailability({
+            product,
+            quantity: Number(cartItem.quantity || 1),
+            packagingGrams: Number(cartItem.packaging || product.sellingOptions?.[0]?.weightGrams || 100),
+            deliveryDate: item.requestedDate || requestedDate,
+          });
+        },
+        confirmShortage: (item, availability) => item.deliveryDate
+          ? confirmHarvestShortage({
+            mode: item.kind === "subscription" ? "subscription" : "one-time",
+            availableGrams: availability.availableGrams,
+            requestedGrams: availability.requestedGrams,
+            shortageGrams: availability.shortageGrams,
+            deliveryDate: item.requestedDate || requestedDate,
+            alternativeDeliveryDate: item.deliveryDate,
+          })
+          : confirmHarvestShortageWithoutAlternative({
+            mode: item.kind === "subscription" ? "subscription" : "one-time",
+            requestedGrams: availability.requestedGrams,
+            shortageGrams: availability.shortageGrams,
+            deliveryDate: item.requestedDate || requestedDate,
+          }),
+      });
+
+      // Keep in cart: stay on Cart without applying dates or opening Checkout.
+      if (plan.outcome === "cancel") return;
+
+      if (plan.outcome === "high-demand") {
+        const { item, availability } = plan;
+        const customerAccount = await getCustomerAccount(String(getStoredCustomerMobile() || ""));
+        const submitted = await confirmHighDemandEnquiry({
+          customerId: customerAccount?.id,
+          name: String(customerAccount?.name || "Customer"),
+          mobile: String(getStoredCustomerMobile() || ""),
+          email: String(customerAccount?.email || ""),
+          address: undefined,
+          items: [{
+            productId: item.productId,
+            productName: item.name,
+            requestedGrams: availability.requestedGrams,
+            requestedDeliveryDate: item.requestedDate || requestedDate,
+            thresholdGrams: availability.thresholdGrams,
+          }],
+        });
+        if (submitted) reload();
+        return;
+      }
+
+      if (plan.outcome === "contact") {
+        const { item, availability } = plan;
+        const cartItem = findCartItem(item);
+        const requestedDeliveryDate = item.requestedDate || requestedDate;
+        const mobile = getStoredCustomerMobile();
+        if (!mobile) {
+          await Swal.fire({ icon: "info", title: "Please sign in", text: "Please sign in before updating your cart so we can send an enquiry for the products you are unable to order now.", confirmButtonText: "OK" });
+          return;
+        }
+        const account = await getCustomerAccount(mobile);
+        if (!account) {
+          await Swal.fire({ icon: "error", title: "Unable to send enquiry", text: "We could not find your customer account. Please sign in again and try once more.", confirmButtonText: "OK" });
+          return;
+        }
+        const subscriptionCartItem = item.kind === "subscription" ? (cartItem as SubscriptionCartItem | undefined) : undefined;
+        await createCustomerContactRequest({
+          customerId: account.id,
+          name: String(account.name || "Customer"),
+          mobile,
+          email: String(account.email || ""),
+          productId: String(item.productId || cartItem?.productId || ""),
+          productName: String(item.name || "Product"),
+          message: buildShortageEnquiryMessage({
+            productName: String(item.name || "Product"),
+            requestedGrams: availability.requestedGrams,
+            requestedDeliveryDate: requestedDeliveryDate,
+            resolvedDeliveryDate: item.deliveryDate || undefined,
+          }),
+          source: "customer_checkout",
+          status: "open",
+          requestedQuantityGrams: availability.requestedGrams,
+          requestedDeliveryDate: requestedDeliveryDate,
+          resolvedDeliveryDate: item.deliveryDate || undefined,
+          enquiryReason: "AVAILABILITY_SHORTAGE",
+          contactRequired: true,
+        });
+        if (item.kind === "subscription" && subscriptionCartItem) {
+          removeSubscriptionFromCart(item.productId, subscriptionCartItem.planId || "", subscriptionCartItem.startDate || "");
+        } else {
+          removeFromCart(item.productId);
+        }
+        await Swal.fire({ icon: "success", title: "Cart updated successfully", text: "This product has been removed from your cart and an enquiry has been sent about the available quantity.", confirmButtonText: "OK" });
+        reload();
+        return;
+      }
+
+      // Later dates the customer accepted in the shortage popup are not asked
+      // again; only the remaining date changes/unavailable items reach the
+      // generic delivery-date popup.
+      const pendingKeys = new Set(plan.pendingItems.map((item) => item.key));
+      if (!pendingKeys.size) {
         applyCartDeliveryDates(dates);
         window.location.assign("/checkout");
         return;
@@ -521,7 +629,7 @@ export default function CartPage() {
         return;
       }
 
-      const removed = resolution.items.filter((item) => item.deliveryDate !== item.requestedDate);
+      const removed = plan.pendingItems;
     if (!removed.length) {
       applyCartDeliveryDates(dates);
       return;
@@ -573,7 +681,7 @@ export default function CartPage() {
         removeFromCart(item.productId);
       }
     }
-    applyCartDeliveryDates(Object.fromEntries(resolution.items.filter((item) => item.deliveryDate === requestedDate).map((item) => [item.key, item.deliveryDate])));
+    applyCartDeliveryDates(Object.fromEntries(resolution.items.filter((item) => !pendingKeys.has(item.key)).map((item) => [item.key, item.deliveryDate])));
 
       await Swal.fire({
         icon: "success",
