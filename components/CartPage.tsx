@@ -1,10 +1,12 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Header from "@/components/layout/Header";
 import ProductCard from "@/components/business/ProductCard";
 import Footer from "@/components/layout/Footer";
+import { auth } from "@/lib/firebase";
+import { waitForCustomerAuthReady } from "@/lib/authFlow";
 import {
   getUnifiedCart,
   applyCartDeliveryDates,
@@ -436,51 +438,62 @@ export default function CartPage() {
 
   const groups = useMemo(() => groupCartItems(items.oneTimeItems, items.subscriptionItems), [items]);
   const productMap = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
+  const checkoutRequestRef = useRef(false);
 
   const proceedToCheckout = async () => {
-    const currentCart = getUnifiedCart();
-    if (!currentCart.oneTimeItems.length && !currentCart.subscriptionItems.length) return;
+    if (checkoutRequestRef.current) return;
+    checkoutRequestRef.current = true;
 
-    const Swal = (await import("sweetalert2")).default;
-    const requestedDate = nextWeekSaturday();
-    const availableProducts = products.length ? products : await getActiveSalesProducts();
-    const availableProductMap = new Map(availableProducts.map((product) => [product.id, product]));
-    const missingProduct = [...currentCart.oneTimeItems, ...currentCart.subscriptionItems].find((item) => !availableProductMap.has(item.productId));
-    if (missingProduct) {
-      await Swal.fire({ icon: "error", title: "Product unavailable", text: `${missingProduct.name} is no longer available. Please remove it from your cart and try again.`, confirmButtonText: "OK" });
-      return;
-    }
-    const resolution = await resolveCartDeliveryDates([
-      ...currentCart.subscriptionItems.map((item) => ({
-        key: `subscription:${item.productId}:${item.planId}:${item.startDate}`,
-        kind: "subscription" as const,
-        product: availableProductMap.get(item.productId)!,
-        quantity: item.quantity,
-        packagingGrams: item.packaging,
-        requestedDate: item.startDate || requestedDate,
-        name: item.name,
-      })),
-      ...currentCart.oneTimeItems.map((item) => ({
-        key: `one-time:${item.productId}`,
-        kind: "one-time" as const,
-        product: availableProductMap.get(item.productId)!,
-        quantity: item.quantity,
-        packagingGrams: item.packaging,
-        requestedDate,
-        name: item.name,
-      })),
-    ].filter((item) => item.product), { maxWeeks: 12 });
+    try {
+      const authenticated = await waitForCustomerAuthReady(auth);
+      if (!authenticated) {
+        window.dispatchEvent(new CustomEvent("seedlings-open-login", { detail: { redirectTo: null } }));
+        return;
+      }
 
-    const dates: Record<string, string | null> = {};
-    for (const item of resolution.items) dates[item.key] = item.deliveryDate;
+      const currentCart = getUnifiedCart();
+      if (!currentCart.oneTimeItems.length && !currentCart.subscriptionItems.length) return;
 
-    if (!resolution.hasDateChanges && !resolution.hasUnavailableItems) {
-      applyCartDeliveryDates(dates);
-      window.location.href = "/checkout";
-      return;
-    }
+      const Swal = (await import("sweetalert2")).default;
+      const requestedDate = nextWeekSaturday();
+      const availableProducts = products.length ? products : await getActiveSalesProducts();
+      const availableProductMap = new Map(availableProducts.map((product) => [product.id, product]));
+      const missingProduct = [...currentCart.oneTimeItems, ...currentCart.subscriptionItems].find((item) => !availableProductMap.has(item.productId));
+      if (missingProduct) {
+        await Swal.fire({ icon: "error", title: "Product unavailable", text: `${missingProduct.name} is no longer available. Please remove it from your cart and try again.`, confirmButtonText: "OK" });
+        return;
+      }
+      const resolution = await resolveCartDeliveryDates([
+        ...currentCart.subscriptionItems.map((item) => ({
+          key: `subscription:${item.productId}:${item.planId}:${item.startDate}`,
+          kind: "subscription" as const,
+          product: availableProductMap.get(item.productId)!,
+          quantity: item.quantity,
+          packagingGrams: item.packaging,
+          requestedDate: item.startDate || requestedDate,
+          name: item.name,
+        })),
+        ...currentCart.oneTimeItems.map((item) => ({
+          key: `one-time:${item.productId}`,
+          kind: "one-time" as const,
+          product: availableProductMap.get(item.productId)!,
+          quantity: item.quantity,
+          packagingGrams: item.packaging,
+          requestedDate,
+          name: item.name,
+        })),
+      ].filter((item) => item.product), { maxWeeks: 12 });
 
-    const formatDate = (value: string | null) => value
+      const dates: Record<string, string | null> = {};
+      for (const item of resolution.items) dates[item.key] = item.deliveryDate;
+
+      if (!resolution.hasDateChanges && !resolution.hasUnavailableItems) {
+        applyCartDeliveryDates(dates);
+        window.location.assign("/checkout");
+        return;
+      }
+
+      const formatDate = (value: string | null) => value
       ? new Intl.DateTimeFormat("en-IN", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value}T00:00:00`))
       : "Not currently available";
     const rows = resolution.items.map((item) => {
@@ -489,26 +502,26 @@ export default function CartPage() {
       return `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:left">${safeName}</td><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:left">${deliveryText}</td></tr>`;
     }).join("");
 
-    const result = await Swal.fire({
-      icon: "info",
-      title: "Delivery availability update",
-      html: `<p style="margin:0 0 12px">We checked availability for your order. Due to high demand, some products have a later delivery date or are not currently available for the requested date.</p><table style="width:100%;border-collapse:collapse;margin:0 0 14px"><thead><tr><th style="padding:8px 10px;background:#f5f7ef;text-align:left">Product</th><th style="padding:8px 10px;background:#f5f7ef;text-align:left">Delivery date</th></tr></thead><tbody>${rows}</tbody></table><p style="margin:0">Would you like to place the complete order with these delivery dates?</p>`,
-      showCancelButton: true,
-      confirmButtonText: "Yes, Place Order",
-      cancelButtonText: "No, Update Cart",
-      reverseButtons: true,
-      focusCancel: true,
-      allowOutsideClick: false,
-      allowEscapeKey: false,
-    });
+      const result = await Swal.fire({
+        icon: "info",
+        title: "Delivery availability update",
+        html: `<p style="margin:0 0 12px">We checked availability for your order. Due to high demand, some products have a later delivery date or are not currently available for the requested date.</p><table style="width:100%;border-collapse:collapse;margin:0 0 14px"><thead><tr><th style="padding:8px 10px;background:#f5f7ef;text-align:left">Product</th><th style="padding:8px 10px;background:#f5f7ef;text-align:left">Delivery date</th></tr></thead><tbody>${rows}</tbody></table><p style="margin:0">Would you like to place the complete order with these delivery dates?</p>`,
+        showCancelButton: true,
+        confirmButtonText: "Yes, Place Order",
+        cancelButtonText: "No, Update Cart",
+        reverseButtons: true,
+        focusCancel: true,
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+      });
 
-    if (result.isConfirmed) {
-      applyCartDeliveryDates(dates);
-      window.location.href = "/checkout";
-      return;
-    }
+      if (result.isConfirmed) {
+        applyCartDeliveryDates(dates);
+        window.location.assign("/checkout");
+        return;
+      }
 
-    const removed = resolution.items.filter((item) => item.deliveryDate !== item.requestedDate);
+      const removed = resolution.items.filter((item) => item.deliveryDate !== item.requestedDate);
     if (!removed.length) {
       applyCartDeliveryDates(dates);
       return;
@@ -562,13 +575,18 @@ export default function CartPage() {
     }
     applyCartDeliveryDates(Object.fromEntries(resolution.items.filter((item) => item.deliveryDate === requestedDate).map((item) => [item.key, item.deliveryDate])));
 
-    await Swal.fire({
-      icon: "success",
-      title: "Cart updated successfully",
-      text: "Products that could not be fulfilled for the requested delivery date have been removed, and an enquiry has been sent regarding their availability. You can review your updated cart and proceed to payment when ready.",
-      confirmButtonText: "OK",
-    });
-    reload();
+      await Swal.fire({
+        icon: "success",
+        title: "Cart updated successfully",
+        text: "Products that could not be fulfilled for the requested delivery date have been removed, and an enquiry has been sent regarding their availability. You can review your updated cart and proceed to payment when ready.",
+        confirmButtonText: "OK",
+      });
+      reload();
+    } finally {
+      window.setTimeout(() => {
+        checkoutRequestRef.current = false;
+      }, 250);
+    }
   };
 
   if (loading && !groups.length) {

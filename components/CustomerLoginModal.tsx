@@ -5,8 +5,16 @@ import { useEffect, useState } from 'react';
 import { ensureClientOnboarding, normalizeIndianMobile, requestCustomerOtp } from '@/lib/clientOnboarding';
 
 const OTP_VALIDITY_SECONDS = 120;
+const CART_REFRESH_FLAG = 'seedlings-cart-post-login-refresh';
 
 type LoginRequest = { redirectTo?: string | null };
+
+function refreshCartOnce() {
+  if (typeof window === 'undefined') return;
+  if (sessionStorage.getItem(CART_REFRESH_FLAG) === '1') return;
+  sessionStorage.setItem(CART_REFRESH_FLAG, '1');
+  window.location.assign('/cart');
+}
 
 export default function CustomerLoginModal() {
   const [open, setOpen] = useState(false);
@@ -23,6 +31,18 @@ export default function CustomerLoginModal() {
   useEffect(() => {
     const onRequest = (event: Event) => {
       const detail = (event as CustomEvent<LoginRequest>).detail || {};
+      if (open) {
+        setRedirectTo(detail.redirectTo ?? null);
+        setMobile('');
+        setOtp('');
+        setSent(false);
+        setExpiresAt(0);
+        setRemaining(0);
+        setMessage('');
+        setDemoOtp(null);
+        setBusy(false);
+        return;
+      }
       setRedirectTo(detail.redirectTo ?? null);
       setMobile('');
       setOtp('');
@@ -35,9 +55,13 @@ export default function CustomerLoginModal() {
       setOpen(true);
     };
 
+    if (sessionStorage.getItem(CART_REFRESH_FLAG) === '1' && window.location.pathname === '/cart') {
+      sessionStorage.removeItem(CART_REFRESH_FLAG);
+    }
+
     window.addEventListener('seedlings-open-login', onRequest);
     return () => window.removeEventListener('seedlings-open-login', onRequest);
-  }, []);
+  }, [open]);
 
   useEffect(() => {
     if (!open || !sent || !expiresAt) return;
@@ -87,9 +111,16 @@ export default function CustomerLoginModal() {
       await ensureClientOnboarding(normalized, otp);
       // Explicitly notify the active page after the complete login/onboarding sequence so it can hydrate immediately.
       window.dispatchEvent(new CustomEvent('seedlings-customer-authenticated', { detail: { mobile: normalized } }));
+      setRedirectTo(null);
       setOpen(false);
       setBusy(false);
-      if (redirectTo) window.location.assign(redirectTo);
+
+      if (redirectTo && redirectTo !== '/checkout' && redirectTo !== '/cart') {
+        window.location.assign(redirectTo);
+        return;
+      }
+
+      refreshCartOnce();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message.trim() : '';
       const normalizedError = errorMessage.toLowerCase();

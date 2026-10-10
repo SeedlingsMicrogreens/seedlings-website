@@ -5,11 +5,13 @@ import { createRoot } from 'react-dom/client';
 import CheckoutAddressManager from '@/components/checkout/CheckoutAddressManager';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
+import { waitForCustomerAuthReady } from '@/lib/authFlow';
 import { getCustomerAccount, updateCustomerAddresses, updateCustomerName, type CustomerAccount, type CustomerAddress } from '@/lib/customerAccount';
 import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
 import { getUnifiedCart, clearCart } from '@/lib/cart';
 import { createCustomerMixedCheckout } from '@/lib/customerMixedCheckout';
 import { nextWeekSaturday } from '@/lib/customerOrderAvailability';
+import { normalizeCustomerMobile } from '@/lib/customerIdentity';
 import { confirmHighDemandEnquiry, confirmPincodeUnavailable, showCustomerSuccess } from '@/lib/customerAlerts';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates, type CheckoutDeliveryCharges } from '@/lib/deliveryCharges';
 import { calculateCustomerOffers, type CheckoutOfferResult } from '@/lib/offers';
@@ -27,23 +29,12 @@ const addressText = (a: CustomerAddress) => {
 };
 
 
-const saveCheckoutCustomerName = async (mobile: string, name: string) => {
-  const normalizedName = name.trim();
-  if (!normalizedName) return;
-
-  try {
-    await updateCustomerName(mobile, normalizedName);
-  } catch (error) {
-    console.error("Failed to update customer name:", error);
-  }
-};
-
-
 export default function CheckoutHydrator({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const root = document.querySelector('[data-checkout-root]') as HTMLElement | null;
     if (!root) return;
     let dead = false;
+    let latestStartRequest = 0;
 
     const msg = (t: string, e = false) => {
       const x = root.querySelector('.checkout-message') as HTMLElement | null;
@@ -63,20 +54,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
       const one = cart.oneTimeItems, subs = cart.subscriptionItems;
       const oneTotal = one.reduce((s, i) => s + i.price * i.quantity, 0), subTotal = subs.reduce((s, i) => s + i.price * i.quantity, 0), subtotal = oneTotal + subTotal, currency = one[0]?.currency || subs[0]?.currency || 'INR';
 
-      root.innerHTML = `<section class="section checkout-page"><div class="container checkout-grid"><div class="form"><span class="eyebrow">Unified checkout</span><h2 style="margin-top:6px;margin-bottom:12px">Confirm your delivery</h2><div class="checkout-compact-row"><label>Name<input data-name value="${esc(saved?.name || account.name || '')}" placeholder="Full name"></label><label>Mobile<input value="${esc(mobile)}" disabled></label></div><div data-address-section></div><p class="checkout-message" style="font-size:13px;min-height:18px;margin-top:10px"></p><button class="btn primary" style="width:100%" type="button" data-place>Proceed to Pay</button></div><aside class="summary"><h3>Order summary</h3>${subs.length ? `<h4 style="margin:14px 0 6px">Subscriptions</h4>${subs.map((i, index) => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">${esc(i.planName)} · Delivery: ${esc(dateLabel(i.deliveryDate || i.startDate))}</small></span><strong data-subscription-item-price="${index}">${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}${one.length ? `<h4 style="margin:18px 0 6px">One-time purchases</h4>${one.map((i, index) => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">Delivery: ${esc(dateLabel(i.deliveryDate || nextWeekSaturday()))}</small></span><strong data-one-time-item-price="${index}">${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}<div data-delivery-summary><div class="summary-row"><span>Delivery charge</span><strong>Enter a valid delivery pincode</strong></div></div><div class="summary-row summary-total"><span>Total</span><span data-grand-total>${esc(money(subtotal, currency))}</span></div></aside></div></section>`;
-
-      const nameInput = root.querySelector('[data-name]') as HTMLInputElement | null;
-      nameInput?.addEventListener('blur', async () => {
-        const name = nameInput.value.trim();
-        if (!name || name === String(account.name || '').trim()) return;
-        try {
-          await updateCustomerName(mobile, name);
-          account.name = name;
-          persistSelection();
-        } catch (error) {
-          msg(error instanceof Error ? error.message : 'Unable to update your name.', true);
-        }
-      });
+      root.innerHTML = `<section class="section checkout-page"><div class="container checkout-grid"><div class="form"><span class="eyebrow">Unified checkout</span><h2 style="margin-top:6px;margin-bottom:12px">Confirm your delivery</h2><div data-address-section></div><p class="checkout-message" style="font-size:13px;min-height:18px;margin-top:10px"></p><button class="btn primary" style="width:100%" type="button" data-place>Proceed to Pay</button></div><aside class="summary"><h3>Order summary</h3>${subs.length ? `<h4 style="margin:14px 0 6px">Subscriptions</h4>${subs.map((i, index) => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">${esc(i.planName)} · Delivery: ${esc(dateLabel(i.deliveryDate || i.startDate))}</small></span><strong data-subscription-item-price="${index}">${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}${one.length ? `<h4 style="margin:18px 0 6px">One-time purchases</h4>${one.map((i, index) => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">Delivery: ${esc(dateLabel(i.deliveryDate || nextWeekSaturday()))}</small></span><strong data-one-time-item-price="${index}">${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}<div data-delivery-summary><div class="summary-row"><span>Delivery charge</span><strong>Enter a valid delivery pincode</strong></div></div><div class="summary-row summary-total"><span>Total</span><span data-grand-total>${esc(money(subtotal, currency))}</span></div></aside></div></section>`;
       const deliverySummary = root.querySelector('[data-delivery-summary]') as HTMLElement | null;
       const grandTotal = root.querySelector('[data-grand-total]') as HTMLElement | null;
       let delivery: CheckoutDeliveryCharges | null = null;
@@ -87,7 +65,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
       const getPincode = () => String(selectedAddress()?.pincode || '');
       const persistSelection = () => {
         try {
-          sessionStorage.setItem(KEY, JSON.stringify({ ...(saved || {}), addressId: selectedId, name: (root.querySelector('[data-name]') as HTMLInputElement | null)?.value || account.name || '' }));
+          sessionStorage.setItem(KEY, JSON.stringify({ ...(saved || {}), addressId: selectedId }));
         } catch { /* ignore storage errors */ }
       };
 
@@ -102,7 +80,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           <CheckoutAddressManager
             addresses={addresses}
             selectedId={selectedId}
-            customerName={String((root.querySelector('[data-name]') as HTMLInputElement | null)?.value || account.name || '')}
+            customerName={String(account.name || '')}
             mobile={mobile}
             onSelect={(address) => {
               selectedId = String(address.id || '');
@@ -111,15 +89,17 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
               void refreshDelivery();
             }}
             onSave={async (address, mode) => {
+              const trimmedName = address.name?.trim() || '';
+              const shouldUpdateCustomerName = !addresses.length && trimmedName && trimmedName !== String(account.name || '').trim();
               const next = mode === 'edit'
                 ? addresses.map(item => item.id === address.id ? address : item)
                 : [...addresses, address];
 
-              const checkoutName = String((root.querySelector('[data-name]') as HTMLInputElement | null)?.value || '').trim();
-              if (checkoutName) {
-                await updateCustomerName(mobile, checkoutName);
-                account.name = checkoutName;
+              if (shouldUpdateCustomerName) {
+                await updateCustomerName(mobile, trimmedName);
+                account.name = trimmedName;
               }
+
               await updateCustomerAddresses(mobile, next);
               addresses = next;
               selectedId = String(address.id || '');
@@ -304,10 +284,10 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
       void refreshDelivery();
 
       root.querySelector('[data-place]')?.addEventListener('click', async () => {
-        const name = (root.querySelector('[data-name]') as HTMLInputElement | null)?.value.trim() || '';
         const paymentMethod = 'online';
+        const customerName = String(account.name || '').trim();
         persistSelection();
-        if (!name) return msg('Enter your name.', true);
+        if (!customerName) return msg('Your profile name is missing. Please update your customer profile before checkout.', true);
         let addressId = selectedId;
         if (!addresses.length) return msg('Add a delivery address before continuing.', true);
         const pincode = getPincode();
@@ -319,8 +299,6 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           const deliverySlot = [...cartNow.oneTimeItems.map(i => i.deliveryDate || ''), ...cartNow.subscriptionItems.map(i => i.deliveryDate || i.startDate || '')].filter(Boolean).sort()[0] || nextWeekSaturday();
           if (!delivery) throw new Error('Delivery charges could not be calculated. Please verify the delivery address before proceeding.');
           if (button) button.textContent = 'Preparing Payment…';
-          await updateCustomerName(mobile, name);
-          account.name = name;
           const result = await createCustomerMixedCheckout({ mobile, addressId, deliverySlot, paymentMethod, oneTimeItems: cartNow.oneTimeItems, subscriptionItems: cartNow.subscriptionItems });
           const paymentData = await createCashfreeOrder(result.paymentOrderIds, mobile);
           sessionStorage.setItem('seedlings_last_checkout', JSON.stringify({ ...result, mobile, cashfreeOrderId: paymentData.cashfreeOrderId }));
@@ -340,7 +318,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
               ].filter(entry => demandByKey.has(entry.key));
               const submitted = await confirmHighDemandEnquiry({
                 customerId: account.id,
-                name: account.name || name,
+                name: customerName,
                 mobile,
                 email: account.email || '',
                 address: selectedAddress() ? { ...selectedAddress() } : undefined,
@@ -369,18 +347,36 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
     };
 
     const start = async (present: boolean, mobileOverride?: string) => {
-      const mobile = mobileOverride || getStoredCustomerMobile();
-      if (!present || !mobile) return renderSignedOut();
+      const requestId = ++latestStartRequest;
+      const mobile = normalizeCustomerMobile(mobileOverride || getStoredCustomerMobile() || auth.currentUser?.phoneNumber || '');
+      const authenticated = await waitForCustomerAuthReady(auth);
+      if (requestId !== latestStartRequest || dead) return;
+      if (!present && !authenticated) {
+        return renderSignedOut();
+      }
+      if (!mobile || !authenticated) return renderSignedOut();
       const c = getUnifiedCart();
       if (!c.oneTimeItems.length && !c.subscriptionItems.length) return renderEmpty();
       try {
         const account = await getCustomerAccount(mobile);
-        if (!account) throw new Error('Customer account not found.');
-        if (dead) return;
+        if (requestId !== latestStartRequest || dead) return;
+        if (!account) {
+          console.warn('Checkout customer account lookup failed after login.', { hasMobile: Boolean(mobile), hasAuthUser: Boolean(auth.currentUser), hasPhoneNumber: Boolean(auth.currentUser?.phoneNumber) });
+          msg('We could not find your customer profile. Please sign in again to continue to checkout.', true);
+          window.dispatchEvent(new CustomEvent('seedlings-open-login', { detail: { redirectTo: null } }));
+          return;
+        }
         render(mobile, account);
       } catch (e) {
-        console.error(e);
-        if (!dead) renderSignedOut();
+        if (requestId !== latestStartRequest || dead) return;
+        console.error('Checkout customer hydration failed.', e);
+        const message = e instanceof Error ? e.message : 'Unable to load your customer account.';
+        if (/permission|network|unavailable/i.test(message)) {
+          msg('We could not load your customer account right now. Please try again in a moment.', true);
+          return;
+        }
+        msg('We could not find your customer profile. Please sign in again to continue to checkout.', true);
+        window.dispatchEvent(new CustomEvent('seedlings-open-login', { detail: { redirectTo: null } }));
       }
     };
 

@@ -1,5 +1,7 @@
 import { doc, getDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
+import { normalizeCustomerMobile } from './customerIdentity';
+import { sanitizeCustomerUpdatePayload } from './customerUpdatePayload';
 
 export type CustomerAddress = {
   id?: string;
@@ -75,48 +77,66 @@ export function clearCustomerAccountCache(mobile: string) {
 }
 
 export async function getCustomerAccount(mobile: string, options?: { bypassCache?: boolean }): Promise<CustomerAccount | null> {
-  const cached = options?.bypassCache ? undefined : readCustomerCache(mobile);
+  const customerId = normalizeCustomerMobile(mobile);
+  if (!customerId) return null;
+
+  const cached = options?.bypassCache ? undefined : readCustomerCache(customerId);
   if (cached !== undefined) return cached;
-  const ref = doc(db, 'customers', mobile);
+  const ref = doc(db, 'customers', customerId);
   const snap = await getDoc(ref);
   const account = snap.exists() ? ({ id: snap.id, ...snap.data() } as CustomerAccount) : null;
-  writeCustomerCache(mobile, account);
+  writeCustomerCache(customerId, account);
   return account;
 }
 
 export async function updateCustomerName(mobile: string, name: string) {
   const cleanedName = name.trim();
   if (!cleanedName) throw new Error('Customer name is required.');
-  const ref = doc(db, 'customers', mobile);
-  await updateDoc(ref, {
+  const customerId = normalizeCustomerMobile(mobile);
+  if (!customerId) throw new Error('Invalid customer mobile number.');
+  const ref = doc(db, 'customers', customerId);
+  const payload = sanitizeCustomerUpdatePayload({
     name: cleanedName,
     updatedAt: serverTimestamp(),
   });
-  clearCustomerAccountCache(mobile);
+  await updateDoc(ref, payload);
+  clearCustomerAccountCache(customerId);
 }
 
 export async function updateCustomerProfile(mobile: string, name: string, email: string, preferredDeliveryDay = 'Saturday') {
-  const ref = doc(db, 'customers', mobile);
-  await updateDoc(ref, {
+  const customerId = normalizeCustomerMobile(mobile);
+  if (!customerId) throw new Error('Invalid customer mobile number.');
+  const ref = doc(db, 'customers', customerId);
+  const payload = sanitizeCustomerUpdatePayload({
     name: name.trim(),
     email: email.trim(),
     preferredDeliveryDay: preferredDeliveryDay.trim() || 'Saturday',
     updatedAt: serverTimestamp(),
   });
-  clearCustomerAccountCache(mobile);
+  await updateDoc(ref, payload);
+  clearCustomerAccountCache(customerId);
 }
 
 export async function updateCustomerAddresses(mobile: string, addresses: CustomerAddress[]) {
-  const ref = doc(db, 'customers', mobile);
-  await updateDoc(ref, {
+  const customerId = normalizeCustomerMobile(mobile);
+  if (!customerId) throw new Error('Invalid customer mobile number.');
+  const ref = doc(db, 'customers', customerId);
+  const payload = sanitizeCustomerUpdatePayload({
     addresses,
     updatedAt: serverTimestamp(),
   });
-  clearCustomerAccountCache(mobile);
+  await updateDoc(ref, payload);
+  clearCustomerAccountCache(customerId);
 }
 
 export async function updateCustomerProfilePhoto(mobile: string, profilePhotoUrl: string) {
-  const ref = doc(db, 'customers', mobile);
-  await updateDoc(ref, { profilePhotoUrl: profilePhotoUrl.trim(), updatedAt: serverTimestamp() });
-  clearCustomerAccountCache(mobile);
+  const customerId = normalizeCustomerMobile(mobile);
+  if (!customerId) throw new Error('Invalid customer mobile number.');
+  const ref = doc(db, 'customers', customerId);
+  const payload = sanitizeCustomerUpdatePayload({
+    profilePhotoUrl: profilePhotoUrl.trim(),
+    updatedAt: serverTimestamp(),
+  });
+  await updateDoc(ref, payload);
+  clearCustomerAccountCache(customerId);
 }

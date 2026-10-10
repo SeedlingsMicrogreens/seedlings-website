@@ -2,13 +2,13 @@ import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { signInWithCustomToken } from 'firebase/auth';
 import { auth, db } from './firebase';
 import { mergeGuestCartIntoCustomer } from './cart';
+import { normalizeCustomerMobile } from './customerIdentity';
 
 const CUSTOMERS_COLLECTION = 'customers';
 const CUSTOMER_MOBILE_KEY = 'seedlings_customer_mobile';
 
 export function normalizeIndianMobile(value: string): string {
-  const digits = value.replace(/\D/g, '');
-  return digits.length === 10 ? digits : '';
+  return normalizeCustomerMobile(value);
 }
 
 export async function requestCustomerOtp(mobile: string, resend = false): Promise<{ demo: boolean; demoOtp?: string; expiresAt?: string }> {

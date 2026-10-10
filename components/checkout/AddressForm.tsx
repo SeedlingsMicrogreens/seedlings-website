@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import type { CustomerAddress } from "@/lib/customerAccount";
+import { resolveAddressRecipientName } from "@/lib/customerAddressName";
 
 type Props = {
   initialAddress?: CustomerAddress | null;
@@ -31,6 +32,11 @@ export default function AddressForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  const customerName = String(initialAddress?.name || defaultName || "").trim();
+  const customerMobile = String(initialAddress?.mobileNumber || defaultMobile || "").replace(/\D/g, "");
+  const fixedCity = "Pune";
+  const fixedState = "Maharashtra";
+
   useEffect(() => {
     if (inline) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -53,26 +59,29 @@ export default function AddressForm({
       new FormData(event.currentTarget).entries(),
     ) as Record<string, string>;
 
-    const mobile = String(body.mobileNumber || "").replace(/\D/g, "");
+    const mobile = customerMobile || String(body.mobileNumber || "").replace(/\D/g, "");
     const pincode = String(body.pincode || "").replace(/\D/g, "");
-    const name = String(body.name || "").trim();
+    const name = resolveAddressRecipientName({
+      submittedName: body.name,
+      initialName: initialAddress?.name,
+      defaultName: customerName,
+    });
     const addressLine1 = String(body.addressLine1 || "").trim();
-    const city = String(body.city || "").trim();
-    const state = String(body.state || "").trim();
+    const city = fixedCity;
+    const state = fixedState;
 
-    if (!/^\d{10}$/.test(mobile)) {
-      setError("Enter a valid 10-digit mobile number.");
+    if (!name) {
+      setError("Your profile name is missing. Please update your customer profile before checkout.");
       return;
     }
 
-    if (
-      !name ||
-      !addressLine1 ||
-      !city ||
-      !state ||
-      !/^\d{6}$/.test(pincode)
-    ) {
-      setError("Please complete all required address fields.");
+    if (!/^\d{10}$/.test(mobile)) {
+      setError("The logged-in mobile number is required.");
+      return;
+    }
+
+    if (!addressLine1 || !city || !state || !/^\d{6}$/.test(pincode)) {
+      setError("Please complete the delivery address and enter a valid 6-digit pincode.");
       return;
     }
 
@@ -120,17 +129,10 @@ export default function AddressForm({
       <div className="checkout-address-form__body">
         <div className="checkout-address-form__fields">
         <label>
-          <span>Country/Region</span>
-          <select name="country" defaultValue="India">
-            <option value="India">India</option>
-          </select>
-        </label>
-
-        <label>
           <span>Full name</span>
           <input
             name="name"
-            defaultValue={initialAddress?.name || defaultName}
+            defaultValue={initialAddress?.name || defaultName || ""}
             required
             autoComplete="name"
           />
@@ -140,9 +142,10 @@ export default function AddressForm({
           <span>Mobile number</span>
           <input
             name="mobileNumber"
-            defaultValue={initialAddress?.mobileNumber || defaultMobile}
+            defaultValue={customerMobile}
             inputMode="numeric"
             maxLength={10}
+            readOnly
             required
             autoComplete="tel"
           />
@@ -189,22 +192,23 @@ export default function AddressForm({
 
         <label>
           <span>Town/City</span>
-          <input
-            name="city"
-            defaultValue={initialAddress?.city || ""}
-            required
-            autoComplete="address-level2"
-          />
+          <select name="city" defaultValue={fixedCity} required>
+            <option value="Pune">Pune</option>
+          </select>
         </label>
 
         <label>
           <span>State</span>
-          <input
-            name="state"
-            defaultValue={initialAddress?.state || ""}
-            required
-            autoComplete="address-level1"
-          />
+          <select name="state" defaultValue={fixedState} required>
+            <option value="Maharashtra">Maharashtra</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Country/Region</span>
+          <select name="country" defaultValue="India">
+            <option value="India">India</option>
+          </select>
         </label>
         </div>
 
