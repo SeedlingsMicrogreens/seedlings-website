@@ -2,6 +2,75 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/server/firebaseAdmin';
 import { cashfreeRequest, cashfreeReturnUrl, cashfreeWebhookUrl } from '@/lib/server/cashfree';
 import { HttpError } from '@/lib/server/httpError';
+import { verifyCheckoutTotals, type CheckoutTotalsStore } from '@/lib/server/checkoutTotals';
+import type { CustomerOffer } from '@/lib/checkoutPricing';
+import { verifyAndFinalizeCashfreePayment } from '@/lib/server/cashfreePayment';
+import { isUnpayableCashfreeStatus, terminateCashfreeOrder } from '@/lib/server/cashfreeTermination';
+
+/**
+ * Before a payment starts for these orders, every earlier Cashfree order linked
+ * to them is checked so two payable Cashfree orders never exist for the same
+ * records: an ACTIVE order with a session is reused; any other ACTIVE order is
+ * terminated and the termination confirmed (failure stops here); a PAID order
+ * is finalized instead.
+ */
+export async function preparePreviousGatewayOrders(orders: Array<Record<string, unknown>>, gateway: {
+  status: (gatewayOrderId: string) => Promise<string>;
+  terminate: (gatewayOrderId: string) => Promise<string>;
+  finalize: (gatewayOrderId: string) => Promise<unknown>;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<{ reuse?: { cashfreeOrderId: string; paymentSessionId: string } }> {
+  const previousIds = [...new Set(orders.map((order) => clean(order.cashfreeOrderId)).filter(Boolean))];
+  const sessionId = clean(orders[0]?.cashfreePaymentSessionId);
+  const allSameGatewayOrder = previousIds.length === 1 && orders.every((order) => clean(order.cashfreeOrderId) === previousIds[0]);
+  for (const gatewayOrderId of previousIds) {
+    const status = (await gateway.status(gatewayOrderId)).toUpperCase();
+    if (status === 'PAID') {
+      await gateway.finalize(gatewayOrderId);
+      throw new HttpError(409, 'This payment has already been received. Please check My Orders.');
+    }
+    if (isUnpayableCashfreeStatus(status)) continue;
+    if (status === 'ACTIVE' && allSameGatewayOrder && sessionId) return { reuse: { cashfreeOrderId: gatewayOrderId, paymentSessionId: sessionId } };
+    // ACTIVE without a reusable session, TERMINATION_REQUESTED or unknown: confirm termination.
+    const outcome = await terminateCashfreeOrder(gatewayOrderId, gateway, { sleep: gateway.sleep });
+    if (outcome === 'paid') {
+      await gateway.finalize(gatewayOrderId);
+      throw new HttpError(409, 'This payment has already been received. Please check My Orders.');
+    }
+  }
+  return {};
+}
+
+export const cashfreeGateway = {
+  status: async (gatewayOrderId: string) => String((await cashfreeRequest<{ order_status?: string }>(`/pg/orders/${encodeURIComponent(gatewayOrderId)}`)).order_status || ''),
+  terminate: async (gatewayOrderId: string) => String((await cashfreeRequest<{ order_status?: string }>(`/pg/orders/${encodeURIComponent(gatewayOrderId)}`, { method: 'PATCH', body: JSON.stringify({ order_status: 'TERMINATED' }) })).order_status || ''),
+  finalize: (gatewayOrderId: string) => verifyAndFinalizeCashfreePayment(gatewayOrderId),
+};
+
+/** Business dates (offer validity) follow India time regardless of the server time zone. */
+const todayInIndia = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+function checkoutTotalsStore(db: ReturnType<typeof adminDb>): CheckoutTotalsStore {
+  return {
+    getDocs: async (collection, ids) => {
+      const unique = [...new Set(ids.filter(Boolean))];
+      if (!unique.length) return new Map();
+      const snapshots = await db.getAll(...unique.map((id) => db.collection(collection).doc(id)));
+      return new Map(snapshots.filter((doc) => doc.exists).map((doc) => [doc.id, doc.data() || {}]));
+    },
+    geolocations: async (pincode) => {
+      let snapshot = await db.collection('geolocations').where('pincode', '==', pincode).get();
+      if (snapshot.empty) snapshot = await db.collection('geolocations').get();
+      return snapshot.docs.map((doc) => ({ id: doc.id, data: doc.data() || {} }));
+    },
+    offers: async () => (await db.collection('offers').get()).docs.map((doc) => ({ id: doc.id, ...(doc.data() || {}) }) as CustomerOffer),
+    saveVerifications: async (records) => {
+      const batch = db.batch();
+      for (const { orderId, data } of records) batch.set(db.collection('orderPriceVerifications').doc(orderId), { ...data, verifiedAt: FieldValue.serverTimestamp() });
+      await batch.commit();
+    },
+  };
+}
 
 const clean = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 const mobileOf = (value: unknown) => String(value ?? '').replace(/\D/g, '').slice(-10);
@@ -33,6 +102,16 @@ export async function createCashfreePaymentSession(input: {orderIds?: unknown[];
       if (String(order.paymentStatus || '').toLowerCase() === 'paid') throw new HttpError(409, 'This order has already been paid.');
       throw new HttpError(412, 'This order is not ready for payment.');
     }
+  }
+
+  // DEVELOPMENT-RULES §8: re-price the orders from authoritative data before any
+  // Cashfree order is created; browser-written totals are never trusted.
+  try {
+    await verifyCheckoutTotals({ orderIds, orders, store: checkoutTotalsStore(db), today: todayInIndia() });
+  } catch (error) {
+    const reason = (error as { reason?: string }).reason;
+    if (reason) console.warn('Checkout total verification failed:', reason);
+    throw error;
   }
 
   const total = Number(orders.reduce((sum, order) => sum + Number(order.total || 0), 0).toFixed(2));
@@ -67,19 +146,20 @@ export async function createCashfreePaymentSession(input: {orderIds?: unknown[];
     throw new HttpError(409, 'Payment setup is already in progress. Please try again in a moment.');
   }
 
-  const existingCashfreeOrderId = String(orders[0].cashfreeOrderId || '').trim();
-  const existingSessionId = String(orders[0].cashfreePaymentSessionId || '').trim();
-  const allSameGatewayOrder = orders.every((order) => String(order.cashfreeOrderId || '').trim() === existingCashfreeOrderId);
-
-  // Reuse an existing pending Cashfree attempt. This makes browser double-clicks,
-  // refreshes and network retries idempotent instead of creating duplicate payments.
-  if (existingCashfreeOrderId && existingSessionId && allSameGatewayOrder &&
-      String(orders[0].paymentStatus || '').toLowerCase() === 'pending' &&
-      String(orders[0].status || '') === 'pending_payment') {
+  // Reuse a still-ACTIVE Cashfree attempt (double-clicks, refreshes, retries,
+  // resumed checkouts); otherwise make earlier attempts unpayable first.
+  let previous: Awaited<ReturnType<typeof preparePreviousGatewayOrders>>;
+  try {
+    previous = await preparePreviousGatewayOrders(orders, cashfreeGateway);
+  } catch (error) {
+    await creationLockRef.set({ status: 'failed', primaryOrderId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    throw error;
+  }
+  if (previous.reuse) {
     await creationLockRef.set({ status: 'ready', primaryOrderId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
     return {
-      cashfreeOrderId: existingCashfreeOrderId,
-      paymentSessionId: existingSessionId,
+      cashfreeOrderId: previous.reuse.cashfreeOrderId,
+      paymentSessionId: previous.reuse.paymentSessionId,
       amount: Number(total.toFixed(2)),
     };
   }

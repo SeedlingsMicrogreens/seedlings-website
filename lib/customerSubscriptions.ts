@@ -5,6 +5,10 @@ import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate 
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from './deliveryCharges';
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
 import { PACKAGING_OPTIONS } from './packaging';
+import { summaryFromOrders } from './checkoutFingerprint';
+import { resumedSubscriptionResult } from './checkoutClaimFlow';
+import { beginCheckoutClaim, registerCheckoutClaim } from './checkoutClaimClient';
+import { resolveSubscriptionFirstDeliveryDate } from './cart';
 
 const clean = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 const mobileOf = (value: unknown) => String(value ?? '').replace(/\D/g, '').slice(-10);
@@ -27,8 +31,6 @@ export type CustomerSubscriptionPlan = {
 function dateOnly(date: Date) {
   return date.toISOString().slice(0, 10);
 }
-
-function nextSaturday(_startDate?: string) { return nextWeekSaturday(); }
 
 export async function loadActiveCustomerSubscriptionPlans(productId?: string): Promise<CustomerSubscriptionPlan[]> {
   const normalizedProductId = clean(productId);
@@ -106,7 +108,7 @@ export async function createCustomerSubscription(input: {
   }
 
   const deliveries = Math.max(1, Number(plan.deliveriesPerTerm || (frequency === 'monthly' ? 4 : frequency === 'quarterly' ? 12 : 1)));
-  const firstDelivery = nextSaturday(input.startDate);
+  const firstDelivery = resolveSubscriptionFirstDeliveryDate(input.startDate, nextWeekSaturday());
   const end = new Date(`${firstDelivery}T00:00:00`);
   end.setDate(end.getDate() + (deliveries - 1) * 7);
   const endDate = dateOnly(end);
@@ -292,10 +294,18 @@ export async function createCustomerSubscription(input: {
     updatedAt: serverTimestamp(),
   };
 
+  // One pending checkout per customer (server-enforced): repeating the same
+  // subscription purchase resumes its existing records instead of duplicating them.
+  const claim = await beginCheckoutClaim(mobile, summaryFromOrders([order]));
+  if (claim.action === 'resume') return resumedSubscriptionResult(claim.resume);
+  (subscription as Record<string, unknown>).checkoutClaimToken = claim.token;
+  (order as Record<string, unknown>).checkoutClaimToken = claim.token;
+
   const batch = writeBatch(db);
   batch.set(subscriptionRef, subscription);
   batch.set(orderRef, order);
   await batch.commit();
+  await registerCheckoutClaim({ mobile, token: claim.token, orderIds: [orderRef.id], subscriptionIds: [subscriptionRef.id] });
 
   return { id: subscriptionRef.id, subscriptionNumber, orderId: orderRef.id, orderNumber, status: 'pending_payment', paymentStatus: 'pending', paymentOrderIds: [orderRef.id], frequency, nextDeliveryDate: firstDelivery };
 }

@@ -19,9 +19,10 @@ import {
   setSubscriptionCartPackaging,
   type CartItem,
   type SubscriptionCartItem,
+  validSubscriptionStartDate,
 } from "@/lib/cart";
 import { packagingLabel } from "@/lib/packaging";
-import { checkProductAvailability, nextWeekSaturday, resolveCartDeliveryDates } from "@/lib/customerOrderAvailability";
+import { nextWeekSaturday, resolveCartDeliveryDates } from "@/lib/customerOrderAvailability";
 import {
   getActiveSalesProducts,
   productSlug,
@@ -31,8 +32,8 @@ import {
 import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
 import { getCustomerAccount } from "@/lib/customerAccount";
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from "@/lib/customerContactRequests";
-import { confirmHarvestShortage, confirmHarvestShortageWithoutAlternative, confirmHighDemandEnquiry } from "@/lib/customerAlerts";
-import { planCheckoutShortageDecisions } from "@/lib/cartCheckoutDecisions";
+import { confirmHighDemandDeliveryDates, confirmHighDemandEnquiry } from "@/lib/customerAlerts";
+import { CART_DELIVERY_DATES_CHECKED, enquiryReasonFor, nextDeliveryDateAfter, runCartCheckoutDecision } from "@/lib/cartCheckoutDecisions";
 import {
   loadActiveCustomerSubscriptionPlans,
   type CustomerSubscriptionPlan,
@@ -224,7 +225,7 @@ function CartProductCard({
         planName: entry.plan.name || "Subscription",
         frequency: entry.plan.frequency,
         deliveriesPerTerm: Number(entry.plan.deliveriesPerTerm ?? 0) || undefined,
-        startDate: group.subscription?.startDate || nextWeekSaturday(),
+        startDate: validSubscriptionStartDate(group.subscription?.startDate, nextWeekSaturday()),
       },
       mode: "subscription",
       quantity,
@@ -465,6 +466,8 @@ export default function CartPage() {
         await Swal.fire({ icon: "error", title: "Product unavailable", text: `${missingProduct.name} is no longer available. Please remove it from your cart and try again.`, confirmButtonText: "OK" });
         return;
       }
+      // Availability must be confirmed before Checkout; any failure (including the
+      // committed-demand API) stops here with a message and stays on Cart.
       const resolution = await resolveCartDeliveryDates([
         ...currentCart.subscriptionItems.map((item) => ({
           key: `subscription:${item.productId}:${item.planId}:${item.startDate}`,
@@ -472,7 +475,7 @@ export default function CartPage() {
           product: availableProductMap.get(item.productId)!,
           quantity: item.quantity,
           packagingGrams: item.packaging,
-          requestedDate: item.startDate || requestedDate,
+          requestedDate: validSubscriptionStartDate(item.startDate, requestedDate),
           name: item.name,
         })),
         ...currentCart.oneTimeItems.map((item) => ({
@@ -484,212 +487,106 @@ export default function CartPage() {
           requestedDate,
           name: item.name,
         })),
-      ].filter((item) => item.product), { maxWeeks: 12 });
-      const dates: Record<string, string | null> = {};
-      for (const item of resolution.items) dates[item.key] = item.deliveryDate;
+      ].filter((item) => item.product), { maxWeeks: CART_DELIVERY_DATES_CHECKED, searchAfterHighDemand: true }).catch(async (error) => {
+        console.error("Cart availability check failed", error);
+        await Swal.fire({ icon: "error", title: "Unable to check availability", text: error instanceof Error && error.message ? error.message : "We could not check product availability right now. Please try again.", confirmButtonText: "OK" });
+        return null;
+      });
+      if (!resolution) return;
 
-      const findCartItem = (item: (typeof resolution.items)[number]) => item.kind === "subscription"
+      type ResolvedItem = (typeof resolution.items)[number];
+      const findCartItem = (item: ResolvedItem) => item.kind === "subscription"
         ? currentCart.subscriptionItems.find((entry) => `subscription:${entry.productId}:${entry.planId}:${entry.startDate}` === item.key)
         : currentCart.oneTimeItems.find((entry) => `one-time:${entry.productId}` === item.key);
-
-      const plan = await planCheckoutShortageDecisions(resolution.items, {
-        checkAvailability: async (item) => {
-          const cartItem = findCartItem(item);
-          const product = availableProductMap.get(item.productId);
-          if (!cartItem || !product) return null;
-          return checkProductAvailability({
-            product,
-            quantity: Number(cartItem.quantity || 1),
-            packagingGrams: Number(cartItem.packaging || product.sellingOptions?.[0]?.weightGrams || 100),
-            deliveryDate: item.requestedDate || requestedDate,
-          });
-        },
-        confirmShortage: (item, availability) => item.deliveryDate
-          ? confirmHarvestShortage({
-            mode: item.kind === "subscription" ? "subscription" : "one-time",
-            availableGrams: availability.availableGrams,
-            requestedGrams: availability.requestedGrams,
-            shortageGrams: availability.shortageGrams,
-            deliveryDate: item.requestedDate || requestedDate,
-            alternativeDeliveryDate: item.deliveryDate,
-          })
-          : confirmHarvestShortageWithoutAlternative({
-            mode: item.kind === "subscription" ? "subscription" : "one-time",
-            requestedGrams: availability.requestedGrams,
-            shortageGrams: availability.shortageGrams,
-            deliveryDate: item.requestedDate || requestedDate,
-          }),
-      });
-
-      // Keep in cart: stay on Cart without applying dates or opening Checkout.
-      if (plan.outcome === "cancel") return;
-
-      if (plan.outcome === "high-demand") {
-        const { item, availability } = plan;
-        const customerAccount = await getCustomerAccount(String(getStoredCustomerMobile() || ""));
-        const submitted = await confirmHighDemandEnquiry({
-          customerId: customerAccount?.id,
-          name: String(customerAccount?.name || "Customer"),
-          mobile: String(getStoredCustomerMobile() || ""),
-          email: String(customerAccount?.email || ""),
-          address: undefined,
-          items: [{
-            productId: item.productId,
-            productName: item.name,
-            requestedGrams: availability.requestedGrams,
-            requestedDeliveryDate: item.requestedDate || requestedDate,
-            thresholdGrams: availability.thresholdGrams,
-          }],
-        });
-        if (submitted) reload();
-        return;
-      }
-
-      if (plan.outcome === "contact") {
-        const { item, availability } = plan;
+      const requestedGramsFor = (item: ResolvedItem) => {
         const cartItem = findCartItem(item);
-        const requestedDeliveryDate = item.requestedDate || requestedDate;
-        const mobile = getStoredCustomerMobile();
-        if (!mobile) {
-          await Swal.fire({ icon: "info", title: "Please sign in", text: "Please sign in before updating your cart so we can send an enquiry for the products you are unable to order now.", confirmButtonText: "OK" });
-          return;
-        }
-        const account = await getCustomerAccount(mobile);
-        if (!account) {
-          await Swal.fire({ icon: "error", title: "Unable to send enquiry", text: "We could not find your customer account. Please sign in again and try once more.", confirmButtonText: "OK" });
-          return;
-        }
-        const subscriptionCartItem = item.kind === "subscription" ? (cartItem as SubscriptionCartItem | undefined) : undefined;
-        await createCustomerContactRequest({
-          customerId: account.id,
-          name: String(account.name || "Customer"),
-          mobile,
-          email: String(account.email || ""),
-          productId: String(item.productId || cartItem?.productId || ""),
-          productName: String(item.name || "Product"),
-          message: buildShortageEnquiryMessage({
-            productName: String(item.name || "Product"),
-            requestedGrams: availability.requestedGrams,
-            requestedDeliveryDate: requestedDeliveryDate,
-            resolvedDeliveryDate: item.deliveryDate || undefined,
-          }),
-          source: "customer_checkout",
-          status: "open",
-          requestedQuantityGrams: availability.requestedGrams,
-          requestedDeliveryDate: requestedDeliveryDate,
-          resolvedDeliveryDate: item.deliveryDate || undefined,
-          enquiryReason: "AVAILABILITY_SHORTAGE",
-          contactRequired: true,
-        });
-        if (item.kind === "subscription" && subscriptionCartItem) {
-          removeSubscriptionFromCart(item.productId, subscriptionCartItem.planId || "", subscriptionCartItem.startDate || "");
+        return Math.max(0, Number(cartItem?.quantity || 1) * Number(cartItem?.packaging || 0));
+      };
+      const removeResolvedItem = (item: ResolvedItem) => {
+        const cartItem = findCartItem(item);
+        if (item.kind === "subscription") {
+          const subscriptionItem = cartItem as SubscriptionCartItem | undefined;
+          removeSubscriptionFromCart(item.productId, subscriptionItem?.planId || "", subscriptionItem?.startDate || "");
         } else {
           removeFromCart(item.productId);
         }
-        await Swal.fire({ icon: "success", title: "Cart updated successfully", text: "This product has been removed from your cart and an enquiry has been sent about the available quantity.", confirmButtonText: "OK" });
-        reload();
-        return;
-      }
+      };
+      const enquiryCustomer = async () => {
+        const mobile = String(getStoredCustomerMobile() || "");
+        const account = mobile ? await getCustomerAccount(mobile) : null;
+        if (!mobile || !account) throw new Error("We could not find your customer account. Please sign in again and try once more.");
+        return { mobile, account };
+      };
 
-      // Later dates the customer accepted in the shortage popup are not asked
-      // again; only the remaining date changes/unavailable items reach the
-      // generic delivery-date popup.
-      const pendingKeys = new Set(plan.pendingItems.map((item) => item.key));
-      if (!pendingKeys.size) {
-        applyCartDeliveryDates(dates);
+      const decision = await runCartCheckoutDecision(resolution.items, {
+        enquireUnavailable: async (items) => {
+          const { mobile, account } = await enquiryCustomer();
+          return confirmHighDemandEnquiry({
+            customerId: account.id,
+            name: String(account.name || "Customer"),
+            mobile,
+            email: String(account.email || ""),
+            address: undefined,
+            items: items.map((item) => ({
+              productId: item.productId,
+              productName: item.name,
+              requestedGrams: requestedGramsFor(item),
+              requestedDeliveryDate: item.requestedDate,
+              thresholdGrams: item.thresholdGrams || 0,
+              enquiryReason: enquiryReasonFor(item),
+              nextDeliveryDate: nextDeliveryDateAfter(item.requestedDate),
+            })),
+            // Remove each item as soon as its enquiry is saved so a retry never duplicates it.
+            onItemSaved: (_productId, index) => removeResolvedItem(items[index]),
+          });
+        },
+        confirmNextDates: (items) => confirmHighDemandDeliveryDates(items.map((item) => ({
+          productName: item.name,
+          kind: item.kind,
+          requestedDate: item.requestedDate,
+          deliveryDate: item.deliveryDate as string,
+        }))),
+        saveDeclinedEnquiry: async (item) => {
+          const { mobile, account } = await enquiryCustomer();
+          const requestedGrams = requestedGramsFor(item);
+          await createCustomerContactRequest({
+            customerId: account.id,
+            name: String(account.name || "Customer"),
+            mobile,
+            email: String(account.email || ""),
+            productId: item.productId,
+            productName: String(item.name || "Product"),
+            message: buildShortageEnquiryMessage({
+              productName: String(item.name || "Product"),
+              requestedGrams,
+              requestedDeliveryDate: item.requestedDate,
+              resolvedDeliveryDate: item.deliveryDate || undefined,
+            }),
+            source: "customer_checkout",
+            status: "open",
+            requestedQuantityGrams: requestedGrams,
+            requestedDeliveryDate: item.requestedDate,
+            resolvedDeliveryDate: item.deliveryDate || undefined,
+            enquiryReason: "AVAILABILITY_SHORTAGE",
+            contactRequired: true,
+          });
+        },
+        removeFromCart: removeResolvedItem,
+      });
+
+      if (decision.outcome === "checkout") {
+        applyCartDeliveryDates(decision.dates);
         window.location.assign("/checkout");
         return;
       }
 
-      const formatDate = (value: string | null) => value
-      ? new Intl.DateTimeFormat("en-IN", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value}T00:00:00`))
-      : "Not currently available";
-    const rows = resolution.items.map((item) => {
-      const safeName = String(item.name).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
-      const deliveryText = item.deliveryDate ? formatDate(item.deliveryDate) : `Not available for ${formatDate(item.requestedDate)}`;
-      return `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:left">${safeName}</td><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:left">${deliveryText}</td></tr>`;
-    }).join("");
-
-      const result = await Swal.fire({
-        icon: "info",
-        title: "Delivery availability update",
-        html: `<p style="margin:0 0 12px">We checked availability for your order. Due to high demand, some products have a later delivery date or are not currently available for the requested date.</p><table style="width:100%;border-collapse:collapse;margin:0 0 14px"><thead><tr><th style="padding:8px 10px;background:#f5f7ef;text-align:left">Product</th><th style="padding:8px 10px;background:#f5f7ef;text-align:left">Delivery date</th></tr></thead><tbody>${rows}</tbody></table><p style="margin:0">Would you like to place the complete order with these delivery dates?</p>`,
-        showCancelButton: true,
-        confirmButtonText: "Yes, Place Order",
-        cancelButtonText: "No, Update Cart",
-        reverseButtons: true,
-        focusCancel: true,
-        allowOutsideClick: false,
-        allowEscapeKey: false,
-      });
-
-      if (result.isConfirmed) {
-        applyCartDeliveryDates(dates);
-        window.location.assign("/checkout");
-        return;
-      }
-
-      const removed = plan.pendingItems;
-    if (!removed.length) {
-      applyCartDeliveryDates(dates);
-      return;
-    }
-
-    const mobile = getStoredCustomerMobile();
-    if (!mobile) {
-      await Swal.fire({ icon: "info", title: "Please sign in", text: "Please sign in before updating your cart so we can send an enquiry for the products you are unable to order now.", confirmButtonText: "OK" });
-      return;
-    }
-    const account = await getCustomerAccount(mobile);
-    if (!account) {
-      await Swal.fire({ icon: "error", title: "Unable to send enquiry", text: "We could not find your customer account. Please sign in again and try once more.", confirmButtonText: "OK" });
-      return;
-    }
-
-    for (const item of removed) {
-      const cartItem = item.kind === 'subscription'
-        ? currentCart.subscriptionItems.find((x) => `subscription:${x.productId}:${x.planId}:${x.startDate}` === item.key)
-        : currentCart.oneTimeItems.find((x) => `one-time:${x.productId}` === item.key);
-      const quantity = Math.max(0, Number(cartItem?.quantity || 1) * Number(cartItem?.packaging || 0));
-      await createCustomerContactRequest({
-        customerId: account.id,
-        name: String(account.name || "Customer"),
-        mobile,
-        email: String(account.email || ""),
-        productId: String(item.productId || cartItem?.productId || ""),
-        productName: String(item.name || "Product"),
-        message: buildShortageEnquiryMessage({
-          productName: String(item.name || "Product"),
-          requestedGrams: quantity,
-          requestedDeliveryDate: item.requestedDate,
-          resolvedDeliveryDate: item.deliveryDate || undefined,
-        }),
-        source: "customer_checkout",
-        status: "open",
-        requestedQuantityGrams: quantity,
-        requestedDeliveryDate: item.requestedDate,
-        resolvedDeliveryDate: item.deliveryDate || undefined,
-        enquiryReason: "AVAILABILITY_SHORTAGE",
-        contactRequired: true,
-      });
-    }
-
-    for (const item of removed) {
-      if (item.kind === "subscription") {
-        removeSubscriptionFromCart(item.productId, currentCart.subscriptionItems.find((x) => `subscription:${x.productId}:${x.planId}:${x.startDate}` === item.key)?.planId || "", currentCart.subscriptionItems.find((x) => `subscription:${x.productId}:${x.planId}:${x.startDate}` === item.key)?.startDate || "");
-      } else {
-        removeFromCart(item.productId);
-      }
-    }
-    applyCartDeliveryDates(Object.fromEntries(resolution.items.filter((item) => !pendingKeys.has(item.key)).map((item) => [item.key, item.deliveryDate])));
-
-      await Swal.fire({
-        icon: "success",
-        title: "Cart updated successfully",
-        text: "Products that could not be fulfilled for the requested delivery date have been removed, and an enquiry has been sent regarding their availability. You can review your updated cart and proceed to payment when ready.",
-        confirmButtonText: "OK",
-      });
       reload();
+      if (decision.reason === "enquiry-failed") {
+        const detail = decision.error instanceof Error ? decision.error.message : "";
+        await Swal.fire({ icon: "error", title: "Unable to send enquiry", text: `${detail ? `${detail} ` : ""}Your order has not been placed. Please try again.`, confirmButtonText: "OK" });
+      } else if (decision.reason === "all-items-enquired" && decision.declinedNextDate) {
+        await Swal.fire({ icon: "success", title: "Cart updated successfully", text: "The products available only on a later delivery date have been removed from your cart, and an enquiry has been sent about them.", confirmButtonText: "OK" });
+      }
     } finally {
       window.setTimeout(() => {
         checkoutRequestRef.current = false;

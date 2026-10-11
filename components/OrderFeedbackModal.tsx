@@ -86,18 +86,94 @@ export default function OrderFeedbackModal({ open, orderId, orderNumber, custome
 
   return <div className="feedback-modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
     <div className="feedback-modal" role="dialog" aria-modal="true" aria-labelledby="order-feedback-title">
-      <div className="feedback-modal-head"><div><div className="eyebrow">Order #{orderNumber}</div><h2 id="order-feedback-title">Share your feedback</h2></div><button type="button" className="feedback-modal-close" onClick={onClose} disabled={saving} aria-label="Close">×</button></div>
+      <header className="feedback-modal-head">
+        <div className="feedback-modal-header-copy">
+          <div className="eyebrow">Order #{orderNumber}</div>
+          <h2 id="order-feedback-title">Share your feedback</h2>
+        </div>
+        <button type="button" className="feedback-modal-close" onClick={onClose} disabled={saving} aria-label="Close modal">×</button>
+      </header>
+
       <div className="feedback-modal-body">
-        <section className="feedback-group"><h3>How was your order?</h3><Rating value={orderRating} onChange={setOrderRating} label="Order rating" firstRef={first}/><div className="feedback-options">{ORDER_FEEDBACK_OPTIONS.map(([value,label]) => <label key={value} className={`feedback-option ${orderOptions.includes(value) ? "selected" : ""}`}><input type="checkbox" checked={orderOptions.includes(value)} onChange={() => toggle(value,setOrderOptions)}/><span>{label}</span></label>)}</div></section>
-        <section className="feedback-group"><h3>How was the delivery?</h3><Rating value={deliveryRating} onChange={setDeliveryRating} label="Delivery rating"/><div className="feedback-options">{DELIVERY_FEEDBACK_OPTIONS.map(([value,label]) => <label key={value} className={`feedback-option ${deliveryOptions.includes(value) ? "selected" : ""}`}><input type="checkbox" checked={deliveryOptions.includes(value)} onChange={() => toggle(value,setDeliveryOptions)}/><span>{label}</span></label>)}</div></section>
-        <section className="feedback-group"><label className="feedback-comment-label" htmlFor="order-feedback-comment"><h3>Comment about your order <span>(optional)</span></h3></label><textarea id="order-feedback-comment" value={comment} onChange={(e) => setComment(e.target.value.slice(0,1000))} placeholder="Tell us anything else about your order…" rows={4}/></section>
+        <div className="feedback-modal-summary">
+          <p>Help us improve your order and delivery experience.</p>
+        </div>
+
+        <section className="feedback-group">
+          <div className="feedback-group-head">
+            <h3>How was your order?</h3>
+            <span>Required</span>
+          </div>
+          <Rating value={orderRating} onChange={setOrderRating} label="Order rating" firstRef={first} />
+          <div className="feedback-options">
+            {ORDER_FEEDBACK_OPTIONS.map(([value, label]) => (
+              <label key={value} className={`feedback-option ${orderOptions.includes(value) ? "selected" : ""}`}>
+                <input type="checkbox" checked={orderOptions.includes(value)} onChange={() => toggle(value, setOrderOptions)} />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </section>
+
+        <section className="feedback-group">
+          <div className="feedback-group-head">
+            <h3>How was the delivery?</h3>
+            <span>Required</span>
+          </div>
+          <Rating value={deliveryRating} onChange={setDeliveryRating} label="Delivery rating" />
+          <div className="feedback-options">
+            {DELIVERY_FEEDBACK_OPTIONS.map(([value, label]) => (
+              <label key={value} className={`feedback-option ${deliveryOptions.includes(value) ? "selected" : ""}`}>
+                <input type="checkbox" checked={deliveryOptions.includes(value)} onChange={() => toggle(value, setDeliveryOptions)} />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </section>
+
+        <section className="feedback-group feedback-group-comment">
+          <label className="feedback-comment-label" htmlFor="order-feedback-comment">
+            <div className="feedback-group-head feedback-group-head-inline">
+              <h3>Comment about your order</h3>
+              <span>Optional</span>
+            </div>
+          </label>
+          <textarea
+            id="order-feedback-comment"
+            value={comment}
+            onChange={(e) => setComment(e.target.value.slice(0, 1000))}
+            placeholder="Tell us anything else about your order…"
+            rows={4}
+          />
+        </section>
+
         {error && <p className="feedback-error" role="alert">{error}</p>}
       </div>
-      <div className="feedback-modal-actions"><button type="button" className="btn" onClick={onClose} disabled={saving}>Cancel</button><button type="button" className="btn primary" onClick={submit} disabled={saving}>{saving ? "Submitting…" : "Submit Feedback"}</button></div>
+
+      <div className="feedback-modal-actions">
+        <button type="button" className="btn" onClick={onClose} disabled={saving}>Cancel</button>
+        <button type="button" className="btn primary" onClick={submit} disabled={saving}>{saving ? "Submitting…" : "Submit Feedback"}</button>
+      </div>
     </div>
   </div>;
 }
 
 function Rating({ value, onChange, label, firstRef }: { value: number; onChange: (value: number) => void; label: string; firstRef?: React.RefObject<HTMLButtonElement | null> }) {
-  return <div className="feedback-rating" role="radiogroup" aria-label={label}>{[1,2,3,4,5].map((n) => <button key={n} ref={n===1 ? firstRef : undefined} type="button" role="radio" aria-checked={value===n} aria-label={`${n} out of 5`} className={n<=value ? "active" : ""} onClick={() => onChange(n)}>★</button>)}</div>;
+  return <div className="feedback-rating" role="radiogroup" aria-label={label}>
+    {[1, 2, 3, 4, 5].map((n) => (
+      <button
+        key={n}
+        ref={n === 1 ? firstRef : undefined}
+        type="button"
+        role="radio"
+        aria-checked={value === n}
+        aria-label={`${n} out of 5`}
+        title={`${n} out of 5`}
+        className={n <= value ? "feedback-rating-button active" : "feedback-rating-button"}
+        onClick={() => onChange(n)}
+      >
+        ★
+      </button>
+    ))}
+  </div>;
 }

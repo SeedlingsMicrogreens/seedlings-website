@@ -341,6 +341,8 @@ Website does not perform production or fulfilment inventory operations.
 
 Website performs customer-facing availability checks before creating an order/subscription.
 
+Committed demand (other customers' paid orders and active subscriptions) is aggregated server-side by `/api/customer/committed-demand` with the Admin SDK; the browser receives only per-Microgreen totals and never queries `orders`/`subscriptions` it does not own. Checkout revalidation and order creation still run in the browser.
+
 The authoritative inventory consumption occurs in the operational fulfilment flow, not by merely adding a Product to the Website cart.
 
 ## 16. Cross-application change rule

@@ -8,6 +8,33 @@ type CashfreePayment = { cf_payment_id?: string | number; payment_status?: strin
 export type CashfreePaymentResult = { status: 'paid'|'failed'|'pending'; cashfreeOrderId: string; orderId?: string; orderIds?: string[]; orderNumber: string; orderNumbers: string[]; paymentId?: string; message: string };
 type OrderData = Record<string, unknown>;
 
+/** External services used by finalization; injectable so the flow can be tested without Cashfree/Firestore. */
+type FinalizationDeps = {
+  cashfreeRequest: typeof cashfreeRequest;
+  db: () => ReturnType<typeof adminDb>;
+  sendPush: (notificationId: string) => Promise<unknown>;
+};
+const defaultDeps: FinalizationDeps = { cashfreeRequest, db: adminDb, sendPush: sendCustomerNotificationPush };
+
+/** Firestore rejects `undefined`; report the exact field before anything is written. */
+export function findUndefinedField(value: unknown, path: string): string | null {
+  if (value === undefined) return path;
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const found = findUndefinedField(item, `${path}[${index}]`);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    for (const [key, item] of Object.entries(value)) {
+      const found = findUndefinedField(item, `${path}.${key}`);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function getSnapshotData(snapshot: { id: string; data: () => OrderData | undefined }) {
   const data = snapshot.data();
   if (!data) throw new Error(`Seedlings order document is missing data: ${snapshot.id}`);
@@ -18,20 +45,23 @@ function hasSnapshotData(snapshot: { data: () => OrderData | undefined }) {
   return snapshot.data() !== undefined;
 }
 
-function normalizeStatus(order: CashfreeOrder, payments: CashfreePayment[]) {
+export function normalizeStatus(order: CashfreeOrder, payments: CashfreePayment[]) {
   if (String(order.order_status || '').toUpperCase() === 'PAID') return 'paid' as const;
-  const statuses = payments.map(payment => String(payment.payment_status || '').toUpperCase());
+  const statuses = [...payments].map(payment => String(payment.payment_status || '').toUpperCase());
   if (statuses.includes('SUCCESS')) return 'paid' as const;
-  if (statuses.some(status => ['PENDING','NOT_ATTEMPTED'].includes(status))) return 'pending' as const;
-  if (statuses.some(status => ['FAILED','USER_DROPPED','VOID','CANCELLED'].includes(status))) return 'failed' as const;
+  for (let index = statuses.length - 1; index >= 0; index -= 1) {
+    const status = statuses[index];
+    if (['FAILED', 'USER_DROPPED', 'VOID', 'CANCELLED'].includes(status)) return 'failed' as const;
+    if (['PENDING', 'NOT_ATTEMPTED'].includes(status)) return 'pending' as const;
+  }
   return 'pending' as const;
 }
 
-export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, expectedAuthUid?: string): Promise<CashfreePaymentResult> {
-  const order = await cashfreeRequest<CashfreeOrder>(`/pg/orders/${encodeURIComponent(cashfreeOrderId)}`);
-  const payments = await cashfreeRequest<CashfreePayment[]>(`/pg/orders/${encodeURIComponent(cashfreeOrderId)}/payments`);
+export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, expectedAuthUid?: string, deps: FinalizationDeps = defaultDeps): Promise<CashfreePaymentResult> {
+  const order = await deps.cashfreeRequest<CashfreeOrder>(`/pg/orders/${encodeURIComponent(cashfreeOrderId)}`);
+  const payments = await deps.cashfreeRequest<CashfreePayment[]>(`/pg/orders/${encodeURIComponent(cashfreeOrderId)}/payments`);
   const status = normalizeStatus(order, payments);
-  const db = adminDb();
+  const db = deps.db();
 
   // Serialize finalization for the same Cashfree order. Browser return, webhook,
   // refresh, and repeated verification can all arrive at nearly the same time.
@@ -80,7 +110,7 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
       const event = cached.status === 'failed'
         ? 'payment_failed'
         : isSubscriptionOrder ? 'subscription_activated' : 'order_placed';
-      await sendCustomerNotificationPush(`${orderId}_${event}`);
+      await deps.sendPush(`${orderId}_${event}`);
     }));
     return cached;
   }
@@ -119,7 +149,8 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
   const successfulPayment = payments.find(payment => String(payment.payment_status || '').toUpperCase() === 'SUCCESS');
   const latestPayment = payments[payments.length - 1];
   const payment = successfulPayment || latestPayment;
-  const paymentId = payment?.cf_payment_id != null ? String(payment.cf_payment_id) : undefined;
+  // Absent when Cashfree has no payment attempt for this order yet.
+  const paymentId = payment?.cf_payment_id != null && String(payment.cf_payment_id).trim() ? String(payment.cf_payment_id) : undefined;
   const gatewayPaymentStatus = String(payment?.payment_status || '').toUpperCase();
   const expectedAmount = internalSnapshot.docs.reduce((sum, snapshot) => sum + Number(getSnapshotData(snapshot).total || 0), 0);
   const cashfreeOrderAmount = Number(order.order_amount || 0);
@@ -131,6 +162,10 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
     return String(data.paymentStatus || '').toLowerCase() === 'paid' && String(data.cashfreeOrderId || '') !== cashfreeOrderId;
   });
 
+  // Orders of a checkout replaced by a changed cart are cancelled and must never be
+  // activated, even if a payment arrives for them (recorded for refund instead).
+  const isSuperseded = (data: OrderData) => String(data.status || '').toLowerCase() === 'cancelled' && Boolean(data.supersededAt);
+  const allSuperseded = internalSnapshot.docs.every(snapshot => isSuperseded(getSnapshotData(snapshot)));
   const subscriptionIds = internalSnapshot.docs.map(snapshot => String(getSnapshotData(snapshot).subscriptionId || '')).filter(Boolean);
   const subscriptionSnapshots = await Promise.all(subscriptionIds.map(id => db.collection('subscriptions').doc(id).get()));
   const batch = db.batch();
@@ -141,6 +176,7 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
     const orderData = getSnapshotData(orderSnapshot);
     const isSubscriptionOrder = String(orderData.orderType || '').toLowerCase() === 'subscription';
     const alreadyPaid = String(orderData.paymentStatus || '').toLowerCase() === 'paid';
+    const superseded = isSuperseded(orderData);
 
     // A successful payment is terminal. A delayed failed/pending result from an
     // older attempt must never downgrade an already-paid order.
@@ -154,12 +190,14 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
     };
     if (effectiveStatus === 'paid' && !alreadyPaid) orderUpdate.paidAt = payment?.payment_completion_time || payment?.payment_time || now;
     if (effectiveStatus === 'failed') orderUpdate.paymentFailureMessage = payment?.payment_message || payment?.error_details || 'Payment failed.';
-    if (!orderAlreadyPaidByAnotherAttempt || effectiveStatus !== 'paid') batch.update(orderSnapshot.ref, orderUpdate);
+    if (!superseded && (!orderAlreadyPaidByAnotherAttempt || effectiveStatus !== 'paid')) batch.update(orderSnapshot.ref, orderUpdate);
 
     // The successful payment finalization is the authoritative "order placed"
     // event. Create the customer notification in the same atomic batch so browser
     // return/webhook races cannot create duplicate notifications.
-    if (status === 'paid' && !alreadyPaid && !orderAlreadyPaidByAnotherAttempt) {
+    if (superseded) {
+      // No customer notification or activation for a replaced checkout.
+    } else if (status === 'paid' && !alreadyPaid && !orderAlreadyPaidByAnotherAttempt) {
       const notificationEvent = isSubscriptionOrder ? 'subscription_activated' : 'order_placed';
       const notificationRef = db.collection('notifications').doc(`${orderSnapshot.id}_${notificationEvent}`);
       batch.set(notificationRef, {
@@ -210,7 +248,7 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
       orderNumber: orderData.orderNumber || orderSnapshot.id,
       customerId: orderData.customerId || '',
       paymentStatus: status === 'paid' ? 'paid' : status === 'failed' ? 'failed' : 'pending',
-      status: orderAlreadyPaidByAnotherAttempt && status === 'paid' ? 'duplicate_success' : status === 'paid' ? 'success' : status,
+      status: superseded && status === 'paid' ? 'superseded_payment_received' : orderAlreadyPaidByAnotherAttempt && status === 'paid' ? 'duplicate_success' : status === 'paid' ? 'success' : status,
       paymentMethod: orderData.paymentMethod || 'online',
       amount: Number(orderData.total ?? 0),
       currency: payment?.payment_currency || orderData.currency || 'INR',
@@ -228,6 +266,7 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
   for (const subscriptionSnapshot of subscriptionSnapshots) {
     if (!subscriptionSnapshot.exists) continue;
     const current = subscriptionSnapshot.data() || {};
+    if (isSuperseded(current)) continue;
     const alreadyPaid = String(current.paymentStatus || '').toLowerCase() === 'paid';
     const effectiveStatus = alreadyPaid && status !== 'paid' ? 'paid' : status;
     if (!orderAlreadyPaidByAnotherAttempt || effectiveStatus !== 'paid') {
@@ -242,20 +281,33 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
 
   batch.set(db.collection('paymentAttempts').doc(cashfreeOrderId), {
     gatewayOrderId: cashfreeOrderId,
-    status: status === 'paid' ? (orderAlreadyPaidByAnotherAttempt ? 'duplicate_success' : 'paid') : status,
+    status: status === 'paid' ? (allSuperseded ? 'superseded_paid' : orderAlreadyPaidByAnotherAttempt ? 'duplicate_success' : 'paid') : status,
     paymentId: paymentId || null,
     updatedAt: now,
   }, { merge: true });
 
+  // A paid checkout completes the customer's pending-checkout claim.
+  if (status === 'paid' && !allSuperseded) {
+    const customerId = String(primary.customerId || '');
+    const claimRef = customerId ? db.collection('checkoutClaims').doc(customerId) : null;
+    const claim = claimRef ? (await claimRef.get()).data?.() : undefined;
+    const claimOrderIds: string[] = Array.isArray(claim?.orderIds) ? claim.orderIds.map(String) : [];
+    if (claimRef && claimOrderIds.some(id => internalSnapshot.docs.some(snapshot => snapshot.id === id))) {
+      batch.set(claimRef, { status: 'completed', updatedAtMs: Date.now() }, { merge: true });
+    }
+  }
+
   const result: CashfreePaymentResult = {
-    status,
+    status: allSuperseded && status === 'paid' ? 'failed' : status,
     cashfreeOrderId,
     orderId: primarySnapshot.id,
     orderIds: internalSnapshot.docs.map(snapshot => snapshot.id),
     orderNumber: primaryOrderNumber,
     orderNumbers: internalSnapshot.docs.map(snapshot => String(getSnapshotData(snapshot).orderNumber || snapshot.id)),
-    paymentId,
-    message: orderAlreadyPaidByAnotherAttempt && status === 'paid'
+    ...(paymentId ? { paymentId } : {}),
+    message: allSuperseded && status === 'paid'
+      ? 'This checkout was replaced by a newer one, so this payment was not applied to an order. It has been recorded for a refund.'
+      : orderAlreadyPaidByAnotherAttempt && status === 'paid'
       ? 'Payment was received again for an order that is already paid. The duplicate payment has been recorded for reconciliation.'
       : status === 'paid' ? 'Payment successful.' : status === 'failed'
         ? (gatewayPaymentStatus === 'USER_DROPPED'
@@ -267,6 +319,8 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
   // Complete the finalization lock in the same atomic Firestore batch as all
   // payment/order/subscription writes. A repeated webhook or browser return can
   // therefore safely return the exact same result without re-finalizing.
+  const undefinedField = findUndefinedField(result, 'result');
+  if (undefinedField) throw new Error(`Payment finalization result is incomplete (${undefinedField}).`);
   batch.set(finalizationLockRef, {
     status: status === 'pending' ? 'pending' : 'completed',
     gatewayOrderId: cashfreeOrderId,
@@ -279,6 +333,6 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
 
   // Firestore notification records are the source of truth. Push delivery is a
   // best-effort channel and can be retried safely because notification IDs are deterministic.
-  await Promise.allSettled(notificationIdsToPush.map((id) => sendCustomerNotificationPush(id)));
+  await Promise.allSettled(notificationIdsToPush.map((id) => deps.sendPush(id)));
   return result;
 }

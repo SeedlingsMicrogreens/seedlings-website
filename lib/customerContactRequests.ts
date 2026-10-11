@@ -81,14 +81,21 @@ export function buildShortageEnquiryMessage(args: {
   requestedGrams: number;
   requestedDeliveryDate: string;
   resolvedDeliveryDate?: string;
+  /** Subsequent delivery date that was also checked and could not supply the quantity. */
+  checkedNextDate?: string;
 }) {
   const productName = String(args.productName || 'Product').trim() || 'Product';
   const requested = Math.max(0, Math.floor(Number(args.requestedGrams) || 0));
   const requestedDate = String(args.requestedDeliveryDate || '').trim();
   const resolvedDate = String(args.resolvedDeliveryDate || '').trim();
+  const checkedNextDate = String(args.checkedNextDate || '').trim();
   const formatDate = (value: string) => value
     ? new Date(`${value}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
     : 'the requested date';
+
+  if (checkedNextDate) {
+    return `Customer requested ${requested.toLocaleString()}g ${productName} for ${formatDate(requestedDate)}, but the full requested quantity was not available on that date or on ${formatDate(checkedNextDate)}. Customer requested to be contacted.`;
+  }
 
   if (resolvedDate) {
     return `Customer requested ${requested.toLocaleString()}g ${productName} for ${formatDate(requestedDate)}, but the full requested quantity was not available. Customer chose not to move the delivery date. The full quantity was available on ${formatDate(resolvedDate)}.`;

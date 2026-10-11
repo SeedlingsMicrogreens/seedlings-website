@@ -14,7 +14,6 @@ export type AvailabilityContext = {
   subscriptionCommitted: Record<string, number>;
   /** Committed one-time order grams per production Microgreen for the delivery date that have not been packed yet. */
   oneTimeCommitted: Record<string, number>;
-  salesProductById: Map<string, SalesProduct>;
   thresholdGrams: number;
   /** Total committed demand for the delivery date (all Microgreens, packed or not). Used only by the threshold fallback. */
   committedDemandGrams: number;
@@ -120,11 +119,14 @@ export function requestedProductionQuantities(product: SalesProduct, quantityInp
 /**
  * Selects the batch supply for a delivery date.
  *
+ * - A batch item belongs to exactly one delivery date: the one whose delivery
+ *   week (after `deliveryDate - 7 days`, up to `deliveryDate`) contains its
+ *   planned harvest date (`expectedReadyDate`, else the batch `harvestDate`).
+ *   A batch grown for an earlier delivery date never supplies a later one.
  * - Not started, closed/delivered and failed batch items are never applicable.
- * - A started (unharvested) item applies when its planned ready date is on or
- *   before the delivery date; its planned usable yield is the supply.
- * - A harvested item applies when it was harvested on or before the delivery
- *   date and its batch is not closed, even with 0 g left. Its supply is the remaining batch stock
+ * - A started (unharvested) item's planned usable yield is the supply.
+ * - A harvested item applies while its batch is not closed, even with 0 g
+ *   left. Its supply is the remaining batch stock
  *   (`batchStockGrams`, which Admin reduces at packing and waste), falling back
  *   to the net usable harvest (`actualYieldGrams`) before the first packing.
  *   Product `stockGrams` already contains this harvest, so it is used only as a
@@ -137,6 +139,7 @@ export function selectBatchSupply(
   stockByProduct: Record<string, number> = {},
 ) {
   const requested = new Set(productIds);
+  const weekStart = addWeeks(deliveryDate, -1); // exclusive: the previous delivery date
   const harvested: Record<string, number> = {};
   const planned: Record<string, number> = {};
   const batchProductIds = new Set<string>();
@@ -152,10 +155,10 @@ export function selectBatchSupply(
       const productId = normalize(item.productId);
       if (!requested.has(productId)) continue;
       const itemStatus = statusKey(item.status) || batchStatus;
+      const targetDate = dateKey(item.expectedReadyDate) || dateKey(data.harvestDate);
+      if (!targetDate || targetDate <= weekStart || targetDate > deliveryDate) continue;
 
       if (HARVESTED_STATUSES.has(itemStatus)) {
-        const harvestedOn = dateKey(item.actualReadyDate) || dateKey(data.harvestDate) || dateKey(item.expectedReadyDate);
-        if (!harvestedOn || harvestedOn > deliveryDate) continue;
         const remaining = item.batchStockGrams !== undefined && item.batchStockGrams !== null
           ? number(item.batchStockGrams)
           : item.actualYieldGrams !== undefined && item.actualYieldGrams !== null
@@ -164,8 +167,6 @@ export function selectBatchSupply(
         addGrams(harvested, productId, remaining);
         batchProductIds.add(productId);
       } else if (STARTED_STATUSES.has(itemStatus) || (itemStatus === 'partiallyharvested' && !normalize(item.status))) {
-        const readyDate = dateKey(item.expectedReadyDate);
-        if (!readyDate || readyDate > deliveryDate) continue;
         addGrams(planned, productId, number(item.expectedUsableYieldGrams));
         batchProductIds.add(productId);
       }
@@ -201,10 +202,14 @@ function orderIsCancelled(order: Record<string, unknown>) {
   return ['cancelled', 'failed', 'rejected', 'payment_failed'].includes(normalize(order.status).toLowerCase());
 }
 
+// Admin moves an order to these statuses only after it is fully packed (stock already deducted).
+const PACKED_ORDER_STATUSES = new Set(['packed', 'ready_for_handover', 'handed_to_delivery', 'handed_over', 'out_for_delivery', 'delivered']);
+
 /** Total and not-yet-packed production grams of an order. Packing already reduced batch stock for the packed part. */
 function orderRequirement(order: Record<string, unknown>, salesProductById: Map<string, SalesProduct>) {
   const total: Record<string, number> = {};
   const unpacked: Record<string, number> = {};
+  const fullyPacked = PACKED_ORDER_STATUSES.has(normalize(order.status).toLowerCase());
   const items = Array.isArray(order.items) ? order.items : [];
   for (const raw of items) {
     if (!raw || typeof raw !== 'object') continue;
@@ -219,7 +224,7 @@ function orderRequirement(order: Record<string, unknown>, salesProductById: Map<
       const packedBoxes = Math.min(quantity, number(item.packedBoxes) || (packaging > 0 ? Math.floor(number(item.packedGrams) / packaging) : 0));
       for (const [productId, grams] of Object.entries(perPack)) {
         addGrams(total, productId, grams * quantity);
-        addGrams(unpacked, productId, grams * (quantity - packedBoxes));
+        if (!fullyPacked) addGrams(unpacked, productId, grams * (quantity - packedBoxes));
       }
       continue;
     }
@@ -228,7 +233,7 @@ function orderRequirement(order: Record<string, unknown>, salesProductById: Map<
     const match = unit.match(/([\d.]+)(kg|g)/);
     const perUnit = match ? Number(match[1]) * (match[2] === 'kg' ? 1000 : 1) : number(item.weightGrams);
     addGrams(total, productionId, perUnit * quantity);
-    addGrams(unpacked, productionId, Math.max(0, perUnit * quantity - number(item.packedGrams)));
+    if (!fullyPacked) addGrams(unpacked, productionId, Math.max(0, perUnit * quantity - number(item.packedGrams)));
   }
   return { total, unpacked };
 }
@@ -300,34 +305,167 @@ export function computeCommittedDemand(args: {
   return { subscriptionCommitted, oneTimeCommitted, committedDemandGrams };
 }
 
+/** Remaining batch grams for one production Microgreen after all committed and reserved demand. */
+function batchRemaining(context: AvailabilityContext, productId: string, reserved: { subscription: Record<string, number>; oneTime: Record<string, number> } = { subscription: {}, oneTime: {} }) {
+  return Math.max(0, (context.harvestAvailable[productId] || 0)
+    - (context.subscriptionCommitted[productId] || 0)
+    - (context.oneTimeCommitted[productId] || 0)
+    - (reserved.subscription[productId] || 0)
+    - (reserved.oneTime[productId] || 0));
+}
+
 /**
  * Date-resolver check for one cart item on a candidate date, including grams
- * already reserved by earlier cart items. Same batch-first/threshold rule as
- * `calculateAvailability`; subscriptions are not reduced by one-time demand.
+ * already reserved by earlier cart items. Same batch-first/threshold rule and
+ * the same committed demand as `calculateAvailability` (used by Checkout), for
+ * one-time and subscription items alike.
  */
 export function availableForCartItem(
   context: AvailabilityContext,
   requested: Record<string, number>,
-  kind: 'subscription' | 'one-time',
+  /** Grams reserved by earlier cart items on this candidate date. */
   reservations: { subscription: Record<string, number>; oneTime: Record<string, number> },
 ) {
-  const requestedTotal = Object.values(requested).reduce((sum, grams) => sum + number(grams), 0);
-  const reservationTotal = Object.values(reservations.subscription).reduce((sum, grams) => sum + number(grams), 0)
-    + Object.values(reservations.oneTime).reduce((sum, grams) => sum + number(grams), 0);
+  const requestedTotal = sumGrams(requested);
+  const reservationTotal = sumGrams(reservations.subscription) + sumGrams(reservations.oneTime);
   for (const [productId, grams] of Object.entries(requested)) {
-    const hasBatch = context.batchProductIds.has(productId);
-    if (!hasBatch) {
+    if (!context.batchProductIds.has(productId)) {
       if (context.committedDemandGrams + reservationTotal + requestedTotal > context.thresholdGrams) return false;
       continue;
     }
-    const harvest = context.harvestAvailable[productId] || 0;
-    const committedSubscription = (context.subscriptionCommitted[productId] || 0) + (reservations.subscription[productId] || 0);
-    const committedOneTime = kind === 'one-time'
-      ? (context.oneTimeCommitted[productId] || 0) + (reservations.oneTime[productId] || 0)
-      : 0;
-    if (Math.max(0, harvest - committedSubscription - committedOneTime) < grams) return false;
+    if (batchRemaining(context, productId, reservations) < grams) return false;
   }
   return true;
+}
+
+export type CartResolutionInput = {
+  key: string;
+  kind: 'subscription' | 'one-time';
+  product: SalesProduct;
+  quantity: number;
+  packagingGrams?: number;
+  requestedDate?: string;
+  name?: string;
+};
+
+export type CartDeliveryResolutionItem = {
+  key: string;
+  kind: 'subscription' | 'one-time';
+  productId: string;
+  name: string;
+  requestedDate: string;
+  deliveryDate: string | null;
+  available: boolean;
+  highDemand?: boolean;
+  thresholdGrams?: number;
+};
+
+export type CartDeliveryResolution = {
+  requestedDate: string;
+  items: CartDeliveryResolutionItem[];
+  hasDateChanges: boolean;
+  hasUnavailableItems: boolean;
+};
+
+function addWeeks(date: string, weeks: number) {
+  const value = new Date(`${date}T00:00:00`);
+  value.setDate(value.getDate() + weeks * 7);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+}
+
+/**
+ * Date search behind `resolveCartDeliveryDates`, with the availability context
+ * for each candidate Saturday supplied by the caller. Candidates are the
+ * requested date and the following `maxWeeks - 1` Saturdays. By default a
+ * threshold breach stops the search (high demand); with
+ * `searchAfterHighDemand` the next candidate is still checked and high demand
+ * is reported only when no candidate can supply the full quantity.
+ */
+export async function resolveDeliveryDatesWithContexts(
+  args: CartResolutionInput[],
+  loadContext: (date: string, productIds: string[]) => Promise<AvailabilityContext>,
+  options: { maxWeeks?: number; searchAfterHighDemand?: boolean; defaultRequestedDate: string },
+): Promise<CartDeliveryResolution> {
+  const requestedDate = args.find((item) => item.requestedDate)?.requestedDate || options.defaultRequestedDate;
+  const maxWeeks = Math.max(1, Math.floor(Number(options.maxWeeks || 12)));
+  const contextByDate = new Map<string, AvailabilityContext>();
+  const reservationsByDate = new Map<string, { subscription: Record<string, number>; oneTime: Record<string, number> }>();
+  const output: CartDeliveryResolutionItem[] = [];
+
+  // Subscription priority is explicit and stable; cart order determines the
+  // order among items of the same type.
+  const ordered = [...args].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'subscription' ? -1 : 1));
+
+  for (const item of ordered) {
+    const requested = requestedProductionQuantities(item.product, item.quantity, item.packagingGrams);
+    let deliveryDate: string | null = null;
+    let highDemand = false;
+    let thresholdForHighDemand = 0;
+
+    const itemRequestedDate = item.requestedDate || requestedDate;
+    const candidates = Array.from({ length: maxWeeks }, (_, index) => addWeeks(itemRequestedDate, index));
+
+    for (const candidate of candidates) {
+      let context = contextByDate.get(candidate);
+      if (!context) {
+        context = await loadContext(candidate, Object.keys(requested));
+        contextByDate.set(candidate, context);
+      }
+      const reservations = reservationsByDate.get(candidate) || { subscription: {}, oneTime: {} };
+      const requestedTotal = sumGrams(requested);
+      const reservationTotal = sumGrams(reservations.subscription) + sumGrams(reservations.oneTime);
+      const usesThreshold = Object.keys(requested).some(productId => !context.batchProductIds.has(productId));
+      if (usesThreshold && context.committedDemandGrams + reservationTotal + requestedTotal > context.thresholdGrams) {
+        highDemand = true;
+        thresholdForHighDemand = context.thresholdGrams;
+        if (options.searchAfterHighDemand) continue;
+        break;
+      }
+      if (!availableForCartItem(context, requested, reservations)) {
+        // The latest date failed for batch stock, not the threshold: the final
+        // outcome (and the enquiry reason) is a shortage, not high demand.
+        highDemand = false;
+        continue;
+      }
+
+      deliveryDate = candidate;
+      highDemand = false;
+      const nextReservations = {
+        subscription: { ...reservations.subscription },
+        oneTime: { ...reservations.oneTime },
+      };
+      addGramsMap(nextReservations[item.kind === 'subscription' ? 'subscription' : 'oneTime'], requested);
+      reservationsByDate.set(candidate, nextReservations);
+      break;
+    }
+
+    output.push({
+      key: item.key,
+      kind: item.kind,
+      productId: item.product.id,
+      name: String(item.name || item.product.name || 'Product'),
+      requestedDate: itemRequestedDate,
+      deliveryDate,
+      available: Boolean(deliveryDate),
+      ...(highDemand ? { highDemand: true, thresholdGrams: thresholdForHighDemand } : {}),
+    });
+  }
+
+  // Restore the original cart order for predictable popup presentation.
+  output.sort((a, b) => args.findIndex((item) => item.key === a.key) - args.findIndex((item) => item.key === b.key));
+  return {
+    requestedDate,
+    items: output,
+    hasDateChanges: output.some((item) => item.deliveryDate !== null && item.deliveryDate !== item.requestedDate),
+    hasUnavailableItems: output.some((item) => !item.deliveryDate),
+  };
+}
+
+function addGramsMap(target: Record<string, number>, requested: Record<string, number>) {
+  for (const [productId, grams] of Object.entries(requested)) {
+    target[productId] = (target[productId] || 0) + number(grams);
+  }
 }
 
 /**
@@ -357,10 +495,7 @@ export function calculateAvailability(args: {
       availableForOneTime[productId] = remainingThreshold;
     } else {
       availabilitySource[productId] = 'batch';
-      const harvest = args.context.harvestAvailable[productId] || 0;
-      const subscription = args.context.subscriptionCommitted[productId] || 0;
-      const oneTime = args.context.oneTimeCommitted[productId] || 0;
-      availableForOneTime[productId] = Math.max(0, harvest - subscription - oneTime);
+      availableForOneTime[productId] = batchRemaining(args.context, productId);
     }
     availableGrams = Math.min(availableGrams, Math.min(grams, availableForOneTime[productId] || 0));
   }

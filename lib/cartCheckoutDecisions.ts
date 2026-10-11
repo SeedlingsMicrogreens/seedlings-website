@@ -1,47 +1,89 @@
-import type { AvailabilityResult } from './customerAvailabilityMath';
+import type { CartDeliveryResolutionItem } from './customerAvailabilityMath';
 
-export type CheckoutDecisionItem = {
-  key: string;
-  requestedDate: string;
-  deliveryDate: string | null;
-};
+/** Cart checkout checks the requested delivery date and exactly one subsequent date. */
+export const CART_DELIVERY_DATES_CHECKED = 2;
 
-export type ShortageDecision = 'continue' | 'contact' | 'cancel';
+/** The single subsequent delivery date checked after the requested date (same weekday, +7 days). */
+export function nextDeliveryDateAfter(date: string) {
+  const value = new Date(`${date}T00:00:00`);
+  value.setDate(value.getDate() + 7);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+}
 
-export type CheckoutShortagePlan<T extends CheckoutDecisionItem> =
-  | { outcome: 'high-demand'; item: T; availability: AvailabilityResult }
-  | { outcome: 'contact'; item: T; availability: AvailabilityResult }
-  | { outcome: 'cancel'; item: T; availability: AvailabilityResult }
-  | { outcome: 'continue'; acceptedKeys: Set<string>; pendingItems: T[] };
+/** Enquiry reason from the final outcome of the date check (existing reason types). */
+export function enquiryReasonFor(item: Pick<CartDeliveryResolutionItem, 'highDemand'>): 'HIGH_DEMAND' | 'AVAILABILITY_SHORTAGE' {
+  return item.highDemand ? 'HIGH_DEMAND' : 'AVAILABILITY_SHORTAGE';
+}
+
+export function partitionCartResolution<T extends CartDeliveryResolutionItem>(items: T[]) {
+  return {
+    onTime: items.filter((item) => item.deliveryDate !== null && item.deliveryDate === item.requestedDate),
+    nextDate: items.filter((item) => item.deliveryDate !== null && item.deliveryDate !== item.requestedDate),
+    unavailable: items.filter((item) => item.deliveryDate === null),
+  };
+}
+
+export type CartCheckoutOutcome =
+  | { outcome: 'checkout'; dates: Record<string, string> }
+  | { outcome: 'stay'; reason: 'enquiry-declined' }
+  | { outcome: 'stay'; reason: 'enquiry-failed'; error: unknown }
+  | { outcome: 'stay'; reason: 'all-items-enquired'; declinedNextDate: boolean };
+
+function datesFor(items: CartDeliveryResolutionItem[]) {
+  return Object.fromEntries(items.map((item) => [item.key, item.deliveryDate as string]));
+}
 
 /**
- * Runs the per-item shortage decisions for Proceed to Checkout, in cart order,
- * before any generic delivery-date handling:
- * - high demand (threshold fallback exceeded) stops at the enquiry flow;
- * - a shortage always asks the customer: with a later full-quantity date the
- *   customer may accept it; without one only enquiry or keep-in-cart remain;
- * - an accepted later date is not asked again by the generic popup.
- * Later dates not covered by a shortage decision are returned as
- * `pendingItems` for the generic popup.
+ * Proceed to Checkout decision flow after the requested-date + next-date check:
+ * 1. Items unavailable on both dates: existing enquiry popup. Send Enquiry saves
+ *    the enquiries and those items leave the cart; declining stays on Cart.
+ * 2. Items available only on the next date: high-demand dates popup.
+ *    Yes keeps the displayed dates; No saves an enquiry for every next-date item
+ *    (removing each as soon as it is saved) and continues with requested-date items.
+ * 3. Remaining items open Checkout with their dates; with none left, stay on Cart.
+ * A failed enquiry save stops the flow so nothing proceeds as if it succeeded.
  */
-export async function planCheckoutShortageDecisions<T extends CheckoutDecisionItem>(
+export async function runCartCheckoutDecision<T extends CartDeliveryResolutionItem>(
   items: T[],
   deps: {
-    checkAvailability: (item: T) => Promise<AvailabilityResult | null>;
-    confirmShortage: (item: T, availability: AvailabilityResult) => Promise<ShortageDecision>;
+    /** Existing enquiry popup for unavailable items. Resolves false when declined; throws when saving fails. */
+    enquireUnavailable: (items: T[]) => Promise<boolean>;
+    /** High-demand dates popup. Resolves true for Yes, false for No. */
+    confirmNextDates: (allAvailable: T[]) => Promise<boolean>;
+    /** Saves the enquiry for one declined next-date item; throws when saving fails. */
+    saveDeclinedEnquiry: (item: T) => Promise<void>;
+    removeFromCart: (item: T) => void;
   },
-): Promise<CheckoutShortagePlan<T>> {
-  const acceptedKeys = new Set<string>();
-  for (const item of items) {
-    const availability = await deps.checkAvailability(item);
-    if (!availability || (!availability.hasShortage && !availability.highDemand)) continue;
-    if (availability.highDemand) return { outcome: 'high-demand', item, availability };
-    const decision = await deps.confirmShortage(item, availability);
-    if (decision === 'contact') return { outcome: 'contact', item, availability };
-    // A later date can only be accepted when one exists.
-    if (decision === 'cancel' || !item.deliveryDate) return { outcome: 'cancel', item, availability };
-    acceptedKeys.add(item.key);
+): Promise<CartCheckoutOutcome> {
+  const { onTime, nextDate, unavailable } = partitionCartResolution(items);
+
+  if (unavailable.length) {
+    let submitted: boolean;
+    try {
+      submitted = await deps.enquireUnavailable(unavailable);
+    } catch (error) {
+      return { outcome: 'stay', reason: 'enquiry-failed', error };
+    }
+    if (!submitted) return { outcome: 'stay', reason: 'enquiry-declined' };
+    for (const item of unavailable) deps.removeFromCart(item);
   }
-  const pendingItems = items.filter((item) => item.deliveryDate !== item.requestedDate && !acceptedKeys.has(item.key));
-  return { outcome: 'continue', acceptedKeys, pendingItems };
+
+  if (nextDate.length) {
+    const accepted = await deps.confirmNextDates([...onTime, ...nextDate].sort((a, b) => items.indexOf(a) - items.indexOf(b)));
+    if (accepted) return { outcome: 'checkout', dates: datesFor([...onTime, ...nextDate]) };
+    for (const item of nextDate) {
+      try {
+        await deps.saveDeclinedEnquiry(item);
+      } catch (error) {
+        return { outcome: 'stay', reason: 'enquiry-failed', error };
+      }
+      deps.removeFromCart(item);
+    }
+    if (!onTime.length) return { outcome: 'stay', reason: 'all-items-enquired', declinedNextDate: true };
+    return { outcome: 'checkout', dates: datesFor(onTime) };
+  }
+
+  if (!onTime.length) return { outcome: 'stay', reason: 'all-items-enquired', declinedNextDate: false };
+  return { outcome: 'checkout', dates: datesFor(onTime) };
 }

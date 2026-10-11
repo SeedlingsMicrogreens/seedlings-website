@@ -1,33 +1,8 @@
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from './firebase';
+import { computeCustomerOffers, type CheckoutOfferResult, type CustomerOffer } from './checkoutPricing';
 
-export type CustomerOffer = {
-  id: string;
-  name: string;
-  locationType?: 'all' | 'pincode' | string;
-  pincodeIds?: string[];
-  pincodeLabels?: string[];
-  type: 'price' | 'deliveryCharge' | 'quantity' | string;
-  startDate?: string;
-  endDate?: string;
-  active?: boolean;
-  discountType?: 'percentage' | 'flat' | string;
-  discountValue?: number;
-  quantityRule?: Record<string, unknown>;
-};
-
-export type CheckoutOfferResult = {
-  priceSavings: number;
-  oneTimePriceSavings: number;
-  subscriptionPriceSavings: number;
-  deliverySavings: number;
-  totalSavings: number;
-  priceOffer?: CustomerOffer;
-  deliveryOffer?: CustomerOffer;
-};
-
-const clean = (value: unknown) => String(value ?? '').trim();
-const amount = (value: unknown) => Math.max(0, Number(value) || 0);
+export type { CheckoutOfferResult, CustomerOffer } from './checkoutPricing';
 
 function today() {
   const d = new Date();
@@ -37,29 +12,7 @@ function today() {
   return `${year}-${month}-${day}`;
 }
 
-function locationMatches(offer: CustomerOffer, geoId: string, pincode: string, locationName: string) {
-  if (offer.locationType === 'all' || !offer.locationType) return true;
-  if (offer.locationType !== 'pincode') return false;
-  return (offer.pincodeIds ?? []).map(clean).includes(geoId)
-    || (offer.pincodeLabels ?? []).map((v) => clean(v).toLowerCase()).includes(locationName.toLowerCase())
-    || (offer.pincodeLabels ?? []).map(clean).includes(pincode);
-}
-
-function activeOffers(offers: CustomerOffer[], geoId: string, pincode: string, locationName: string) {
-  const date = today();
-  return offers.filter((offer) => offer.active !== false
-    && (!offer.startDate || offer.startDate <= date)
-    && (!offer.endDate || offer.endDate >= date)
-    && locationMatches(offer, geoId, pincode, locationName));
-}
-
-function savingFor(offer: CustomerOffer, base: number) {
-  if (base <= 0) return 0;
-  const value = amount(offer.discountValue);
-  if (offer.discountType === 'percentage') return Math.min(base, base * Math.min(100, value) / 100);
-  return Math.min(base, value);
-}
-
+/** Loads the offers and applies the shared offer rule from `checkoutPricing.ts`. */
 export async function calculateCustomerOffers(input: {
   pincode: string;
   geoId: string;
@@ -70,40 +23,5 @@ export async function calculateCustomerOffers(input: {
 }): Promise<CheckoutOfferResult> {
   const snap = await getDocs(collection(db, 'offers'));
   const offers = snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<CustomerOffer, 'id'>) }));
-  const matching = activeOffers(offers, input.geoId, input.pincode, clean(input.locationName));
-  const priceCandidates = matching.filter((offer) => offer.type === 'price');
-  const deliveryCandidates = matching.filter((offer) => offer.type === 'deliveryCharge');
-  const best = (candidates: CustomerOffer[], base: number) => candidates
-    .map((offer) => ({ offer, saving: savingFor(offer, base) }))
-    .sort((a, b) => b.saving - a.saving)[0];
-  const oneTimeSubtotal = amount(input.oneTimeSubtotal);
-  const subscriptionSubtotal = amount(input.subscriptionSubtotal);
-  const combinedProductSubtotal = oneTimeSubtotal + subscriptionSubtotal;
-  const price = best(priceCandidates, combinedProductSubtotal);
-  const delivery = best(deliveryCandidates, amount(input.oneTimeDelivery));
-
-  let oneTimePriceSavings = 0;
-  let subscriptionPriceSavings = 0;
-  if (price?.offer && combinedProductSubtotal > 0) {
-    if (price.offer.discountType === 'percentage') {
-      oneTimePriceSavings = savingFor(price.offer, oneTimeSubtotal);
-      subscriptionPriceSavings = savingFor(price.offer, subscriptionSubtotal);
-    } else {
-      const totalPriceSaving = Math.min(combinedProductSubtotal, amount(price.offer.discountValue));
-      oneTimePriceSavings = Math.min(oneTimeSubtotal, Math.round((totalPriceSaving * oneTimeSubtotal / combinedProductSubtotal) * 100) / 100);
-      subscriptionPriceSavings = Math.min(subscriptionSubtotal, Math.round((totalPriceSaving - oneTimePriceSavings) * 100) / 100);
-    }
-  }
-
-  const priceSavings = Math.min(combinedProductSubtotal, oneTimePriceSavings + subscriptionPriceSavings);
-  const deliverySavings = delivery?.saving || 0;
-  return {
-    priceSavings,
-    oneTimePriceSavings,
-    subscriptionPriceSavings,
-    deliverySavings,
-    totalSavings: priceSavings + deliverySavings,
-    priceOffer: price?.offer,
-    deliveryOffer: delivery?.offer,
-  };
+  return computeCustomerOffers(offers, input, today());
 }

@@ -6,6 +6,45 @@ type StoredCart = { oneTimeItems: CartItem[]; subscriptionItems: SubscriptionCar
 
 let nextCartOrderSeed = 0;
 
+/**
+ * Subscription start rule (same as the product page): a Saturday on or after
+ * next week's Saturday (`earliestDate`). A stored start that is missing, past,
+ * too early or not a Saturday is replaced by `earliestDate`.
+ */
+export function validSubscriptionStartDate(startDate: string | undefined, earliestDate: string) {
+  const value = String(startDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value < earliestDate) return earliestDate;
+  return new Date(`${value}T00:00:00Z`).getUTCDay() === 6 ? value : earliestDate;
+}
+
+export function resolveSubscriptionFirstDeliveryDate(startDate: string | undefined, earliestDate = nextWeekSaturday()) {
+  return validSubscriptionStartDate(startDate, earliestDate);
+}
+
+function nextWeekSaturday(start = new Date()) {
+  const date = new Date(start);
+  date.setHours(0, 0, 0, 0);
+  const day = date.getDay();
+  let days = (6 - day + 7) % 7;
+  if (day === 0) days = 6;
+  else if (day >= 1 && day <= 5) days += 7;
+  else days = 7;
+  date.setDate(date.getDate() + days);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
+ * Delivery date Checkout uses for a subscription: the date accepted in Cart,
+ * else the valid start. Returns '' when the accepted date is now earlier than
+ * `earliestDate`, so Checkout sends the customer back to Cart to re-check.
+ */
+export function checkoutSubscriptionDate(item: { deliveryDate?: string; startDate?: string }, earliestDate: string) {
+  const accepted = String(item.deliveryDate || '').trim();
+  if (accepted) return accepted < earliestDate ? '' : accepted;
+  return validSubscriptionStartDate(item.startDate, earliestDate);
+}
+
 function activeCartStorageKey(): string {
   if (typeof window === 'undefined') return CART_STORAGE_KEY;
   const mobile = window.localStorage.getItem('seedlings_customer_mobile') || '';

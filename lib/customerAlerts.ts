@@ -37,36 +37,6 @@ export async function confirmHarvestShortage(args: {
   return result.isConfirmed ? 'continue' as const : 'contact' as const;
 }
 
-/** Harvest shortage when no later delivery date can supply the complete quantity. */
-export async function confirmHarvestShortageWithoutAlternative(args: {
-  mode: HarvestShortageMode;
-  requestedGrams: number;
-  shortageGrams: number;
-  deliveryDate?: string;
-}) {
-  const { default: Swal } = await import('sweetalert2');
-  const requested = Math.max(0, Math.floor(args.requestedGrams));
-  const shortage = Math.max(0, Math.floor(args.shortageGrams));
-  const requestedDate = String(args.deliveryDate || '').trim();
-  const requestedDateHtml = requestedDate
-    ? `<strong>${new Date(`${requestedDate}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</strong>`
-    : '<strong>the requested delivery date</strong>';
-  const quantityLabel = args.mode === 'subscription' ? 'subscription quantity' : 'order quantity';
-  const result = await Swal.fire({
-    icon: 'info',
-    title: 'Requested quantity is not available',
-    html: `The full ${quantityLabel} of <strong>${requested.toLocaleString()} gms</strong> is not available on ${requestedDateHtml}, and no later delivery date can supply the complete quantity right now.<br><br><span class="muted">${shortage.toLocaleString()} gms is currently unavailable. We will not deliver a partial quantity.</span><br><br>Would you like us to send an enquiry and remove this product from your cart?`,
-    showCancelButton: true,
-    confirmButtonText: 'Yes, send enquiry',
-    cancelButtonText: 'Keep in cart',
-    reverseButtons: true,
-    focusCancel: true,
-    allowOutsideClick: false,
-    allowEscapeKey: false,
-  });
-  return result.isConfirmed ? 'contact' as const : 'cancel' as const;
-}
-
 
 
 export async function showCustomerSuccess(title: string, text?: string) {
@@ -152,7 +122,19 @@ export async function confirmHighDemandEnquiry(args: {
   mobile?: string;
   email?: string;
   address?: Record<string, unknown>;
-  items: Array<{ productId: string; productName: string; requestedGrams: number; requestedDeliveryDate: string; thresholdGrams: number }>;
+  items: Array<{
+    productId: string;
+    productName: string;
+    requestedGrams: number;
+    requestedDeliveryDate: string;
+    thresholdGrams: number;
+    /** Defaults to HIGH_DEMAND; AVAILABILITY_SHORTAGE when an applicable batch cannot supply the quantity. */
+    enquiryReason?: 'HIGH_DEMAND' | 'AVAILABILITY_SHORTAGE';
+    /** The subsequent delivery date that was also checked, if any. */
+    nextDeliveryDate?: string;
+  }>;
+  /** Called after each enquiry is saved, so the caller can remove that item before a later failure. */
+  onItemSaved?: (productId: string, index: number) => void;
 }) {
   const { default: Swal } = await import('sweetalert2');
   const safe = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char] || char));
@@ -169,8 +151,9 @@ export async function confirmHighDemandEnquiry(args: {
   });
   if (!result.isConfirmed) return false;
 
-  const { createCustomerContactRequest, buildHighDemandEnquiryMessage } = await import('@/lib/customerContactRequests');
-  for (const item of args.items) {
+  const { createCustomerContactRequest, buildHighDemandEnquiryMessage, buildShortageEnquiryMessage } = await import('@/lib/customerContactRequests');
+  for (const [index, item] of args.items.entries()) {
+    const reason = item.enquiryReason || 'HIGH_DEMAND';
     await createCustomerContactRequest({
       customerId: args.customerId,
       name: String(args.name || 'Customer'),
@@ -178,16 +161,47 @@ export async function confirmHighDemandEnquiry(args: {
       email: String(args.email || ''),
       productId: item.productId,
       productName: item.productName,
-      message: buildHighDemandEnquiryMessage(item),
+      message: reason === 'HIGH_DEMAND'
+        ? buildHighDemandEnquiryMessage(item)
+        : buildShortageEnquiryMessage({ ...item, checkedNextDate: item.nextDeliveryDate }),
       source: 'customer_checkout',
       status: 'open',
       requestedQuantityGrams: item.requestedGrams,
       requestedDeliveryDate: item.requestedDeliveryDate,
-      enquiryReason: 'HIGH_DEMAND',
+      enquiryReason: reason,
       contactRequired: true,
       address: args.address,
     });
+    args.onItemSaved?.(item.productId, index);
   }
   await Swal.fire({ icon: 'success', title: 'Enquiry submitted', text: 'Your enquiry has been submitted. Our team will contact you.', confirmButtonText: 'OK' });
   return true;
+}
+
+/**
+ * Cart items that can be delivered only on the next delivery date. Lists every
+ * cart item with the delivery date it would receive. Yes keeps those dates.
+ */
+export async function confirmHighDemandDeliveryDates(items: Array<{ productName: string; kind: 'one-time' | 'subscription'; requestedDate: string; deliveryDate: string }>) {
+  const { default: Swal } = await import('sweetalert2');
+  const safe = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char] || char));
+  const formatDate = (value: string) => new Date(`${value}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const cell = 'padding:8px 10px;border-bottom:1px solid #eee;text-align:left';
+  const rows = items.map(item => {
+    const moved = item.deliveryDate !== item.requestedDate;
+    return `<tr><td style="${cell}">${safe(item.productName)}<br><small class="muted">${item.kind === 'subscription' ? 'Subscription' : 'One-time'}</small></td><td style="${cell}">${moved ? `<strong>${formatDate(item.deliveryDate)}</strong><br><small class="muted">Requested ${formatDate(item.requestedDate)}</small>` : formatDate(item.deliveryDate)}</td></tr>`;
+  }).join('');
+  const result = await Swal.fire({
+    icon: 'info',
+    title: 'Delivery availability update',
+    html: `<p style="margin:0 0 12px">We are facing high demand. Would you like to proceed with the available delivery dates?</p><table style="width:100%;border-collapse:collapse;margin:0"><thead><tr><th style="padding:8px 10px;background:#f5f7ef;text-align:left">Product</th><th style="padding:8px 10px;background:#f5f7ef;text-align:left">Delivery date</th></tr></thead><tbody>${rows}</tbody></table>`,
+    showCancelButton: true,
+    confirmButtonText: 'Yes, Place order',
+    cancelButtonText: 'No, Send Enquiry',
+    reverseButtons: true,
+    focusCancel: true,
+    allowOutsideClick: false,
+    allowEscapeKey: false,
+  });
+  return result.isConfirmed;
 }

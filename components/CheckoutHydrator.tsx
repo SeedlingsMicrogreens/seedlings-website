@@ -337,6 +337,14 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
             }
           }
           if (e instanceof Error && e.message === 'DELIVERY_DATE_RECHECK_REQUIRED') {
+            const { default: Swal } = await import('sweetalert2');
+            await Swal.fire({
+              icon: 'info',
+              title: 'Availability changed',
+              text: 'Availability for one or more products changed after you confirmed your delivery dates. No order or payment was created. Please review your cart and we will check the delivery dates again.',
+              confirmButtonText: 'Review cart',
+              allowOutsideClick: false,
+            });
             window.location.href = '/cart';
             return;
           }

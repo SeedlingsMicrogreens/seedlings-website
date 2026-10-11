@@ -5,10 +5,14 @@ const root = process.cwd();
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const checks = [
   ['one-time checkout binds authUid', read('lib/customerMixedCheckout.ts'), /oneOrderWrites[\s\S]*data:\{authUid,/],
-  ['availability treats successful payment state as committed', read('lib/customerOrderAvailability.ts'), /function isPaymentCommitted[\s\S]*paymentStatus[\s\S]*paid/],
-  ['availability accepts confirmed one-time orders as compatibility fallback', read('lib/customerOrderAvailability.ts'), /type === 'one-time' \? status === 'confirmed'/],
-  ['availability accepts active subscriptions as compatibility fallback', read('lib/customerOrderAvailability.ts'), /type === 'one-time' \? status === 'confirmed'\s*:\s*status === 'active'/],
+  ['availability treats successful payment state as committed', read('lib/customerAvailabilityMath.ts'), /function isPaymentCommitted[\s\S]*paymentStatus[\s\S]*paid/],
+  ['availability accepts confirmed one-time orders as compatibility fallback', read('lib/customerAvailabilityMath.ts'), /type === 'subscription'\s*\?\s*status === 'active'\s*:\s*\[[^\]]*'confirmed'/],
+  ['availability accepts active subscriptions as compatibility fallback', read('lib/customerAvailabilityMath.ts'), /type === 'subscription'\s*\?\s*status === 'active'/],
   ['Cashfree creation validates authUid', read('lib/server/cashfreeCreateOrder.ts'), /order\.authUid.*uid/],
+  ['cart checkout claims before writing and registers after', read('lib/customerMixedCheckout.ts'), /beginCheckoutClaim\([\s\S]*claim\.action==='resume'[\s\S]*writeBatch\(db\)[\s\S]*registerCheckoutClaim\(/],
+  ['subscription checkout claims before writing and registers after', read('lib/customerSubscriptions.ts'), /beginCheckoutClaim\([\s\S]*claim\.action === 'resume'[\s\S]*writeBatch\(db\)[\s\S]*registerCheckoutClaim\(/],
+  ['payment session checks earlier Cashfree orders before creating a new one', read('lib/server/cashfreeCreateOrder.ts'), /preparePreviousGatewayOrders\(orders, cashfreeGateway\)[\s\S]*cashfreeRequest<CashfreeCreateOrderResponse>\('\/pg\/orders'/],
+  ['Cashfree creation verifies server-authoritative totals first', read('lib/server/cashfreeCreateOrder.ts'), /await verifyCheckoutTotals\([\s\S]*const total = Number\(orders\.reduce[\s\S]*cashfreeRequest/],
   ['Cashfree finalization has a finalization lock', read('lib/server/cashfreePayment.ts'), /paymentFinalizationLocks/],
   ['Cashfree webhook exists', fs.existsSync(path.join(root, 'app/api/cashfree/webhook/route.ts')) ? 'yes' : '', /yes/],
   ['paymentAttempts are recorded', read('lib/server/cashfreeCreateOrder.ts'), /paymentAttempts/],

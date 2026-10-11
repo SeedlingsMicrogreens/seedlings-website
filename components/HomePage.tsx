@@ -5,6 +5,7 @@ import { cmsCollections, getDocById, getPublishedCollection } from '@/lib/cms';
 import { getFeaturedProducts, type FeaturedProduct } from '@/lib/products';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
+import FloatingCart from '@/components/layout/FloatingCart';
 import ProductCard from '@/components/business/ProductCard';
 
 const STATIC_FAQS = [
@@ -173,6 +174,6 @@ export default function HomePage() {
       <section className="banner"><div className="container banner-inner"><div><span className="eyebrow" style={{ color: '#fff3db' }}>{asText(app?.eyebrow, 'Order anywhere')}</span><h2>{asText(app?.title, 'Fresh microgreens, one tap away.')}</h2><p>{asText(app?.body, 'Browse products and manage your orders through Seedlings.')}</p></div><div className="stores"><a className="store" href={asUrl(app?.googlePlayUrl, '#')}><small>GET IT ON</small><strong>Google Play</strong></a><a className="store" href={asUrl(app?.appStoreUrl, '#')}><small>DOWNLOAD ON THE</small><strong>App Store</strong></a></div></div></section>
     </main>
     <Footer navItems={navItems} settings={settings} />
-    <a className="floating-cart" href="/cart"><span>0</span> Cart</a>
+    <FloatingCart />
   </>;
 }
