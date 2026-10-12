@@ -81,6 +81,38 @@ Important rules:
 - Historical order values must remain based on their stored snapshots, not current Product/plan master prices.
 - Customer subscriptions store product/selling-option/price and delivery-related snapshot data.
 
+### Subscription offer integration status
+
+- Admin's `offers` model includes `type: subscription` and
+  `subscriptionOffer.frequencies` /
+  `subscriptionOffer.extraDeliveriesByFrequency`. The Admin-owned shape,
+  constraints, and proposed Website integration are documented in
+  `SYSTEM-INTEGRATION.md` → *Subscription bonus deliveries — Website
+  integration requirement*.
+- Website evaluates eligible subscription offers separately from price and
+  delivery-charge offers. It uses active state, inclusive India-local
+  validity dates, location/pincode scope, and the selected plan frequency.
+  Multiple matching offers fail closed; bonuses are never stacked.
+- Current Website purchase paths are standalone
+  `createCustomerSubscription` and unified-cart
+  `createCustomerMixedCheckout`. Both use the selected plan's positive integer
+  `deliveriesPerTerm` as the base; no frequency-derived fallback is used.
+  Pending subscription records snapshot `regularDeliveries`,
+  `bonusDeliveries`, offer ID/name, and final `totalDeliveries`.
+- Before creating a Cashfree payment session, server-side checkout verification
+  recalculates and validates the pending entitlement from the current
+  plan/offer/location data, then persists the verified snapshot. Client
+  manipulation is rejected. Verified payment retries reuse the saved
+  entitlement instead of recalculating it from edited masters. Customer
+  Firestore updates cannot modify the saved entitlement fields.
+- Bonus deliveries add no bonus-specific delivery charge. Existing delivery
+  charges continue to use regular plan delivery dates, unchanged. Weekly
+  scheduling cadence is unchanged; the subscription end date covers the final
+  saved entitlement, and completion continues to use `totalDeliveries`.
+- Existing subscriptions without bonus snapshot fields continue to use their
+  saved `totalDeliveries`. Payment verification remains authoritative for
+  activation and inventory commitment.
+
 ## 5. Subscription delivery calendar
 
 - Recorded `subscriptionDeliveries` are used for actual delivery status.
@@ -132,7 +164,7 @@ The bottom floating cart on the Home page (`components/layout/FloatingCart.tsx`)
 
 
 ### Phase 46 delivery logic correction — mixed cart
-- Mixed one-time + subscription checkout has one delivery calculation: Pincode Master delivery charge × subscription deliveries.
+- Mixed one-time + subscription checkout has one delivery calculation: Pincode Master delivery charge × unique regular-plan delivery dates.
 - Separate one-time delivery is not displayed and is not charged in mixed checkout.
 - Subscription-only and one-time-only checkout behavior remains unchanged.
 
@@ -144,7 +176,7 @@ The bottom floating cart on the Home page (`components/layout/FloatingCart.tsx`)
 ### Phase 46 follow-up — checkout offer and delivery presentation
 - Unified checkout price offers apply to both one-time and subscription product subtotals.
 - The checkout uses one `Delivery charge` row rather than separate one-time/subscription delivery labels.
-- Mixed checkout delivery remains the Pincode Master delivery charge multiplied by subscription deliveries; no separate one-time delivery charge is shown.
+- Mixed checkout delivery remains the Pincode Master delivery charge multiplied by regular plan delivery dates; bonus deliveries do not increase the charge, and no separate one-time delivery charge is shown.
 - Subscription order totals include the allocated price-offer discount.
 
 ### QA correction — full-quantity delivery-date resolution and confirmation
@@ -250,8 +282,8 @@ Before any Cashfree order is created (`createCashfreePaymentSession`, used by bo
 - **Delivery Charge offers:** eligible Offers Master records (`type`, discount type/value, active state, inclusive dates, and all-pincodes or matching-pincode scope) apply to actual unique delivery-date charges in mixed checkout and standalone subscription purchases. Flat/percentage savings are evaluated per charged delivery and allocated to order delivery fees; product prices and subscription plan prices are unchanged.
 - **Checkout savings presentation:** one-time MRP savings, applied Price Offer savings, and applied Delivery Charge Offer savings are disclosed separately and combined once in the green savings panel. Reference prices are informational and do not change order or payment totals. Website checkout does not currently apply Admin Quantity Offers; do not display a quantity saving unless authoritative checkout pricing begins applying one.
 - **Inputs read on the server:** the orders being paid, their `salesProducts`, `subscriptionPlans`, linked `subscriptions`, the active `geolocations` record for the delivery pincode, and `offers` (offer dates in India time).
-- **Line checks (exact):** unit price equals the current selling-option / plan price; `lineTotal` = unit price × quantity; pack size is a valid option; line `weightGrams` ≤ pack size × quantity. Linked subscription records must match the order line (salable product, quantity, pack size, unit price, `weightGrams` = pack size × quantity, `totalDeliveries` from the plan).
-- **Total check:** each order's stored `total` must be **at least** the recomputed total, which already applies the best offer and the delivery charges for the whole set of orders being paid (one charge per unique delivery date). Paying more than the recomputed amount is accepted (the single-subscription flow does not apply offers); paying less is rejected.
+- **Line checks (exact):** unit price equals the current selling-option / plan price; `lineTotal` = unit price × quantity; pack size is a valid option; line `weightGrams` ≤ pack size × quantity. Linked subscription records must match the order line (salable product, quantity, pack size, unit price, `weightGrams` = pack size × quantity), and the saved delivery entitlement must match the server-calculated plan count plus any eligible subscription-offer bonus.
+- **Total check:** each order's stored `total` must be **at least** the recomputed total, which already applies the best monetary offer and delivery charges for the whole set of orders being paid (one charge per unique regular delivery date). Subscription bonus offers affect delivery entitlement only and add no delivery charge. Paying more than the recomputed amount is accepted; paying less is rejected.
 - **Failure:** HTTP 409 *"Order total could not be verified. Please return to your cart and check out again."*; no Cashfree order is created.
 - **Retries:** a successful verification is recorded server-side in `orderPriceVerifications/{orderId}` (verified total and line fingerprint; not readable or writable by customers under the default-deny rule). Later payment attempts for the same unchanged orders reuse that record, so a retry is not rejected because an offer or price changed after checkout. Orders without a record are recomputed as a set; a partial retry of an older multi-order checkout may then be rejected and must be checked out again.
 - **Validation (2026-10-11):** `tests/unit/checkout-totals.test.ts` (legitimate one-time, mixed and subscription checkouts; lowered total, unit price, quantity, weight, delivery charge, invented offer, subscription record, pincode tampering; retry reuse; expired offer) — part of 111/111 passing tests; payment static check confirms verification runs before the Cashfree request. No live Cashfree/Firestore verification.

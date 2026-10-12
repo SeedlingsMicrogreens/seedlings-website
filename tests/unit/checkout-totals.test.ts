@@ -7,15 +7,18 @@ import {
   checkoutDeliveryChargeAmounts,
   computeCheckoutDeliveryCharges,
   computeCustomerOffers,
+  computeSubscriptionDeliveryEntitlement,
   getWeeklyDeliveryDates,
   NO_OFFERS,
   resolveOneTimePrice,
   resolveSubscriptionPrice,
   resolveSubscriptionPlanSavings,
+  subscriptionDeliveriesPerTerm,
   subscriptionEndDate,
   type CustomerOffer,
 } from '../../lib/checkoutPricing';
 import { TOTAL_NOT_VERIFIED, verifyCheckoutTotals, type CheckoutTotalsStore } from '../../lib/server/checkoutTotals';
+import { isSubscriptionComplete } from '../../lib/subscriptionProgress';
 
 // Browsers in India run in Asia/Kolkata; the G1 bug only appeared there.
 process.env.TZ = 'Asia/Kolkata';
@@ -28,6 +31,16 @@ const radish = { id: 'radish-100', name: 'Radish', type: 'single', active: true,
 const monthly = { id: 'plan-monthly', name: 'Monthly', active: true, frequency: 'monthly', deliveriesPerTerm: 4, sellingOptions: [{ id: 'pm100', weightGrams: 100, planPrice: 400 }] };
 const tenPercent: CustomerOffer = { id: 'offer-10', name: '10% off', type: 'price', active: true, discountType: 'percentage', discountValue: 10, locationType: 'all' };
 const freeDelivery: CustomerOffer = { id: 'offer-del', name: 'Free delivery', type: 'deliveryCharge', active: true, discountType: 'flat', discountValue: 40, locationType: 'all' };
+const subscriptionBonus: CustomerOffer = {
+  id: 'offer-sub-2',
+  name: 'Two extra deliveries',
+  type: 'subscription',
+  active: true,
+  locationType: 'all',
+  startDate: '2026-10-01',
+  endDate: '2026-10-31',
+  subscriptionOffer: { frequencies: ['monthly'], extraDeliveriesByFrequency: { monthly: 2 } },
+};
 
 type Line = { product: any; packaging: number; quantity: number; date: string };
 type SubLine = { product: any; plan: any; sellingOptionId: string; quantity: number; first: string };
@@ -43,7 +56,14 @@ function clientCheckout(oneTime: Line[], subs: SubLine[], offers: CustomerOffer[
   const dates = [...groups.keys()].sort();
   const subEntries = subs.map((line, index) => {
     const priced = resolveSubscriptionPrice(line.product, line.plan, { sellingOptionId: line.sellingOptionId });
-    return { line, priced, subId: `sub-${index + 1}`, dates: getWeeklyDeliveryDates(line.first, priced.deliveries) };
+    const entitlement = computeSubscriptionDeliveryEntitlement(offers, {
+      frequency: line.plan.frequency,
+      regularDeliveries: priced.deliveries,
+      pincode: PINCODE,
+      geoId: deliveryGeo.id,
+      locationName: deliveryGeo.data.locationName,
+    }, TODAY);
+    return { line, priced, entitlement, subId: `sub-${index + 1}`, dates: getWeeklyDeliveryDates(line.first, priced.deliveries) };
   });
   const deliveryCharges = computeCheckoutDeliveryCharges([deliveryGeo], {
     pincode: PINCODE, oneTime: oneTime.length > 0, oneTimeDates: dates,
@@ -64,7 +84,7 @@ function clientCheckout(oneTime: Line[], subs: SubLine[], offers: CustomerOffer[
   dates.forEach((date, index) => {
     const id = `ord-${date}`;
     const a = allocation.oneTime[index];
-    orders[id] = { orderType: 'one_time', subscriptionId: null, items: groups.get(date), subtotal: a.subtotal, deliveryFee: a.deliveryFee, discount: a.discount, total: a.total, scheduledDeliveryDate: date, deliveryAddress: address, status: 'pending_payment', paymentStatus: 'pending' };
+    orders[id] = { authUid: 'customer-auth', customerId: '9876543210', orderType: 'one_time', subscriptionId: null, items: groups.get(date), subtotal: a.subtotal, deliveryFee: a.deliveryFee, discount: a.discount, total: a.total, scheduledDeliveryDate: date, deliveryAddress: address, status: 'pending_payment', paymentStatus: 'pending' };
     orderIds.push(id);
   });
   subEntries.forEach((entry, index) => {
@@ -72,21 +92,38 @@ function clientCheckout(oneTime: Line[], subs: SubLine[], offers: CustomerOffer[
     const { price, packaging, deliveries } = entry.priced;
     const q = entry.line.quantity;
     const a = allocation.subscriptions[index];
-    subscriptionDocs[entry.subId] = { salableProductId: entry.line.product.id, quantity: q, packaging, unitPrice: price, weightGrams: packaging * q, totalDeliveries: deliveries, endDate: subscriptionEndDate(entry.line.first, deliveries) };
-    orders[id] = { orderType: 'subscription', subscriptionId: entry.subId, subscriptionPlanId: entry.line.plan.id, items: [{ salableProductId: entry.line.product.id, sellingOptionId: entry.line.sellingOptionId, packaging, weightGrams: packaging * q, quantity: q, unitPrice: price, lineTotal: price * q }], subtotal: price * q, deliveryFee: a.deliveryFee, discount: a.allocated, total: a.total, scheduledDeliveryDate: entry.line.first, deliveryAddress: address, status: 'pending_payment', paymentStatus: 'pending' };
+    subscriptionDocs[entry.subId] = {
+      authUid: 'customer-auth',
+      customerId: '9876543210',
+      salableProductId: entry.line.product.id,
+      quantity: q,
+      packaging,
+      unitPrice: price,
+      weightGrams: packaging * q,
+      frequency: entry.line.plan.frequency,
+      regularDeliveries: entry.entitlement.regularDeliveries,
+      bonusDeliveries: entry.entitlement.bonusDeliveries,
+      totalDeliveries: entry.entitlement.totalDeliveries,
+      subscriptionOfferId: entry.entitlement.offer?.id || '',
+      subscriptionOfferName: entry.entitlement.offer?.name || '',
+      status: 'pending_payment',
+      paymentStatus: 'pending',
+      endDate: subscriptionEndDate(entry.line.first, entry.entitlement.totalDeliveries),
+    };
+    orders[id] = { authUid: 'customer-auth', customerId: '9876543210', orderType: 'subscription', subscriptionId: entry.subId, subscriptionPlanId: entry.line.plan.id, items: [{ salableProductId: entry.line.product.id, sellingOptionId: entry.line.sellingOptionId, packaging, weightGrams: packaging * q, quantity: q, unitPrice: price, lineTotal: price * q }], subtotal: price * q, deliveryFee: a.deliveryFee, discount: a.allocated, total: a.total, scheduledDeliveryDate: entry.line.first, deliveryAddress: address, status: 'pending_payment', paymentStatus: 'pending' };
     orderIds.push(id);
   });
-  return { orderIds, orders, subscriptionDocs, offerResult, deliveryCharges };
+  return { orderIds, orders, subscriptionDocs, offerResult, deliveryCharges, plans: Object.fromEntries(subs.map((line) => [line.plan.id, line.plan])) };
 }
 
-function store(data: { orders: Record<string, any>; subscriptionDocs: Record<string, any>; offers?: CustomerOffer[]; verifications?: Record<string, any> }) {
+function store(data: { orders: Record<string, any>; subscriptionDocs: Record<string, any>; plans?: Record<string, any>; offers?: CustomerOffer[]; verifications?: Record<string, any> }) {
   const collections: Record<string, Record<string, any>> = {
     salesProducts: { [broccoli.id]: broccoli, [radish.id]: radish },
-    subscriptionPlans: { [monthly.id]: monthly },
+    subscriptionPlans: { [monthly.id]: monthly, ...(data.plans || {}) },
     subscriptions: data.subscriptionDocs,
     orderPriceVerifications: { ...(data.verifications || {}) },
   };
-  const calls = { catalogueReads: 0, saved: [] as string[] };
+  const calls = { catalogueReads: 0, saved: [] as string[], savedEntitlements: [] as string[] };
   const value: CheckoutTotalsStore = {
     getDocs: async (collection, ids) => {
       if (collection === 'salesProducts') calls.catalogueReads += 1;
@@ -94,14 +131,28 @@ function store(data: { orders: Record<string, any>; subscriptionDocs: Record<str
     },
     geolocations: async () => [geo],
     offers: async () => data.offers || [],
+    saveSubscriptionEntitlements: async (records) => {
+      for (const record of records) {
+        const subscription = collections.subscriptions[record.subscriptionId];
+        if (!subscription || Number(subscription.totalDeliveries) !== record.expectedTotalDeliveries) throw new Error('subscription entitlement changed');
+        Object.assign(subscription, {
+          regularDeliveries: record.regularDeliveries,
+          bonusDeliveries: record.bonusDeliveries,
+          totalDeliveries: record.totalDeliveries,
+          subscriptionOfferId: record.subscriptionOfferId,
+          subscriptionOfferName: record.subscriptionOfferName,
+        });
+        calls.savedEntitlements.push(record.subscriptionId);
+      }
+    },
     saveVerifications: async (records) => { for (const { orderId, data: record } of records) { collections.orderPriceVerifications[orderId] = record; calls.saved.push(orderId); } },
   };
   return { value, calls, collections };
 }
 
-async function verify(checkout: ReturnType<typeof clientCheckout>, options: { offers?: CustomerOffer[]; ids?: string[]; verifications?: Record<string, any> } = {}) {
+async function verify(checkout: ReturnType<typeof clientCheckout>, options: { offers?: CustomerOffer[]; ids?: string[]; verifications?: Record<string, any>; plans?: Record<string, any> } = {}) {
   const ids = options.ids || checkout.orderIds;
-  const s = store({ orders: checkout.orders, subscriptionDocs: checkout.subscriptionDocs, offers: options.offers, verifications: options.verifications });
+  const s = store({ orders: checkout.orders, subscriptionDocs: checkout.subscriptionDocs, plans: { ...checkout.plans, ...(options.plans || {}) }, offers: options.offers, verifications: options.verifications });
   const run = verifyCheckoutTotals({ orderIds: ids, orders: ids.map((id) => checkout.orders[id]), store: s.value, today: TODAY });
   return { run, s };
 }
@@ -140,6 +191,113 @@ test('G1: the final delivery is neither hidden nor rejected by the endDate check
 test('G1: checkout-created subscription records carry the corrected endDate', () => {
   const checkout = mixedCart();
   assert.equal(checkout.subscriptionDocs['sub-1'].endDate, '2026-11-07');
+});
+
+test('subscription offer entitlement uses configured extras for all supported frequencies', () => {
+  for (const [frequency, extra] of Object.entries({ monthly: 1, quarterly: 2, half_yearly: 3, yearly: 4 })) {
+    const offer: CustomerOffer = {
+      ...subscriptionBonus,
+      subscriptionOffer: { frequencies: [frequency], extraDeliveriesByFrequency: { [frequency]: extra } },
+    };
+    const result = computeSubscriptionDeliveryEntitlement([offer], {
+      frequency,
+      regularDeliveries: 12,
+      pincode: PINCODE,
+      geoId: geo.id,
+      locationName: geo.data.locationName,
+    }, TODAY);
+    assert.equal(result.regularDeliveries, 12);
+    assert.equal(result.bonusDeliveries, extra);
+    assert.equal(result.totalDeliveries, 12 + extra);
+  }
+});
+
+test('subscription plans require a valid configured deliveriesPerTerm rather than a frequency fallback', () => {
+  assert.equal(subscriptionDeliveriesPerTerm({ frequency: 'monthly', deliveriesPerTerm: 12 }), 12);
+  assert.throws(() => subscriptionDeliveriesPerTerm({ frequency: 'monthly' }), /invalid deliveries-per-term/);
+  assert.throws(() => subscriptionDeliveriesPerTerm({ frequency: 'monthly', deliveriesPerTerm: 0 }), /invalid deliveries-per-term/);
+});
+
+test('subscription offers do not apply when frequency, status, validity, or location is ineligible', () => {
+  const input = { frequency: 'monthly', regularDeliveries: 12, pincode: PINCODE, geoId: geo.id, locationName: geo.data.locationName };
+  assert.equal(computeSubscriptionDeliveryEntitlement([{ ...subscriptionBonus, subscriptionOffer: { frequencies: ['quarterly'], extraDeliveriesByFrequency: { quarterly: 2 } } }], input, TODAY).totalDeliveries, 12);
+  assert.equal(computeSubscriptionDeliveryEntitlement([{ ...subscriptionBonus, active: false }], input, TODAY).totalDeliveries, 12);
+  assert.equal(computeSubscriptionDeliveryEntitlement([{ ...subscriptionBonus, endDate: '2026-10-10' }], input, TODAY).totalDeliveries, 12);
+  assert.equal(computeSubscriptionDeliveryEntitlement([{ ...subscriptionBonus, locationType: 'pincode', pincodeIds: ['another-geo'] }], input, TODAY).totalDeliveries, 12);
+});
+
+test('overlapping eligible subscription offers fail closed rather than stacking', () => {
+  const second = { ...subscriptionBonus, id: 'offer-sub-3', name: 'Another bonus' };
+  assert.throws(() => computeSubscriptionDeliveryEntitlement([subscriptionBonus, second], {
+    frequency: 'monthly',
+    regularDeliveries: 12,
+    pincode: PINCODE,
+    geoId: geo.id,
+    locationName: geo.data.locationName,
+  }, TODAY), /More than one subscription offer is eligible/);
+});
+
+test('a 12-delivery plan persists 12 without an offer and 14 with two bonus deliveries without adding fees', async () => {
+  const plan = { ...monthly, deliveriesPerTerm: 12 };
+  const line = { product: broccoli, plan, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' };
+  const withoutOffer = clientCheckout([], [line], []);
+  assert.equal(withoutOffer.subscriptionDocs['sub-1'].totalDeliveries, 12);
+  assert.equal(withoutOffer.deliveryCharges.subscriptions[0].deliveryDates.length, 12);
+  assert.equal((await (await verify(withoutOffer)).run).reused, false);
+
+  const withOffer = clientCheckout([], [line], [subscriptionBonus]);
+  assert.equal(withOffer.subscriptionDocs['sub-1'].regularDeliveries, 12);
+  assert.equal(withOffer.subscriptionDocs['sub-1'].bonusDeliveries, 2);
+  assert.equal(withOffer.subscriptionDocs['sub-1'].totalDeliveries, 14);
+  assert.equal(withOffer.subscriptionDocs['sub-1'].subscriptionOfferId, subscriptionBonus.id);
+  assert.equal(withOffer.subscriptionDocs['sub-1'].endDate, subscriptionEndDate('2026-10-17', 14));
+  assert.equal(withOffer.deliveryCharges.subscriptions[0].deliveryDates.length, 12);
+  assert.equal(withOffer.deliveryCharges.subscriptions[0].termCharge, 480);
+
+  const verified = await verify(withOffer, { offers: [subscriptionBonus] });
+  assert.deepEqual(await verified.run, { reused: false });
+  assert.equal(verified.s.collections.subscriptions['sub-1'].totalDeliveries, 14);
+  assert.equal(verified.s.collections.orderPriceVerifications['ord-sub-1'].verifiedTotalDeliveries, 14);
+});
+
+test('server rejects a client-manipulated subscription total or bonus metadata', async () => {
+  const checkout = clientCheckout([], [{ product: broccoli, plan: { ...monthly, deliveriesPerTerm: 12 }, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }], [subscriptionBonus]);
+  checkout.subscriptionDocs['sub-1'].bonusDeliveries = 99;
+  checkout.subscriptionDocs['sub-1'].totalDeliveries = 111;
+  const { run, s } = await verify(checkout, { offers: [subscriptionBonus] });
+  await assert.rejects(run, { status: 409, message: TOTAL_NOT_VERIFIED });
+  assert.deepEqual(s.calls.savedEntitlements, []);
+});
+
+test('subscription completion compares progress with the saved bonus-inclusive entitlement', () => {
+  assert.equal(isSubscriptionComplete(12, 14), false);
+  assert.equal(isSubscriptionComplete(13, 14), false);
+  assert.equal(isSubscriptionComplete(14, 14), true);
+  assert.equal(isSubscriptionComplete(20, 14), true);
+  assert.equal(isSubscriptionComplete(14, 0), false);
+});
+
+test('server rejects the bonus if the offer expires before initial payment verification', async () => {
+  const plan = { ...monthly, deliveriesPerTerm: 12 };
+  const checkout = clientCheckout([], [{ product: broccoli, plan, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }], [subscriptionBonus]);
+  const expired = { ...subscriptionBonus, endDate: '2026-10-10' };
+  const { run, s } = await verify(checkout, { offers: [expired] });
+  await assert.rejects(run, { status: 409, message: TOTAL_NOT_VERIFIED });
+  assert.deepEqual(s.calls.savedEntitlements, []);
+});
+
+test('verified purchased entitlement survives later plan and offer edits on retry', async () => {
+  const plan = { ...monthly, deliveriesPerTerm: 12 };
+  const checkout = clientCheckout([], [{ product: broccoli, plan, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }], [subscriptionBonus]);
+  const first = await verify(checkout, { offers: [subscriptionBonus] });
+  await first.run;
+  const retry = await verify(checkout, {
+    offers: [],
+    plans: { [plan.id]: { ...plan, deliveriesPerTerm: 9 } },
+    verifications: first.s.collections.orderPriceVerifications,
+  });
+  assert.deepEqual(await retry.run, { reused: true });
+  assert.equal(checkout.subscriptionDocs['sub-1'].totalDeliveries, 14);
 });
 
 // ---------------------------------------------------------------------------

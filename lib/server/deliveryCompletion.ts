@@ -2,6 +2,7 @@ import { FieldValue, type DocumentSnapshot } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/server/firebaseAdmin';
 import { HttpError } from '@/lib/server/httpError';
 import type { DeliveryUserRecord } from '@/lib/server/deliveryAuth';
+import { isSubscriptionComplete } from '@/lib/subscriptionProgress';
 
 export async function completeDelivery(params: {
   assignmentId: string;
@@ -137,7 +138,7 @@ export async function completeDelivery(params: {
           lastDeliveryNumber: deliveryNumber,
           lastDeliveryStatus: 'delivered',
           completedDeliveries,
-          ...(totalDeliveries > 0 && completedDeliveries >= totalDeliveries ? { status: 'completed' } : {}),
+          ...(isSubscriptionComplete(completedDeliveries, totalDeliveries) ? { status: 'completed' } : {}),
           updatedAt: now,
         });
       }

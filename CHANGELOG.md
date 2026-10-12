@@ -1,3 +1,17 @@
+## 2026-10-12 — Implement Website subscription bonus deliveries
+- Added shared subscription-offer eligibility and delivery-entitlement calculation using the Admin offer schema, India-local validity dates, active state, frequency, and pincode/location eligibility. Multiple eligible offers fail closed rather than stacking.
+- Both standalone and mixed-cart subscription checkout now save the configured plan delivery count, bonus count, offer snapshot, and final `subscriptions.totalDeliveries`.
+- Server checkout verification independently validates and persists the entitlement before Cashfree payment-session creation; retries reuse verified snapshots. Firestore rules prevent customer updates to saved entitlement fields.
+- Checkout and standalone subscription purchase UI show applicable bonus deliveries and the final delivery count. Completion continues to use the saved total.
+- Bonus deliveries add no separate delivery fee: the existing delivery-charge calculation uses regular plan dates unchanged. Payment activation, inventory, pricing, and weekly cadence remain unchanged.
+- Added entitlement, eligibility, expiry, overlap, tampering, fee, and verified-retry tests. No Admin code, Firestore data, commit, or deployment changed.
+
+## 2026-10-12 — Subscription bonus delivery Website specification (approval-gated)
+- Documented the Admin subscription-offer schema and the proposed Website eligibility, frequency-specific extra-delivery calculation, and purchase-time `subscriptions.totalDeliveries` snapshot in `SYSTEM-INTEGRATION.md`.
+- Recorded in `CURRENT-STATE.md` that Website subscription-offer application is not implemented, along with the current standalone/mixed purchase paths and the checkout verifier's dependency on the current plan count.
+- Confirmed that bonus deliveries add no bonus-specific delivery charge; any implementation must reuse existing delivery-charge calculation and scheduling behavior unchanged.
+- At the end of Phase 1, implementation was pending review and explicit approval; this entry is superseded by the implementation entry above.
+
 ## Checkout — Stack delivery prices and center combined savings
 - Stack the undiscounted delivery total above the discounted delivery total when a delivery offer applies, keeping both prices right-aligned and the payable amount green.
 - Render combined savings as three centered lines (heading, prominent amount, and applicable savings breakdown), below the unchanged individual savings banners.

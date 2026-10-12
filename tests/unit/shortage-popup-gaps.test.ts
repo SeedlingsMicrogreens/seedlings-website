@@ -96,10 +96,10 @@ test('GAP 1: Cart and Checkout agree on the subscription date after Yes', async 
 });
 
 test('GAP 1: subscription creation keeps the selected valid Saturday as the first delivery date', () => {
-  assert.equal(resolveSubscriptionFirstDeliveryDate('2026-10-17'), EARLIEST);
-  assert.equal(resolveSubscriptionFirstDeliveryDate('2026-10-24'), NEXT);
-  assert.equal(resolveSubscriptionFirstDeliveryDate('2026-10-10'), EARLIEST);
-  assert.equal(resolveSubscriptionFirstDeliveryDate(undefined), EARLIEST);
+  assert.equal(resolveSubscriptionFirstDeliveryDate('2026-10-17', EARLIEST), EARLIEST);
+  assert.equal(resolveSubscriptionFirstDeliveryDate('2026-10-24', EARLIEST), NEXT);
+  assert.equal(resolveSubscriptionFirstDeliveryDate('2026-10-10', EARLIEST), EARLIEST);
+  assert.equal(resolveSubscriptionFirstDeliveryDate(undefined, EARLIEST), EARLIEST);
 });
 
 // ---------------------------------------------------------------------------

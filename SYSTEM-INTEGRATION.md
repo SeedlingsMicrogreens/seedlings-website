@@ -171,6 +171,88 @@ Website reads the `offers` collection and independently evaluates:
 
 Website currently applies price and delivery-charge savings in its customer checkout/product pricing flow.
 
+### Subscription bonus deliveries — Website implementation
+
+The Admin Offers Master now stores subscription offers in the existing `offers`
+collection with this type-specific shape:
+
+```ts
+{
+  type: "subscription",
+  subscriptionOffer: {
+    frequencies: SubscriptionFrequency[],
+    extraDeliveriesByFrequency: Partial<Record<SubscriptionFrequency, number>>
+  }
+}
+```
+
+The supported frequency keys are `monthly`, `quarterly`, `half_yearly`, and
+`yearly`. The Admin validates that at least one supported frequency is selected,
+that the frequency list has no duplicates, and that the extra-delivery map has
+exactly one positive whole-number entry for each selected frequency and no
+unselected entries. The configured values are extras only; Admin does not store
+the plan's regular count or a calculated total in the offer. The offer's common
+fields include `active`, inclusive `startDate`/`endDate`, `locationType`
+(`all` or `pincode`), and pincode references when applicable. These details are
+confirmed by the Admin `types/offer.ts`, `lib/subscriptionOffer.ts`, and
+`lib/offerService.ts` in the Admin repository.
+
+Website now evaluates this schema for subscription entitlements, independently
+of its existing price and delivery-charge offer calculations. Admin owns offer
+configuration; Website eligibility uses the current offer's active state,
+inclusive validity dates, location/pincode scope, and selected frequency.
+
+For that Website integration, the required entitlement is:
+
+`purchased totalDeliveries = selected plan deliveriesPerTerm + the applicable extra deliveries for that plan frequency`
+
+Use the selected plan document's `deliveriesPerTerm` as the regular count;
+frequency names must not be used to derive or replace that value. An offer
+contributes extras only when its `type` is `subscription`, it is active on the
+purchase date, its inclusive validity range covers the purchase date, its
+location/pincode scope matches the selected delivery address, and its
+`subscriptionOffer.frequencies` includes the selected plan's frequency. Read
+the bonus for that same frequency from
+`subscriptionOffer.extraDeliveriesByFrequency`. If no valid offer matches,
+the purchased total is the plan's regular `deliveriesPerTerm`.
+
+The shared Website eligibility helper evaluates dates against the India-local
+checkout date and supports all-pincodes or matching-pincode scope. Admin rejects
+overlapping date ranges for offers of the same type. If multiple matching
+subscription offers are nevertheless present, Website fails checkout closed;
+it does not stack bonuses or select one arbitrarily.
+
+Both purchase paths write `regularDeliveries`, `bonusDeliveries`,
+`subscriptionOfferId`, `subscriptionOfferName`, and the final
+`totalDeliveries` snapshot to the pending subscription. Before Cashfree payment
+session creation, server-side `verifyCheckoutTotals` recalculates the
+entitlement from current trusted plan/offer/location data, rejects mismatches,
+and persists the verified snapshot with the Admin SDK. Firestore rules prevent
+customer updates from changing the saved entitlement fields after record
+creation. A later plan or offer edit does not recalculate an already verified
+purchase. Existing subscriptions without bonus snapshot fields continue to use
+their saved `totalDeliveries`.
+
+The supported Website purchase paths are both:
+- standalone subscription checkout through `createCustomerSubscription` in
+  `lib/customerSubscriptions.ts`;
+- subscription lines in unified cart checkout through
+  `createCustomerMixedCheckout` in `lib/customerMixedCheckout.ts`.
+
+Both paths use the same entitlement calculation. The server validates the
+pending purchase before Cashfree payment creation; subsequent retries reuse
+the verified entitlement snapshot, and do not recalculate it from changed
+masters. Cashfree verification remains authoritative for activation and
+inventory commitment. Existing completion logic continues to use the saved
+`subscriptions.totalDeliveries`, including bonus deliveries.
+
+Bonus deliveries add no bonus-specific delivery charge. Delivery-charge
+calculation remains unchanged and uses only the plan's regular delivery dates;
+the additional entitlement does not increase checkout delivery fees. Subscription
+pricing, payment processing, inventory rules, and the weekly delivery cadence
+remain unchanged. The existing end date is extended to cover the purchased
+total entitlement.
+
 ### Important boundary
 
 The Website currently contains its own offer-calculation implementation. It is **not importing Admin's `orderOfferService.ts`**.
@@ -257,6 +339,7 @@ The customer subscription stores snapshot information such as:
 - quantity
 - unit price
 - frequency
+- purchased delivery entitlement (`totalDeliveries`), including any verified subscription-offer bonus snapshot
 - delivery schedule
 - address
 - lifecycle status.
@@ -264,6 +347,12 @@ The customer subscription stores snapshot information such as:
 Admin operates customer subscriptions after creation.
 
 **Important:** Do not change Subscription Plan master data expecting historical customer subscription pricing to automatically change. Customer transactions are snapshot-based.
+
+Website constructors snapshot the plan's configured regular delivery count,
+eligible subscription-offer bonus count, and final `totalDeliveries` on the
+pending subscription. Server verification confirms and persists those values
+before payment session creation. The saved entitlement remains unchanged by
+later edits to either master and governs subscription completion.
 
 ## 12. Subscription deliveries
 

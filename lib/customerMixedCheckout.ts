@@ -7,8 +7,8 @@ import type { CustomerAddress } from './customerAccount';
 import type { SalesProduct } from './salesProducts';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from './deliveryCharges';
 
-import { calculateCustomerOffers } from './offers';
-import { allocateCheckoutTotals, checkoutDeliveryChargeAmounts, resolveOneTimePrice, resolveSubscriptionPrice, subscriptionEndDate } from './checkoutPricing';
+import { calculateCustomerOffers, calculateCustomerSubscriptionEntitlements } from './offers';
+import { allocateCheckoutTotals, checkoutDeliveryChargeAmounts, resolveOneTimePrice, resolveSubscriptionPrice, subscriptionDeliveriesPerTerm, subscriptionEndDate } from './checkoutPricing';
 import { summaryFromOrders } from './checkoutFingerprint';
 import { resumedMixedCheckoutResult } from './checkoutClaimFlow';
 import { beginCheckoutClaim, registerCheckoutClaim } from './checkoutClaimClient';
@@ -46,13 +46,23 @@ export async function createCustomerMixedCheckout(input:{mobile:string;addressId
  const oneTimeDeliveryDates=[...new Set(input.oneTimeItems.map(item=>resolvedByKey.get(`one-time:${item.productId}`)?.deliveryDate||item.deliveryDate||nextWeekSaturday()).filter(Boolean))];
  const subscriptionDeliveryInputs=input.subscriptionItems.map(item=>{
   const plan=planById.get(item.planId)||{};
-  const frequency=clean(plan.frequency).toLowerCase();
-  const deliveries=Math.max(1,Number(plan.deliveriesPerTerm||(frequency==='monthly'?4:frequency==='quarterly'?12:1)));
+  const deliveries=subscriptionDeliveriesPerTerm(plan);
   const first=resolvedByKey.get(`subscription:${item.productId}:${item.planId}:${item.startDate}`)?.deliveryDate||subscriptionDate(item);
   return {planId:item.planId,planName:item.planName,deliveryDates:getWeeklyDeliveryDates(first,deliveries)};
  });
  const deliveryCharges=await calculateCheckoutDeliveryCharges({pincode:String((address as any).pincode||''),oneTime:input.oneTimeItems.length>0,oneTimeDates:oneTimeDeliveryDates,subscriptions:subscriptionDeliveryInputs});
  const geoId=deliveryCharges.oneTime.sourceId||deliveryCharges.subscriptions[0]?.sourceId||''; const geoName=deliveryCharges.oneTime.sourceName||deliveryCharges.subscriptions[0]?.sourceName||'';
+ const subscriptionEntitlements=await calculateCustomerSubscriptionEntitlements(input.subscriptionItems.map(item=>{
+  const plan=planById.get(item.planId)||{};
+  const regularDeliveries=subscriptionDeliveriesPerTerm(plan);
+  return {
+   frequency:clean(plan.frequency).toLowerCase(),
+   regularDeliveries,
+   pincode:String((address as any).pincode||''),
+   geoId,
+   locationName:geoName,
+  };
+ }));
  const targetDate=nextWeekSaturday();
  let oneSubtotal=0,oneMrpSubtotal=0;const oneOrders:Record<string,unknown>[]=[];const subscriptionWrites:{ref:ReturnType<typeof doc>;data:Record<string,unknown>;orderRef:ReturnType<typeof doc>;order:Record<string,unknown>}[]=[];
  const availabilityResults:{availableGrams:number;requestedGrams:number;shortageGrams:number;hasShortage:boolean;highDemand:boolean;thresholdGrams:number;committedDemandGrams:number}[]=[];
@@ -72,12 +82,15 @@ export async function createCustomerMixedCheckout(input:{mobile:string;addressId
   if (!components.length || components.some((component: any) => !component?.productId)) {
    throw new Error(`Product "${p.name || item.name}" has no production product component.`);
   }
-  const { price, packaging, selectedSellingOption, deliveries } = resolveSubscriptionPrice(p, plan, {
+  const { price, packaging, selectedSellingOption, deliveries: regularDeliveries } = resolveSubscriptionPrice(p, plan, {
    sellingOptionId: item.sellingOptionId,
    packaging: item.packaging,
    planName: item.planName,
    displayName: item.name,
   });
+  const entitlement=subscriptionEntitlements[subscriptionIndex];
+  if (!entitlement) throw new Error('Subscription delivery entitlement could not be calculated.');
+  const deliveries=entitlement.totalDeliveries;
   const delivery = deliveryCharges.subscriptions[subscriptionIndex];
   if (!delivery) throw new Error('Subscription delivery charges could not be calculated.');
   const weight = packaging * q;
@@ -118,6 +131,10 @@ export async function createCustomerMixedCheckout(input:{mobile:string;addressId
    quantity: q,
    frequency,
    totalDeliveries: deliveries,
+   regularDeliveries,
+   bonusDeliveries: entitlement.bonusDeliveries,
+   subscriptionOfferId: entitlement.offer?.id || '',
+   subscriptionOfferName: entitlement.offer?.name || '',
    deliveriesGenerated: 0,
    nextDeliveryDate: first,
    deliveryDay: 6,

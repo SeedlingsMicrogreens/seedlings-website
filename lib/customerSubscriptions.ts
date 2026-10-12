@@ -3,8 +3,8 @@ import { db, auth } from './firebase';
 import { type SalesProduct } from './salesProducts';
 import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from './deliveryCharges';
-import { calculateCustomerOffers } from './offers';
-import { checkoutDeliveryChargeAmounts } from './checkoutPricing';
+import { calculateCustomerOffers, calculateCustomerSubscriptionEntitlement } from './offers';
+import { checkoutDeliveryChargeAmounts, subscriptionDeliveriesPerTerm, subscriptionEndDate } from './checkoutPricing';
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
 import { PACKAGING_OPTIONS } from './packaging';
 import { summaryFromOrders } from './checkoutFingerprint';
@@ -29,10 +29,6 @@ export type CustomerSubscriptionPlan = {
   salableProductName?: string;
   sellingOptions?: Array<{ id: string; weightGrams: number; planPrice: number; maximumPlanPrice?: number }>;
 };
-
-function dateOnly(date: Date) {
-  return date.toISOString().slice(0, 10);
-}
 
 export async function loadActiveCustomerSubscriptionPlans(productId?: string): Promise<CustomerSubscriptionPlan[]> {
   const normalizedProductId = clean(productId);
@@ -109,11 +105,8 @@ export async function createCustomerSubscription(input: {
     throw new Error('This Salable Product has an invalid pack quantity.');
   }
 
-  const deliveries = Math.max(1, Number(plan.deliveriesPerTerm || (frequency === 'monthly' ? 4 : frequency === 'quarterly' ? 12 : 1)));
+  const deliveries = subscriptionDeliveriesPerTerm(plan);
   const firstDelivery = resolveSubscriptionFirstDeliveryDate(input.startDate, nextWeekSaturday());
-  const end = new Date(`${firstDelivery}T00:00:00`);
-  end.setDate(end.getDate() + (deliveries - 1) * 7);
-  const endDate = dateOnly(end);
   const subscriptionRef = doc(collection(db, 'subscriptions'));
   const orderRef = doc(collection(db, 'orders'));
   const subscriptionNumber = `SUB-${subscriptionRef.id.slice(0, 8).toUpperCase()}`;
@@ -204,11 +197,15 @@ export async function createCustomerSubscription(input: {
     quantity: input.quantity,
     frequency,
     totalDeliveries: deliveries,
+    regularDeliveries: deliveries,
+    bonusDeliveries: 0,
+    subscriptionOfferId: '',
+    subscriptionOfferName: '',
     deliveriesGenerated: 0,
     nextDeliveryDate: actualFirstDelivery,
     deliveryDay: 6,
     startDate: actualFirstDelivery,
-    endDate: (() => { const value = new Date(`${actualFirstDelivery}T00:00:00`); value.setDate(value.getDate() + (deliveries - 1) * 7); return dateOnly(value); })(),
+    endDate: subscriptionEndDate(actualFirstDelivery, deliveries),
     deliveryAddress: address,
     requiresCustomerContact: input.shortageDecision === 'contact',
     availabilityRequestedGrams: availability.requestedGrams,
@@ -232,6 +229,19 @@ export async function createCustomerSubscription(input: {
     }],
   });
   const delivery = deliveryCharges.subscriptions[0];
+  const entitlement = await calculateCustomerSubscriptionEntitlement({
+    frequency,
+    regularDeliveries: deliveries,
+    pincode: String((address as Record<string, unknown>).pincode || ''),
+    geoId: delivery?.sourceId || '',
+    locationName: delivery?.sourceName || '',
+  });
+  subscription.totalDeliveries = entitlement.totalDeliveries;
+  subscription.regularDeliveries = entitlement.regularDeliveries;
+  subscription.bonusDeliveries = entitlement.bonusDeliveries;
+  subscription.subscriptionOfferId = entitlement.offer?.id || '';
+  subscription.subscriptionOfferName = entitlement.offer?.name || '';
+  subscription.endDate = subscriptionEndDate(actualFirstDelivery, entitlement.totalDeliveries);
   const roundMoney = (value: number) => Number(Number(value || 0).toFixed(2));
   const deliveryFeePerDelivery = roundMoney(delivery?.perDeliveryCharge || 0);
   const subtotal = roundMoney(unitPrice * input.quantity);

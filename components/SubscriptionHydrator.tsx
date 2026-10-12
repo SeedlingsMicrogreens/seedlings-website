@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { collection, getDocsFromServer, query, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocsFromServer, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
 import { getCustomerAccount, type CustomerAddress } from "@/lib/customerAccount";
@@ -14,6 +14,9 @@ import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate 
 import { confirmHarvestShortage, showCustomerSuccess } from "@/lib/customerAlerts";
 import { removeSubscriptionFromCart } from "@/lib/cart";
 import { updateSubscriptionDelivery } from "@/lib/customerSubscriptionDeliveryActions";
+import { calculateCustomerSubscriptionEntitlement } from "@/lib/offers";
+import { subscriptionDeliveriesPerTerm } from "@/lib/checkoutPricing";
+import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from "@/lib/deliveryCharges";
 
 const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const money = (v: unknown) => `₹${Number(v || 0).toLocaleString("en-IN")}`;
@@ -144,6 +147,10 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
         }
 
         const selectedPlanId = sessionStorage.getItem("seedlings_subscription_plan") || "";
+        const selectedPlanSnapshot = selectedPlanId
+          ? await getDoc(doc(db, "subscriptionPlans", selectedPlanId))
+          : null;
+        const selectedPlan = selectedPlanSnapshot?.exists() ? selectedPlanSnapshot.data() as Record<string, unknown> : null;
         const active = (subs.find((s) => ["active", "paused"].includes(String(s.status))) || undefined) as any;
         let latestDeliveryAction: any = null;
         if (active?.id) {
@@ -251,6 +258,7 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
 
         const startHtml = selectedProduct ? `<div class="panel"><h3>Start subscription</h3><p class="muted">Product: <strong>${esc(selectedProduct.name || selectedProduct.productName)}</strong></p>
           ${addresses.length ? `<label>Delivery address<select data-address>${addresses.map((a: any) => `<option value="${esc(a.id || "")}">${esc(a.label || "Address")} — ${esc(addressText(a))}</option>`).join("")}</select></label>` : `<p class="muted">Add a delivery address before creating a subscription.</p>`}
+          <p class="muted" data-subscription-offer style="font-size:13px;margin-top:10px"></p>
           <label style="margin-top:12px">Packaging<select data-packaging>${PACKAGING_OPTIONS.map((grams) => `<option value="${grams}">${packagingLabel(grams)}</option>`).join("")}</select></label>
           <label style="margin-top:12px">Packs per delivery<input data-quantity type="number" min="1" step="1" value="${Math.max(1, Number(selectedProduct.quantity || 1))}"></label>
           <label style="margin-top:12px">Start date<input data-start type="date" value="${new Date().toISOString().slice(0,10)}"></label>
@@ -261,6 +269,40 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
         m.innerHTML = `<div class="account-title subscription-page-title"><div><div class="eyebrow">Subscriptions</div><h1>My Subscriptions</h1><p class="muted">Your recurring microgreens plan and delivery schedule.</p></div><span class="status ${active?.status === "active" ? "delivered" : ""}">${active ? String(active.status || "active").toUpperCase() : "NO ACTIVE PLAN"}</span></div><p data-message class="subscription-page-message"></p>${currentHtml}${startHtml}`;
 
         const showMessage = (text: string, error = false) => { const el = host.querySelector("[data-message]") as HTMLElement | null; if (el) { el.textContent = text; el.style.color = error ? "crimson" : ""; } };
+        const refreshSubscriptionOffer = async () => {
+          const preview = host.querySelector("[data-subscription-offer]") as HTMLElement | null;
+          const addressId = (host.querySelector("[data-address]") as HTMLSelectElement | null)?.value || "";
+          const address = addresses.find((item: CustomerAddress) => item.id === addressId);
+          if (!preview || !selectedPlan || !address) return;
+          try {
+            const regularDeliveries = subscriptionDeliveriesPerTerm(selectedPlan);
+            const pincode = String(address.pincode || "");
+            const delivery = await calculateCheckoutDeliveryCharges({
+              pincode,
+              oneTime: false,
+              subscriptions: [{
+                planId: selectedPlanId,
+                planName: String(selectedPlan.name || ""),
+                deliveryDates: getWeeklyDeliveryDates(nextWeekSaturday(), regularDeliveries),
+              }],
+            });
+            const result = await calculateCustomerSubscriptionEntitlement({
+              frequency: String(selectedPlan.frequency || "").toLowerCase(),
+              regularDeliveries,
+              pincode,
+              geoId: delivery.subscriptions[0]?.sourceId || "",
+              locationName: delivery.subscriptions[0]?.sourceName || "",
+            });
+            preview.textContent = result.bonusDeliveries > 0
+              ? `${result.offer?.name || "Subscription offer"}: ${result.bonusDeliveries} bonus deliveries — ${result.totalDeliveries} deliveries total. No extra delivery charge for bonus deliveries.`
+              : `${result.regularDeliveries} deliveries total.`;
+          } catch (error) {
+            preview.textContent = "";
+            showMessage(error instanceof Error ? error.message : "Unable to check subscription offers.", true);
+          }
+        };
+        host.querySelector("[data-address]")?.addEventListener("change", () => void refreshSubscriptionOffer());
+        void refreshSubscriptionOffer();
         host.querySelectorAll("[data-delivery-action]").forEach((button) => button.addEventListener("click", async () => {
           const el = button as HTMLButtonElement;
           const subscriptionId = el.dataset.id || "";

@@ -61,6 +61,36 @@ function checkoutTotalsStore(db: ReturnType<typeof adminDb>): CheckoutTotalsStor
       return snapshot.docs.map((doc) => ({ id: doc.id, data: doc.data() || {} }));
     },
     offers: async () => (await db.collection('offers').get()).docs.map((doc) => ({ id: doc.id, ...(doc.data() || {}) }) as CustomerOffer),
+    saveSubscriptionEntitlements: async (records) => {
+      if (!records.length) return;
+      await db.runTransaction(async (transaction) => {
+        const refs = records.map((record) => db.collection('subscriptions').doc(record.subscriptionId));
+        const snapshots = await Promise.all(refs.map((ref) => transaction.get(ref)));
+        snapshots.forEach((snapshot, index) => {
+          const record = records[index];
+          const subscription = snapshot.data() || {};
+          if (!snapshot.exists
+            || String(subscription.authUid || '') !== record.authUid
+            || String(subscription.customerId || '') !== record.customerId
+            || !['pending_payment', 'payment_failed'].includes(String(subscription.status || ''))
+            || !['pending', 'failed'].includes(String(subscription.paymentStatus || ''))
+            || Number(subscription.totalDeliveries) !== record.expectedTotalDeliveries) {
+            throw new HttpError(409, 'Subscription delivery entitlement changed. Please return to checkout and try again.');
+          }
+        });
+        snapshots.forEach((snapshot, index) => {
+          const record = records[index];
+          transaction.update(snapshot.ref, {
+            regularDeliveries: record.regularDeliveries,
+            bonusDeliveries: record.bonusDeliveries,
+            totalDeliveries: record.totalDeliveries,
+            subscriptionOfferId: record.subscriptionOfferId,
+            subscriptionOfferName: record.subscriptionOfferName,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        });
+      });
+    },
     saveVerifications: async (records) => {
       const batch = db.batch();
       for (const { orderId, data } of records) batch.set(db.collection('orderPriceVerifications').doc(orderId), { ...data, verifiedAt: FieldValue.serverTimestamp() });

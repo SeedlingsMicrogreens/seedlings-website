@@ -40,8 +40,11 @@ export function subscriptionEndDate(firstDeliveryDate: string, deliveries: numbe
 }
 
 export function subscriptionDeliveriesPerTerm(plan: Data) {
-  const frequency = clean(plan.frequency).toLowerCase();
-  return Math.max(1, Number(plan.deliveriesPerTerm || (frequency === 'monthly' ? 4 : frequency === 'quarterly' ? 12 : 1)));
+  const deliveries = Number(plan.deliveriesPerTerm);
+  if (!Number.isSafeInteger(deliveries) || deliveries < 1) {
+    throw new Error('This subscription plan has an invalid deliveries-per-term value.');
+  }
+  return deliveries;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +276,7 @@ export type CustomerOffer = {
   pincodeIds?: unknown[];
   pincodeLabels?: unknown[];
   type?: unknown;
+  subscriptionOffer?: unknown;
   startDate?: unknown;
   endDate?: unknown;
   active?: unknown;
@@ -293,6 +297,66 @@ export type CheckoutOfferResult = {
 };
 
 export const NO_OFFERS: CheckoutOfferResult = { priceSavings: 0, oneTimePriceSavings: 0, subscriptionPriceSavings: 0, deliverySavings: 0, totalSavings: 0 };
+
+export type SubscriptionDeliveryEntitlement = {
+  regularDeliveries: number;
+  bonusDeliveries: number;
+  totalDeliveries: number;
+  offer?: CustomerOffer;
+};
+
+export type SubscriptionDeliveryEntitlementInput = {
+  frequency: string;
+  regularDeliveries: number;
+  pincode: string;
+  geoId: string;
+  locationName?: string;
+};
+
+const SUBSCRIPTION_FREQUENCIES = new Set(['monthly', 'quarterly', 'half_yearly', 'yearly']);
+
+/** Resolve the one eligible subscription offer; Admin prevents overlapping same-type date ranges. */
+export function computeSubscriptionDeliveryEntitlement(
+  offers: CustomerOffer[],
+  input: SubscriptionDeliveryEntitlementInput,
+  today: string,
+): SubscriptionDeliveryEntitlement {
+  const frequency = text(input.frequency).toLowerCase();
+  const regularDeliveries = Number(input.regularDeliveries);
+  if (!SUBSCRIPTION_FREQUENCIES.has(frequency)) throw new Error('Selected subscription plan has an unsupported frequency.');
+  if (!Number.isSafeInteger(regularDeliveries) || regularDeliveries < 1) {
+    throw new Error('This subscription plan has an invalid deliveries-per-term value.');
+  }
+
+  const candidates = activeOffers(
+    offers.filter((offer) => normalized(offer.type) === 'subscription'),
+    text(input.geoId),
+    normalizePincode(input.pincode),
+    text(input.locationName),
+    today,
+  ).filter((offer) => {
+    const configuration = offer.subscriptionOffer as Record<string, unknown> | undefined;
+    return Array.isArray(configuration?.frequencies)
+      && configuration.frequencies.some((value) => text(value).toLowerCase() === frequency);
+  });
+
+  if (candidates.length > 1) {
+    throw new Error('More than one subscription offer is eligible. Please contact support before purchasing.');
+  }
+  const offer = candidates[0];
+  if (!offer) return { regularDeliveries, bonusDeliveries: 0, totalDeliveries: regularDeliveries };
+
+  const configuration = offer.subscriptionOffer as Record<string, unknown>;
+  const extras = configuration.extraDeliveriesByFrequency;
+  const bonusDeliveries = extras && typeof extras === 'object' && !Array.isArray(extras)
+    ? Number((extras as Record<string, unknown>)[frequency])
+    : Number.NaN;
+  const totalDeliveries = regularDeliveries + bonusDeliveries;
+  if (!Number.isSafeInteger(bonusDeliveries) || bonusDeliveries < 1 || !Number.isSafeInteger(totalDeliveries)) {
+    throw new Error('The eligible subscription offer has an invalid bonus-delivery configuration.');
+  }
+  return { regularDeliveries, bonusDeliveries, totalDeliveries, offer };
+}
 
 export type CheckoutSavingsBreakdown = {
   mrpSavings: number;

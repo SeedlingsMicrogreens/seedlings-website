@@ -15,8 +15,8 @@ import { nextWeekSaturday } from '@/lib/customerOrderAvailability';
 import { normalizeCustomerMobile } from '@/lib/customerIdentity';
 import { confirmHighDemandEnquiry, confirmPincodeUnavailable, showCustomerSuccess } from '@/lib/customerAlerts';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates, type CheckoutDeliveryCharges } from '@/lib/deliveryCharges';
-import { calculateCustomerOffers, type CheckoutOfferResult } from '@/lib/offers';
-import { checkoutDeliveryChargeAmounts, checkoutSavingsBreakdown, resolveSubscriptionPlanSavings } from '@/lib/checkoutPricing';
+import { calculateCustomerOffers, calculateCustomerSubscriptionEntitlements, type CheckoutOfferResult } from '@/lib/offers';
+import { checkoutDeliveryChargeAmounts, checkoutSavingsBreakdown, resolveSubscriptionPlanSavings, subscriptionDeliveriesPerTerm } from '@/lib/checkoutPricing';
 import { resolvePriceDisplay, scalePriceDisplay } from '@/lib/priceDisplay';
 import { openCashfreeCheckout } from '@/lib/cashfreeClient';
 import { createCashfreeOrder } from '@/lib/cashfreeFunctions';
@@ -61,7 +61,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
       const one = cart.oneTimeItems, subs = cart.subscriptionItems;
       const oneTotal = one.reduce((s, i) => s + i.price * i.quantity, 0), subTotal = subs.reduce((s, i) => s + i.price * i.quantity, 0), subtotal = oneTotal + subTotal, currency = one[0]?.currency || subs[0]?.currency || 'INR';
 
-      root.innerHTML = `<section class="section checkout-page"><div class="container checkout-grid"><div class="form"><span class="eyebrow">Unified checkout</span><h2 style="margin-top:6px;margin-bottom:12px">Confirm your delivery</h2><div data-address-section></div><p class="checkout-message" style="font-size:13px;min-height:18px;margin-top:10px"></p><button class="btn primary" style="width:100%" type="button" data-place>Proceed to Pay</button></div><aside class="summary"><h3>Order summary</h3>${subs.length ? `<h4 style="margin:14px 0 6px">Subscriptions</h4>${subs.map((i, index) => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">${esc(i.planName)} · Delivery: ${esc(dateLabel(i.deliveryDate || i.startDate))}</small></span><strong data-subscription-item-price="${index}">${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}${one.length ? `<h4 style="margin:18px 0 6px">One-time purchases</h4>${one.map((i, index) => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">Delivery: ${esc(dateLabel(i.deliveryDate || nextWeekSaturday()))}</small></span><strong data-one-time-item-price="${index}">${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}<div data-delivery-summary><div class="summary-row"><span>Delivery charge</span><strong>Enter a valid delivery pincode</strong></div></div><div class="summary-row summary-total"><span>Total</span><span data-grand-total>${esc(money(subtotal, currency))}</span></div></aside></div></section>`;
+      root.innerHTML = `<section class="section checkout-page"><div class="container checkout-grid"><div class="form"><span class="eyebrow">Unified checkout</span><h2 style="margin-top:6px;margin-bottom:12px">Confirm your delivery</h2><div data-address-section></div><p class="checkout-message" style="font-size:13px;min-height:18px;margin-top:10px"></p><button class="btn primary" style="width:100%" type="button" data-place>Proceed to Pay</button></div><aside class="summary"><h3>Order summary</h3>${subs.length ? `<h4 style="margin:14px 0 6px">Subscriptions</h4>${subs.map((i, index) => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">${esc(i.planName)} · Delivery: ${esc(dateLabel(i.deliveryDate || i.startDate))}</small><small class="muted" style="display:block" data-subscription-entitlement="${index}">Checking delivery entitlement…</small></span><strong data-subscription-item-price="${index}">${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}${one.length ? `<h4 style="margin:18px 0 6px">One-time purchases</h4>${one.map((i, index) => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">Delivery: ${esc(dateLabel(i.deliveryDate || nextWeekSaturday()))}</small></span><strong data-one-time-item-price="${index}">${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}<div data-delivery-summary><div class="summary-row"><span>Delivery charge</span><strong>Enter a valid delivery pincode</strong></div></div><div class="summary-row summary-total"><span>Total</span><span data-grand-total>${esc(money(subtotal, currency))}</span></div></aside></div></section>`;
       const deliverySummary = root.querySelector('[data-delivery-summary]') as HTMLElement | null;
       const grandTotal = root.querySelector('[data-grand-total]') as HTMLElement | null;
       let delivery: CheckoutDeliveryCharges | null = null;
@@ -116,6 +116,18 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
             }}
           />
         );
+      };
+
+      const renderSubscriptionEntitlements = (entitlements: Awaited<ReturnType<typeof calculateCustomerSubscriptionEntitlements>>) => {
+        entitlements.forEach((entitlement, index) => {
+          const node = root.querySelector(`[data-subscription-entitlement="${index}"]`) as HTMLElement | null;
+          if (!node) return;
+          const regular = entitlement.regularDeliveries;
+          const bonus = entitlement.bonusDeliveries;
+          node.textContent = bonus > 0
+            ? `${entitlement.offer?.name || 'Subscription offer'} · +${bonus} bonus deliveries · ${entitlement.totalDeliveries} deliveries total`
+            : `${regular} deliveries total`;
+        });
       };
 
       const renderDelivery = (result: CheckoutDeliveryCharges, offerResult: CheckoutOfferResult = offers) => {
@@ -247,12 +259,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           rows.push(`<div class="checkout-savings-banner"><strong>🎉 You saved ${esc(money(savings.subscriptionPlanSavings, currency))} on subscription plans!</strong></div>`);
         }
         if (savings.totalSavings > 0) {
-          const combinedBreakdown = [
-            savings.productSavings > 0 ? `${money(savings.productSavings, currency)} product savings` : '',
-            savings.subscriptionPlanSavings > 0 ? `${money(savings.subscriptionPlanSavings, currency)} subscription savings` : '',
-            savings.deliverySavings > 0 ? `${money(savings.deliverySavings, currency)} delivery savings` : '',
-          ].filter(Boolean).join(' + ');
-          rows.push(`<div class="checkout-savings-banner checkout-savings-combined"><span>🎉 You saved a total of</span><strong>${esc(money(savings.totalSavings, currency))}</strong><small>${esc(combinedBreakdown)}</small></div>`);
+          rows.push(`<div class="checkout-savings-banner checkout-savings-combined"><span>🎉 You saved a total of</span><strong>${esc(money(savings.totalSavings, currency))}</strong></div>`);
         }
 
         if (deliverySummary) deliverySummary.innerHTML = rows.join('');
@@ -281,7 +288,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
             subscriptions: subs.map(item => ({
               planId: item.planId,
               planName: item.planName,
-              deliveryDates: getWeeklyDeliveryDates(item.deliveryDate || item.startDate, item.deliveriesPerTerm || 1),
+              deliveryDates: getWeeklyDeliveryDates(item.deliveryDate || item.startDate, subscriptionDeliveriesPerTerm(subscriptionPlans.get(item.planId) || {})),
             })),
           });
           if (dead || request !== deliveryRequest) return;
@@ -297,7 +304,18 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
               deliveryChargeAmounts: checkoutDeliveryChargeAmounts(result),
             })
             : { priceSavings: 0, oneTimePriceSavings: 0, subscriptionPriceSavings: 0, deliverySavings: 0, totalSavings: 0 };
+          const subscriptionEntitlements = await calculateCustomerSubscriptionEntitlements(subs.map((item) => {
+            const plan = subscriptionPlans.get(item.planId) || {};
+            return {
+              frequency: String(plan.frequency || '').toLowerCase(),
+              regularDeliveries: subscriptionDeliveriesPerTerm(plan),
+              pincode,
+              geoId,
+              locationName,
+            };
+          }));
           if (dead || request !== deliveryRequest) return;
+          renderSubscriptionEntitlements(subscriptionEntitlements);
           renderDelivery(result, offerResult);
         } catch (e) {
           if (dead || request !== deliveryRequest) return;

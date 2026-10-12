@@ -147,6 +147,11 @@ service cloud.firestore {
         && ownAuthUid(request.resource.data)
         && request.resource.data.authUid == resource.data.authUid
         && request.resource.data.customerId == resource.data.customerId
+        && (!('totalDeliveries' in resource.data) || request.resource.data.totalDeliveries == resource.data.totalDeliveries)
+        && (!('regularDeliveries' in resource.data) || request.resource.data.regularDeliveries == resource.data.regularDeliveries)
+        && (!('bonusDeliveries' in resource.data) || request.resource.data.bonusDeliveries == resource.data.bonusDeliveries)
+        && (!('subscriptionOfferId' in resource.data) || request.resource.data.subscriptionOfferId == resource.data.subscriptionOfferId)
+        && (!('subscriptionOfferName' in resource.data) || request.resource.data.subscriptionOfferName == resource.data.subscriptionOfferName)
         && (
           (resource.data.paymentStatus == 'pending'
             && request.resource.data.paymentStatus == 'pending'

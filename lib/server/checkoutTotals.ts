@@ -8,6 +8,7 @@ import {
   normalizePincode,
   resolveOneTimePrice,
   resolveSubscriptionPrice,
+  computeSubscriptionDeliveryEntitlement,
   type CustomerOffer,
 } from '../checkoutPricing';
 import { HttpError } from './httpError';
@@ -29,6 +30,17 @@ export type CheckoutTotalsStore = {
   /** Candidate geolocation records for a pincode (falls back to all records when none match by pincode). */
   geolocations: (pincode: string) => Promise<Array<{ id: string; data: Data }>>;
   offers: () => Promise<CustomerOffer[]>;
+  saveSubscriptionEntitlements: (records: Array<{
+    subscriptionId: string;
+    authUid: string;
+    customerId: string;
+    expectedTotalDeliveries: number;
+    regularDeliveries: number;
+    bonusDeliveries: number;
+    totalDeliveries: number;
+    subscriptionOfferId: string;
+    subscriptionOfferName: string;
+  }>) => Promise<void>;
   saveVerifications: (records: Array<{ orderId: string; data: Data }>) => Promise<void>;
 };
 
@@ -63,7 +75,26 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
     const record = verifications.get(id);
     return record && record.fingerprint === orderFingerprint(orders[index]) && close(Number(record.verifiedTotal), money(orders[index].total));
   });
-  if (allVerified) return { reused: true };
+  if (allVerified) {
+    const subscriptionOrders = orders.filter(isSubscriptionOrder);
+    if (subscriptionOrders.length) {
+      const subscriptionIds = subscriptionOrders.map((order) => String(order.subscriptionId || '')).filter(Boolean);
+      const verifiedSubscriptions = await store.getDocs('subscriptions', subscriptionIds);
+      const verificationRecords = await store.getDocs('orderPriceVerifications', orderIds);
+      for (const [index, order] of orders.entries()) {
+        if (!isSubscriptionOrder(order)) continue;
+        const record = verificationRecords.get(orderIds[index]);
+        const verifiedTotalDeliveries = Number(record?.verifiedTotalDeliveries);
+        const subscription = verifiedSubscriptions.get(String(order.subscriptionId || ''));
+        if (!subscription) fail(`subscription missing for verified order ${orderIds[index]}`);
+        if (Number.isSafeInteger(verifiedTotalDeliveries)
+          && Number(subscription.totalDeliveries) !== verifiedTotalDeliveries) {
+          fail(`verified subscription entitlement changed for order ${orderIds[index]}`);
+        }
+      }
+    }
+    return { reused: true };
+  }
 
   const pincodes = new Set(orders.map((order) => normalizePincode((order.deliveryAddress as Data | undefined)?.pincode)));
   if (pincodes.size !== 1) fail('orders do not share one delivery pincode');
@@ -75,10 +106,11 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
   const salableIds = new Set<string>();
   for (const order of orders) for (const item of Array.isArray(order.items) ? order.items : []) salableIds.add(String(item?.salableProductId || ''));
   salableIds.delete('');
-  const [products, plans, subscriptionDocs] = await Promise.all([
+  const [products, plans, subscriptionDocs, checkoutOffers] = await Promise.all([
     store.getDocs('salesProducts', [...salableIds]),
     store.getDocs('subscriptionPlans', subscriptions.map(({ order }) => String(order.subscriptionPlanId || '')).filter(Boolean)),
     store.getDocs('subscriptions', subscriptions.map(({ order }) => String(order.subscriptionId || '')).filter(Boolean)),
+    store.offers(),
   ]);
 
   const priceError = (error: unknown) => fail(error instanceof Error ? error.message : 'price resolution failed');
@@ -125,11 +157,26 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
     if (Number(item.weightGrams) > packaging * quantity) fail(`weight exceeds pack size x quantity in order ${id}`);
     const sub = subscription!;
     if (String(sub.salableProductId || '') !== String(item.salableProductId || '')
+      || String(sub.authUid || '') !== String(order.authUid || '')
+      || String(sub.customerId || '') !== String(order.customerId || '')
       || Number(sub.quantity) !== quantity || Number(sub.packaging) !== packaging
       || !close(money(sub.unitPrice), price) || Number(sub.weightGrams) !== packaging * quantity
-      || Number(sub.totalDeliveries) !== deliveries) fail(`subscription record does not match order ${id}`);
+      || String(sub.frequency || '').toLowerCase() !== String(plan!.frequency || '').toLowerCase()
+      || (sub.status && !['pending_payment', 'payment_failed'].includes(String(sub.status)))
+      || (sub.paymentStatus && !['pending', 'failed'].includes(String(sub.paymentStatus)))) fail(`subscription record does not match order ${id}`);
     const first = String(order.scheduledDeliveryDate || '');
-    return { id, order, planId: String(order.subscriptionPlanId || ''), planName: String(plan!.name || ''), subtotal: price * quantity, deliveryDates: getWeeklyDeliveryDates(first, deliveries) };
+    return {
+      id,
+      order,
+      subscriptionId: String(order.subscriptionId || ''),
+      subscription: sub,
+      frequency: String(plan!.frequency || ''),
+      regularDeliveries: deliveries,
+      planId: String(order.subscriptionPlanId || ''),
+      planName: String(plan!.name || ''),
+      subtotal: price * quantity,
+      deliveryDates: getWeeklyDeliveryDates(first, deliveries),
+    };
   });
 
   let deliveryCharges: ReturnType<typeof computeCheckoutDeliveryCharges>;
@@ -144,9 +191,27 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
 
   const geoId = deliveryCharges!.oneTime.sourceId || deliveryCharges!.subscriptions[0]?.sourceId || '';
   const geoName = deliveryCharges!.oneTime.sourceName || deliveryCharges!.subscriptions[0]?.sourceName || '';
+  const verifiedSubscriptionEntries = subscriptionEntries.map((entry) => {
+    let entitlement: ReturnType<typeof computeSubscriptionDeliveryEntitlement>;
+    try {
+      entitlement = computeSubscriptionDeliveryEntitlement(checkoutOffers, {
+        frequency: entry.frequency,
+        regularDeliveries: entry.regularDeliveries,
+        pincode,
+        geoId,
+        locationName: geoName,
+      }, input.today);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'subscription offer resolution failed');
+    }
+    if (Number(entry.subscription.totalDeliveries) !== entitlement!.totalDeliveries) {
+      fail(`subscription delivery entitlement mismatch for order ${entry.id}`);
+    }
+    return { ...entry, entitlement: entitlement! };
+  });
   const oneSubtotal = oneTimeGroups.reduce((sum, group) => sum + group.subtotal, 0);
   const offers = geoId
-    ? computeCustomerOffers(await store.offers(), {
+    ? computeCustomerOffers(checkoutOffers, {
       pincode, geoId, locationName: geoName,
       oneTimeSubtotal: oneSubtotal,
       subscriptionSubtotal: subscriptionEntries.reduce((sum, entry) => sum + entry.subtotal, 0),
@@ -156,7 +221,7 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
 
   const allocation = allocateCheckoutTotals({
     oneTimeGroups,
-    subscriptions: subscriptionEntries.map((entry, index) => ({ subtotal: entry.subtotal, deliveryFee: Number(deliveryCharges!.subscriptions[index]?.termCharge || 0) })),
+    subscriptions: verifiedSubscriptionEntries.map((entry, index) => ({ subtotal: entry.subtotal, deliveryFee: Number(deliveryCharges!.subscriptions[index]?.termCharge || 0) })),
     deliveryCharges: deliveryCharges!,
     offers,
   });
@@ -166,13 +231,35 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
   oneTimeGroups.forEach((group, index) => {
     if (money(group.order.total) < money(allocation.oneTime[index].total) - TOLERANCE) fail(`order ${group.id} total below authoritative amount`);
   });
-  subscriptionEntries.forEach((entry, index) => {
+  verifiedSubscriptionEntries.forEach((entry, index) => {
     if (money(entry.order.total) < money(allocation.subscriptions[index].total) - TOLERANCE) fail(`order ${entry.id} total below authoritative amount`);
   });
 
+  if (verifiedSubscriptionEntries.length) {
+    await store.saveSubscriptionEntitlements(verifiedSubscriptionEntries.map((entry) => ({
+      subscriptionId: entry.subscriptionId,
+      authUid: String(entry.order.authUid || ''),
+      customerId: String(entry.order.customerId || ''),
+      expectedTotalDeliveries: Number(entry.subscription.totalDeliveries),
+      regularDeliveries: entry.entitlement.regularDeliveries,
+      bonusDeliveries: entry.entitlement.bonusDeliveries,
+      totalDeliveries: entry.entitlement.totalDeliveries,
+      subscriptionOfferId: entry.entitlement.offer?.id || '',
+      subscriptionOfferName: entry.entitlement.offer?.name || '',
+    })));
+  }
+
   await store.saveVerifications(orderIds.map((orderId, index) => ({
     orderId,
-    data: { verifiedTotal: money(orders[index].total), fingerprint: orderFingerprint(orders[index]), checkoutOrderIds: orderIds },
+    data: {
+      verifiedTotal: money(orders[index].total),
+      fingerprint: orderFingerprint(orders[index]),
+      checkoutOrderIds: orderIds,
+      ...(verifiedSubscriptionEntries.find((entry) => entry.id === orderId) ? (() => {
+        const entry = verifiedSubscriptionEntries.find((subscriptionEntry) => subscriptionEntry.id === orderId)!;
+        return { subscriptionId: entry.subscriptionId, verifiedTotalDeliveries: entry.entitlement.totalDeliveries };
+      })() : {}),
+    },
   })));
   return { reused: false };
 }
