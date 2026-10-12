@@ -5,7 +5,14 @@ import { cmsCollections, getDocById, getPublishedCollection } from '@/lib/cms';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import { getActiveSalesProducts, productSlug, type SalesProduct } from '@/lib/salesProducts';
-import { addToCart, getCart, setCartQuantity } from '@/lib/cart';
+import {
+  addToCart,
+  cartQuantityForProduct,
+  getUnifiedCart,
+  latestProductCartEntry,
+  setCartQuantity,
+  setSubscriptionCartQuantity,
+} from '@/lib/cart';
 import heroBannerImage from '@/public/assets/microgreens-hero-banner.png';
 
 const money = (value: number, currency = 'INR') => {
@@ -71,8 +78,7 @@ function ProductCard({ product }: { product: SalesProduct }) {
 
   useEffect(() => {
     const sync = () => {
-      const item = getCart().find((entry) => entry.productId === product.id);
-      setQuantity(item?.quantity || 0);
+      setQuantity(cartQuantityForProduct(getUnifiedCart(), product.id));
     };
     sync();
     window.addEventListener('seedlings-cart-updated', sync);
@@ -100,13 +106,17 @@ function ProductCard({ product }: { product: SalesProduct }) {
   };
 
   const decrease = () => {
-    const current = getCart().find((entry) => entry.productId === product.id);
-    if (current) setCartQuantity(product.id, current.quantity - 1);
+    const current = latestProductCartEntry(getUnifiedCart(), product.id);
+    if (current?.type === 'one-time') setCartQuantity(product.id, current.item.quantity - 1);
+    else if (current?.type === 'subscription') {
+      setSubscriptionCartQuantity(product.id, current.item.planId, current.item.startDate, current.item.quantity - 1);
+    }
   };
 
   const increase = () => {
-    const current = getCart().find((entry) => entry.productId === product.id);
+    const current = getUnifiedCart().oneTimeItems.find((entry) => entry.productId === product.id);
     if (current) setCartQuantity(product.id, current.quantity + 1);
+    else add();
   };
 
   return (

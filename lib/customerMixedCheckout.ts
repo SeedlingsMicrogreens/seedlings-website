@@ -8,7 +8,7 @@ import type { SalesProduct } from './salesProducts';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from './deliveryCharges';
 
 import { calculateCustomerOffers } from './offers';
-import { allocateCheckoutTotals, resolveOneTimePrice, resolveSubscriptionPrice, subscriptionEndDate } from './checkoutPricing';
+import { allocateCheckoutTotals, checkoutDeliveryChargeAmounts, resolveOneTimePrice, resolveSubscriptionPrice, subscriptionEndDate } from './checkoutPricing';
 import { summaryFromOrders } from './checkoutFingerprint';
 import { resumedMixedCheckoutResult } from './checkoutClaimFlow';
 import { beginCheckoutClaim, registerCheckoutClaim } from './checkoutClaimClient';
@@ -57,14 +57,151 @@ export async function createCustomerMixedCheckout(input:{mobile:string;addressId
  let oneSubtotal=0,oneMrpSubtotal=0;const oneOrders:Record<string,unknown>[]=[];const subscriptionWrites:{ref:ReturnType<typeof doc>;data:Record<string,unknown>;orderRef:ReturnType<typeof doc>;order:Record<string,unknown>}[]=[];
  const availabilityResults:{availableGrams:number;requestedGrams:number;shortageGrams:number;hasShortage:boolean;highDemand:boolean;thresholdGrams:number;committedDemandGrams:number}[]=[];
  for(const item of input.oneTimeItems){const snap=byId.get(item.productId);if(!snap?.exists())throw new Error(`Product "${item.name}" is no longer available.`);const p=snap.data()||{};if(p.active!==true||p.oneTimePurchase!==true)throw new Error(`Product "${p.name||item.name}" is not available for one-time purchase.`);const q=Number(item.quantity);if(!Number.isInteger(q)||q<1)throw new Error('Item quantities must be at least 1.');const {price,mrp,packaging,selectedOption}=resolveOneTimePrice(p,item.packaging,item.name);const weight=packaging*q;const itemDeliveryDate=item.deliveryDate||targetDate;const avail=await checkProductAvailability({product:{id:snap.id,...p} as any,quantity:q,packagingGrams:packaging,deliveryDate:itemDeliveryDate});availabilityResults.push(avail);oneSubtotal+=price*q;oneMrpSubtotal+=mrp*q;oneOrders.push({salableProductId:snap.id,salableProductSku:clean(p.sku),salableProductType:p.type==='multiple'?'multiple':'single',productId:snap.id,productName:clean(p.name),productSlug:clean(p.slug),sellingOptionId:selectedOption?.id||'',sellingOptionLabel:selectedOption?`${packaging>=1000&&packaging%1000===0?packaging/1000+'kg':packaging+'g'} box`:`${packaging>=1000&&packaging%1000===0?packaging/1000+'kg':packaging+'g'} box`,packaging,weightGrams:weight,quantity:q,mrp,unitPrice:price,lineTotal:price*q,deliveryDate:itemDeliveryDate,imageUrl:clean(p.imageUrl)});}
- for(const item of input.subscriptionItems){const snap=byId.get(item.productId);if(!snap?.exists())throw new Error(`Product "${item.name}" is no longer available.`);const p=snap.data()||{};if(p.active!==true)throw new Error(`Product "${p.name||item.name}" is no longer available.`);const q=Number(item.quantity);if(!Number.isInteger(q)||q<1)throw new Error('Subscription quantities must be at least 1.');const plan=planById.get(item.planId);if(!plan||plan.active!==true)throw new Error(`Subscription plan "${item.planName}" is no longer active.`);const frequency=clean(plan.frequency).toLowerCase();if(!['monthly','quarterly','half_yearly','yearly'].includes(frequency))throw new Error('Selected subscription plan is invalid.');const components=Array.isArray(p.components)?p.components:[];if(!components.length||components.some((component:any)=>!component?.productId))throw new Error(`Product "${p.name||item.name}" has no production product component.`);const {price,packaging,selectedSellingOption,deliveries}=resolveSubscriptionPrice(p,plan,{sellingOptionId:item.sellingOptionId,packaging:item.packaging,planName:item.planName,displayName:item.name});const weight=packaging*q;const first=subscriptionDate(item);const endDate=subscriptionEndDate(first,deliveries);const avail=await checkProductAvailability({product:{id:snap.id,...p} as any,quantity:q,packagingGrams:packaging,deliveryDate:first});availabilityResults.push(avail);const firstDeliveryWeightGrams=avail.hasShortage?Math.max(0,Math.min(avail.availableGrams,avail.requestedGrams)):avail.requestedGrams;const subRef=doc(collection(db,'subscriptions')),orderRef=doc(collection(db,'orders'));const subNo=`SUB-${subRef.id.slice(0,8).toUpperCase()}`,ordNo=orderNumber();const label=packaging>=1000&&packaging%1000===0?`${packaging/1000}kg box`:`${packaging}g box`;const sellingOptionId=selectedSellingOption?String(selectedSellingOption.id):String(item.sellingOptionId||'');const sub={authUid,subscriptionNumber:subNo,customerId:mobile,customerName:clean(customer.name)||'Unnamed customer',customerMobile:mobile,salableProductId:snap.id,productId:snap.id,productName:clean(p.name),sellingOptionId,sellingOptionLabel:label,packaging,weightGrams:weight,unitPrice:price,quantity:q,frequency,totalDeliveries:deliveries,deliveriesGenerated:0,nextDeliveryDate:first,deliveryDay:6,startDate:first,endDate,deliveryAddress:address,deliveryFeePerDelivery:deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.finalCharge||0,deliveryChargeDetails:deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.snapshot||{},requiresCustomerContact:false,availabilityRequestedGrams:avail.requestedGrams,availabilityAvailableGrams:avail.availableGrams,availabilityShortageGrams:avail.shortageGrams,carryForwardQuantityGrams:avail.shortageGrams,availabilityDecision:'continue',status:'pending_payment',paymentStatus:'pending',createdAt:serverTimestamp(),updatedAt:serverTimestamp()};const ord={authUid,orderNumber:ordNo,customerId:mobile,customerName:clean(customer.name),customerMobile:clean(customer.mobileNumber||customer.mobile||mobile),items:[{salableProductId:snap.id,salableProductType:p.type==='multiple'?'multiple':'single',productId:snap.id,productName:clean(p.name),sellingOptionId,sellingOptionLabel:label,packaging,weightGrams:firstDeliveryWeightGrams,quantity:q,unitPrice:price,lineTotal:price*q,deliveryDate:first,imageUrl:clean(p.imageUrl)}],subtotal:price*q,deliveryFee:deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.termCharge||0,discount:0,total:price*q+(deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.termCharge||0),currency:'INR',paymentStatus:'pending',paymentMethod,status:'pending_payment',deliveryAddress:address,scheduledDeliveryDate:first,deliveryDate:first,notes:'',orderType:'subscription',subscriptionId:subRef.id,subscriptionNumber:subNo,subscriptionPlanId:item.planId,subscriptionPlanName:clean(plan.name)||frequency,subscriptionFrequency:frequency,deliveryChargeId:deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.sourceId||'',deliveryChargeName:deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.sourceName||'',deliveryChargeSnapshot:deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.termCharge||0,deliveryChargePerDelivery:deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.perDeliveryCharge||0,deliveryChargeTerm:deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.termCharge||0,deliveryChargeTermSavings:deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.termSavings||0,deliveryChargeDetails:deliveryCharges.subscriptions.find(x=>x.planId===item.planId)?.snapshot||{},packingStatus:'pending',requiresCustomerContact:false,availabilityRequestedGrams:avail.requestedGrams,availabilityAvailableGrams:avail.availableGrams,availabilityShortageGrams:avail.shortageGrams,carryForwardQuantityGrams:avail.shortageGrams,availabilityDecision:'continue',createdAt:serverTimestamp(),updatedAt:serverTimestamp()};subscriptionWrites.push({ref:subRef,data:sub,orderRef,order:ord});}
+ for (const [subscriptionIndex, item] of input.subscriptionItems.entries()) {
+  const snap = byId.get(item.productId);
+  if (!snap?.exists()) throw new Error(`Product "${item.name}" is no longer available.`);
+  const p = snap.data() || {};
+  if (p.active !== true) throw new Error(`Product "${p.name || item.name}" is no longer available.`);
+  const q = Number(item.quantity);
+  if (!Number.isInteger(q) || q < 1) throw new Error('Subscription quantities must be at least 1.');
+  const plan = planById.get(item.planId);
+  if (!plan || plan.active !== true) throw new Error(`Subscription plan "${item.planName}" is no longer active.`);
+  const frequency = clean(plan.frequency).toLowerCase();
+  if (!['monthly', 'quarterly', 'half_yearly', 'yearly'].includes(frequency)) throw new Error('Selected subscription plan is invalid.');
+  const components = Array.isArray(p.components) ? p.components : [];
+  if (!components.length || components.some((component: any) => !component?.productId)) {
+   throw new Error(`Product "${p.name || item.name}" has no production product component.`);
+  }
+  const { price, packaging, selectedSellingOption, deliveries } = resolveSubscriptionPrice(p, plan, {
+   sellingOptionId: item.sellingOptionId,
+   packaging: item.packaging,
+   planName: item.planName,
+   displayName: item.name,
+  });
+  const delivery = deliveryCharges.subscriptions[subscriptionIndex];
+  if (!delivery) throw new Error('Subscription delivery charges could not be calculated.');
+  const weight = packaging * q;
+  const first = subscriptionDate(item);
+  const endDate = subscriptionEndDate(first, deliveries);
+  const availability = await checkProductAvailability({
+   product: { id: snap.id, ...p } as any,
+   quantity: q,
+   packagingGrams: packaging,
+   deliveryDate: first,
+  });
+  availabilityResults.push(availability);
+  const firstDeliveryWeightGrams = availability.hasShortage
+   ? Math.max(0, Math.min(availability.availableGrams, availability.requestedGrams))
+   : availability.requestedGrams;
+  const subRef = doc(collection(db, 'subscriptions'));
+  const orderRef = doc(collection(db, 'orders'));
+  const subNo = `SUB-${subRef.id.slice(0, 8).toUpperCase()}`;
+  const ordNo = orderNumber();
+  const label = packaging >= 1000 && packaging % 1000 === 0 ? `${packaging / 1000}kg box` : `${packaging}g box`;
+  const sellingOptionId = selectedSellingOption ? String(selectedSellingOption.id) : String(item.sellingOptionId || '');
+  const orderSubtotal = price * q;
+  const orderDeliveryFee = Number(delivery.termCharge || 0);
+  const sub = {
+   authUid,
+   subscriptionNumber: subNo,
+   customerId: mobile,
+   customerName: clean(customer.name) || 'Unnamed customer',
+   customerMobile: mobile,
+   salableProductId: snap.id,
+   productId: snap.id,
+   productName: clean(p.name),
+   sellingOptionId,
+   sellingOptionLabel: label,
+   packaging,
+   weightGrams: weight,
+   unitPrice: price,
+   quantity: q,
+   frequency,
+   totalDeliveries: deliveries,
+   deliveriesGenerated: 0,
+   nextDeliveryDate: first,
+   deliveryDay: 6,
+   startDate: first,
+   endDate,
+   deliveryAddress: address,
+   deliveryFeePerDelivery: delivery.finalCharge,
+   deliveryChargeDetails: delivery.snapshot,
+   requiresCustomerContact: false,
+   availabilityRequestedGrams: availability.requestedGrams,
+   availabilityAvailableGrams: availability.availableGrams,
+   availabilityShortageGrams: availability.shortageGrams,
+   carryForwardQuantityGrams: availability.shortageGrams,
+   availabilityDecision: 'continue',
+   status: 'pending_payment',
+   paymentStatus: 'pending',
+   createdAt: serverTimestamp(),
+   updatedAt: serverTimestamp(),
+  };
+  const ord = {
+   authUid,
+   orderNumber: ordNo,
+   customerId: mobile,
+   customerName: clean(customer.name),
+   customerMobile: clean(customer.mobileNumber || customer.mobile || mobile),
+   items: [{
+    salableProductId: snap.id,
+    salableProductType: p.type === 'multiple' ? 'multiple' : 'single',
+    productId: snap.id,
+    productName: clean(p.name),
+    sellingOptionId,
+    sellingOptionLabel: label,
+    packaging,
+    weightGrams: firstDeliveryWeightGrams,
+    quantity: q,
+    unitPrice: price,
+    lineTotal: orderSubtotal,
+    deliveryDate: first,
+    imageUrl: clean(p.imageUrl),
+   }],
+   subtotal: orderSubtotal,
+   deliveryFee: orderDeliveryFee,
+   discount: 0,
+   total: orderSubtotal + orderDeliveryFee,
+   currency: 'INR',
+   paymentStatus: 'pending',
+   paymentMethod,
+   status: 'pending_payment',
+   deliveryAddress: address,
+   scheduledDeliveryDate: first,
+   deliveryDate: first,
+   notes: '',
+   orderType: 'subscription',
+   subscriptionId: subRef.id,
+   subscriptionNumber: subNo,
+   subscriptionPlanId: item.planId,
+   subscriptionPlanName: clean(plan.name) || frequency,
+   subscriptionFrequency: frequency,
+   deliveryChargeId: delivery.sourceId,
+   deliveryChargeName: delivery.sourceName,
+   deliveryChargeSnapshot: orderDeliveryFee,
+   deliveryChargePerDelivery: delivery.perDeliveryCharge,
+   deliveryChargeTerm: delivery.termCharge,
+   deliveryChargeTermSavings: delivery.termSavings,
+   deliveryChargeDetails: delivery.snapshot,
+   packingStatus: 'pending',
+   requiresCustomerContact: false,
+   availabilityRequestedGrams: availability.requestedGrams,
+   availabilityAvailableGrams: availability.availableGrams,
+   availabilityShortageGrams: availability.shortageGrams,
+   carryForwardQuantityGrams: availability.shortageGrams,
+   availabilityDecision: 'continue',
+   createdAt: serverTimestamp(),
+   updatedAt: serverTimestamp(),
+  };
+  subscriptionWrites.push({ ref: subRef, data: sub, orderRef, order: ord });
+ }
  const highDemandKeys:{key:string;thresholdGrams:number;committedDemandGrams:number}[]=[];
  input.oneTimeItems.forEach((item,index)=>{ if(availabilityResults[index]?.highDemand) highDemandKeys.push({key:`one-time:${item.productId}`,thresholdGrams:availabilityResults[index].thresholdGrams,committedDemandGrams:availabilityResults[index].committedDemandGrams}); });
  input.subscriptionItems.forEach((item,index)=>{ const result=availabilityResults[input.oneTimeItems.length+index]; if(result?.highDemand) highDemandKeys.push({key:`subscription:${item.productId}:${item.planId}:${item.startDate}`,thresholdGrams:result.thresholdGrams,committedDemandGrams:result.committedDemandGrams}); });
  if(highDemandKeys.length) throw new Error(`HIGH_DEMAND_ENQUIRY_REQUIRED:${JSON.stringify(highDemandKeys)}`);
  const hasShortage=availabilityResults.some(r=>r.hasShortage);
  if(hasShortage)throw new Error('DELIVERY_DATE_RECHECK_REQUIRED');
- const oneTimeDeliveryBase=deliveryCharges.oneTimeTotal; const offerResult=(input.oneTimeItems.length||input.subscriptionItems.length)&&geoId ? await calculateCustomerOffers({pincode:String((address as any).pincode||''),geoId,locationName:geoName,oneTimeSubtotal:oneSubtotal,subscriptionSubtotal:subscriptionWrites.reduce((sum,w)=>sum+Number(w.order.subtotal||0),0),oneTimeDelivery:oneTimeDeliveryBase}) : {priceSavings:0,oneTimePriceSavings:0,subscriptionPriceSavings:0,deliverySavings:0,totalSavings:0}; const deliveryFeeBeforeOffer=deliveryCharges.total; const deliveryOfferSavings=input.subscriptionItems.length>0?0:offerResult.deliverySavings; const deliveryFee=Math.max(0,deliveryFeeBeforeOffer-deliveryOfferSavings); const productSavings=Math.max(0,oneMrpSubtotal-oneSubtotal)+offerResult.oneTimePriceSavings; const offerDiscount=offerResult.priceSavings+deliveryOfferSavings;
+ const oneTimeDeliveryBase=deliveryCharges.oneTimeTotal; const offerResult=(input.oneTimeItems.length||input.subscriptionItems.length)&&geoId ? await calculateCustomerOffers({pincode:String((address as any).pincode||''),geoId,locationName:geoName,oneTimeSubtotal:oneSubtotal,subscriptionSubtotal:subscriptionWrites.reduce((sum,w)=>sum+Number(w.order.subtotal||0),0),deliveryChargeAmounts:checkoutDeliveryChargeAmounts(deliveryCharges)}) : {priceSavings:0,oneTimePriceSavings:0,subscriptionPriceSavings:0,deliverySavings:0,totalSavings:0};
 
 
 
@@ -75,7 +212,7 @@ export async function createCustomerMixedCheckout(input:{mobile:string;addressId
  // Offers and delivery charges are allocated by the shared rule also used by
  // the server total verification (lib/checkoutPricing.ts).
  const allocation=allocateCheckoutTotals({oneTimeGroups:oneTimeDates.map(date=>{const items=oneTimeOrderGroups.get(date)||[];return {date,subtotal:items.reduce((sum,item)=>sum+Number(item.lineTotal||0),0),mrpSubtotal:items.reduce((sum,item)=>sum+Number(item.mrp||item.unitPrice||0)*Number(item.quantity||0),0)};}),subscriptions:subscriptionWrites.map(w=>({subtotal:Number(w.order.subtotal||0),deliveryFee:Number(w.order.deliveryFee||0)})),deliveryCharges,offers:offerResult});
- subscriptionWrites.forEach((w,index)=>{ const allocated=allocation.subscriptions[index].allocated; w.order.discount=allocated; w.order.total=allocation.subscriptions[index].total; w.order.offerDiscount=allocated; w.order.offerPriceSavings=allocated; w.order.offerDeliverySavings=0; w.order.offerPriceName=offerResult.priceOffer?.name||''; w.order.offerDeliveryName=''; w.order.offerTotalSavings=allocated; });
+ subscriptionWrites.forEach((w,index)=>{ const allocated=allocation.subscriptions[index].allocated; const deliveryOfferSaving=allocation.subscriptions[index].deliveryOfferSaving; w.order.deliveryChargeOriginal=Number(w.order.deliveryFee||0); w.order.deliveryChargeSnapshot=allocation.subscriptions[index].deliveryFee; w.order.deliveryChargeTermSavings=deliveryOfferSaving; w.order.deliveryFee=allocation.subscriptions[index].deliveryFee; w.order.discount=allocated; w.order.total=allocation.subscriptions[index].total; w.order.offerDiscount=allocated+deliveryOfferSaving; w.order.offerPriceSavings=allocated; w.order.offerDeliverySavings=deliveryOfferSaving; w.order.offerPriceName=offerResult.priceOffer?.name||''; w.order.offerDeliveryName=offerResult.deliveryOffer?.name||''; w.order.offerTotalSavings=allocated+deliveryOfferSaving; });
  for(const [index,date] of oneTimeDates.entries()){
   const items=oneTimeOrderGroups.get(date)||[];
   const groupAmounts=allocation.oneTime[index];
@@ -98,5 +235,6 @@ export async function createCustomerMixedCheckout(input:{mobile:string;addressId
  const batch=writeBatch(db);for(const w of oneOrderWrites)batch.set(w.ref,w.data);for(const w of subscriptionWrites){batch.set(w.ref,w.data);batch.set(w.orderRef,w.order);}await batch.commit();
  await registerCheckoutClaim({mobile,token:claim.token,orderIds:[...oneOrderWrites.map(w=>w.ref.id),...subscriptionWrites.map(w=>w.orderRef.id)],subscriptionIds:subscriptionWrites.map(w=>w.ref.id)});
  const oneOrderIds=oneOrderWrites.map(w=>w.ref.id);const oneOrderNumbers=oneOrderWrites.map(w=>String(w.data.orderNumber||''));const paymentOrderIds=[...oneOrderIds,...subscriptionWrites.map(w=>w.orderRef.id)];
- return {oneTimeOrderId:oneOrderIds[0]||'',oneTimeOrderIds:oneOrderIds,oneTimeOrderNumber:oneOrderNumbers[0]||'',oneTimeOrderNumbers:oneOrderNumbers,subscriptionOrderIds:subscriptionWrites.map(w=>w.orderRef.id),subscriptionNumbers:subscriptionWrites.map(w=>String(w.data.subscriptionNumber)),subscriptionIds:subscriptionWrites.map(w=>w.ref.id),paymentOrderIds,total:Math.max(0,oneSubtotal-offerResult.oneTimePriceSavings)+deliveryFee+subscriptionWrites.reduce((s,w)=>s+Number(w.order.total||0),0),primaryOrderNumber:oneOrderNumbers[0]||String(subscriptionWrites[0]?.order.orderNumber||''),primaryOrderId:oneOrderIds[0]||subscriptionWrites[0]?.orderRef.id||''};
+ const checkoutTotal=[...allocation.oneTime,...allocation.subscriptions].reduce((sum,order)=>sum+order.total,0);
+ return {oneTimeOrderId:oneOrderIds[0]||'',oneTimeOrderIds:oneOrderIds,oneTimeOrderNumber:oneOrderNumbers[0]||'',oneTimeOrderNumbers:oneOrderNumbers,subscriptionOrderIds:subscriptionWrites.map(w=>w.orderRef.id),subscriptionNumbers:subscriptionWrites.map(w=>String(w.data.subscriptionNumber)),subscriptionIds:subscriptionWrites.map(w=>w.ref.id),paymentOrderIds,total:checkoutTotal,primaryOrderNumber:oneOrderNumbers[0]||String(subscriptionWrites[0]?.order.orderNumber||''),primaryOrderId:oneOrderIds[0]||subscriptionWrites[0]?.orderRef.id||''};
 }

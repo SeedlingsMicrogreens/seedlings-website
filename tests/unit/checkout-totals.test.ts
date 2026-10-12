@@ -3,12 +3,15 @@ import assert from 'node:assert/strict';
 
 import {
   allocateCheckoutTotals,
+  checkoutSavingsBreakdown,
+  checkoutDeliveryChargeAmounts,
   computeCheckoutDeliveryCharges,
   computeCustomerOffers,
   getWeeklyDeliveryDates,
   NO_OFFERS,
   resolveOneTimePrice,
   resolveSubscriptionPrice,
+  resolveSubscriptionPlanSavings,
   subscriptionEndDate,
   type CustomerOffer,
 } from '../../lib/checkoutPricing';
@@ -30,7 +33,7 @@ type Line = { product: any; packaging: number; quantity: number; date: string };
 type SubLine = { product: any; plan: any; sellingOptionId: string; quantity: number; first: string };
 
 /** Builds orders exactly as lib/customerMixedCheckout.ts does, using the shared pricing functions. */
-function clientCheckout(oneTime: Line[], subs: SubLine[], offers: CustomerOffer[]) {
+function clientCheckout(oneTime: Line[], subs: SubLine[], offers: CustomerOffer[], deliveryGeo = geo) {
   const groups = new Map<string, any[]>();
   for (const line of oneTime) {
     const priced = resolveOneTimePrice(line.product, line.packaging);
@@ -42,16 +45,16 @@ function clientCheckout(oneTime: Line[], subs: SubLine[], offers: CustomerOffer[
     const priced = resolveSubscriptionPrice(line.product, line.plan, { sellingOptionId: line.sellingOptionId });
     return { line, priced, subId: `sub-${index + 1}`, dates: getWeeklyDeliveryDates(line.first, priced.deliveries) };
   });
-  const deliveryCharges = computeCheckoutDeliveryCharges([geo], {
+  const deliveryCharges = computeCheckoutDeliveryCharges([deliveryGeo], {
     pincode: PINCODE, oneTime: oneTime.length > 0, oneTimeDates: dates,
     subscriptions: subEntries.map((entry) => ({ planId: entry.line.plan.id, planName: entry.line.plan.name, deliveryDates: entry.dates })),
   });
   const oneSubtotal = dates.reduce((sum, date) => sum + groups.get(date)!.reduce((s, item) => s + item.lineTotal, 0), 0);
-  const offerResult = computeCustomerOffers(offers, { pincode: PINCODE, geoId: geo.id, locationName: geo.data.locationName, oneTimeSubtotal: oneSubtotal, subscriptionSubtotal: subEntries.reduce((s, e) => s + e.priced.price * e.line.quantity, 0), oneTimeDelivery: deliveryCharges.oneTimeTotal }, TODAY);
+  const offerResult = computeCustomerOffers(offers, { pincode: PINCODE, geoId: deliveryGeo.id, locationName: deliveryGeo.data.locationName, oneTimeSubtotal: oneSubtotal, subscriptionSubtotal: subEntries.reduce((s, e) => s + e.priced.price * e.line.quantity, 0), deliveryChargeAmounts: checkoutDeliveryChargeAmounts(deliveryCharges) }, TODAY);
   const allocation = allocateCheckoutTotals({
     oneTimeGroups: dates.map((date) => ({ date, subtotal: groups.get(date)!.reduce((s, i) => s + i.lineTotal, 0), mrpSubtotal: groups.get(date)!.reduce((s, i) => s + i.mrp * i.quantity, 0) })),
     // The checkout looks up each subscription's delivery fee by plan ID.
-    subscriptions: subEntries.map((entry) => ({ subtotal: entry.priced.price * entry.line.quantity, deliveryFee: deliveryCharges.subscriptions.find((x) => x.planId === entry.line.plan.id)?.termCharge || 0 })),
+    subscriptions: subEntries.map((entry, index) => ({ subtotal: entry.priced.price * entry.line.quantity, deliveryFee: deliveryCharges.subscriptions[index]?.termCharge || 0 })),
     deliveryCharges, offers: offerResult,
   });
   const address = { id: 'addr-1', pincode: PINCODE };
@@ -158,6 +161,304 @@ test('offer allocation: last one-time group receives the remainder; totals add u
   assert.ok(Math.abs(offerSum - checkout.offerResult.oneTimePriceSavings) < 0.001);
 });
 
+test('delivery offer eligibility includes inclusive dates and normalizes Offers Master values', () => {
+  const offer: CustomerOffer = {
+    id: 'pre-launch',
+    name: 'Pre Launch',
+    type: 'Delivery Charge',
+    active: 'Active',
+    status: 'ACTIVE',
+    startDate: '2026-10-11',
+    endDate: '2026-10-11',
+    locationType: 'All Pincodes',
+    discountType: 'Flat',
+    discountValue: 10,
+  };
+  const input = {
+    pincode: PINCODE,
+    geoId: geo.id,
+    locationName: geo.data.locationName,
+    oneTimeSubtotal: 0,
+    deliveryChargeAmounts: [44],
+  };
+  const result = computeCustomerOffers([offer], input, TODAY);
+  assert.equal(result.deliverySavings, 10);
+  assert.equal(result.deliveryOffer?.name, 'Pre Launch');
+  assert.equal(computeCustomerOffers([{ ...offer, status: 'published' }], input, TODAY).deliverySavings, 10);
+  const timestampEndResult = computeCustomerOffers([{
+    ...offer,
+    endDate: { toDate: () => new Date('2026-10-11T18:29:59.000Z') },
+  }], input, TODAY);
+  assert.equal(timestampEndResult.deliverySavings, 10);
+});
+
+test('expired and not-yet-active delivery offers are not applied', () => {
+  const offer: CustomerOffer = {
+    id: 'dated-delivery',
+    name: 'Dated delivery',
+    type: 'deliveryCharge',
+    active: true,
+    locationType: 'all',
+    discountType: 'flat',
+    discountValue: 15,
+  };
+  const input = {
+    pincode: PINCODE,
+    geoId: geo.id,
+    locationName: geo.data.locationName,
+    oneTimeSubtotal: 0,
+    deliveryChargeAmounts: [44],
+  };
+  assert.equal(computeCustomerOffers([{ ...offer, startDate: '2026-10-12' }], input, TODAY).deliverySavings, 0);
+  assert.equal(computeCustomerOffers([{ ...offer, endDate: '2026-10-10' }], input, TODAY).deliverySavings, 0);
+  assert.equal(computeCustomerOffers([{ ...offer, active: false }], input, TODAY).deliverySavings, 0);
+  assert.equal(computeCustomerOffers([{ ...offer, active: undefined }], input, TODAY).deliverySavings, 0);
+  assert.equal(computeCustomerOffers([{ ...offer, status: 'paused' }], input, TODAY).deliverySavings, 0);
+  assert.equal(computeCustomerOffers([{ ...offer, discountType: 'unknown' }], input, TODAY).deliverySavings, 0);
+  assert.equal(computeCustomerOffers([{ ...tenPercent, active: undefined }], { ...input, oneTimeSubtotal: 240 }, TODAY).priceSavings, 24);
+});
+
+test('pincode-scoped delivery offers require the matching geolocation or pincode', () => {
+  const offer: CustomerOffer = {
+    id: 'pincode-delivery',
+    name: 'Pincode delivery',
+    type: 'deliveryCharge',
+    active: true,
+    locationType: 'Pincode',
+    pincodeIds: ['geo-1'],
+    discountType: 'percentage',
+    discountValue: 25,
+  };
+  const input = {
+    pincode: PINCODE,
+    geoId: geo.id,
+    locationName: geo.data.locationName,
+    oneTimeSubtotal: 0,
+    deliveryChargeAmounts: [44, 44],
+  };
+  assert.equal(computeCustomerOffers([offer], input, TODAY).deliverySavings, 22);
+  assert.equal(computeCustomerOffers([{ ...offer, pincodeIds: ['other'] }], input, TODAY).deliverySavings, 0);
+  assert.equal(computeCustomerOffers([{ ...offer, pincodeIds: [], pincodeLabels: ['560001'] }], input, TODAY).deliverySavings, 0);
+  assert.equal(computeCustomerOffers([{ ...offer, pincodeIds: [], pincodeLabels: [PINCODE] }], input, TODAY).deliverySavings, 22);
+});
+
+test('flat and percentage delivery discounts are evaluated per scheduled delivery', () => {
+  const input = {
+    pincode: PINCODE,
+    geoId: geo.id,
+    locationName: geo.data.locationName,
+    oneTimeSubtotal: 0,
+    deliveryChargeAmounts: [44, 44, 44, 44],
+  };
+  const flat = { ...freeDelivery, discountValue: 15 };
+  const percentage = { ...freeDelivery, discountType: 'percentage', discountValue: 25 };
+  const flatSaving = computeCustomerOffers([flat], input, TODAY).deliverySavings;
+  assert.equal(flatSaving, 60);
+  assert.equal(input.deliveryChargeAmounts.reduce((sum, charge) => sum + charge, 0) - flatSaving, 116);
+  assert.equal(computeCustomerOffers([percentage], input, TODAY).deliverySavings, 44);
+});
+
+test('checkout savings combines MRP, applied price-offer and delivery savings once', () => {
+  assert.deepEqual(checkoutSavingsBreakdown({
+    mrpSavings: 20,
+    priceOfferSavings: 10,
+    deliverySavings: 60,
+  }), {
+    mrpSavings: 20,
+    priceOfferSavings: 10,
+    productSavings: 30,
+    subscriptionPlanSavings: 0,
+    deliverySavings: 60,
+    totalSavings: 90,
+  });
+});
+
+test('checkout savings handles delivery-only, product-only and zero savings without duplicating values', () => {
+  assert.deepEqual(checkoutSavingsBreakdown({
+    mrpSavings: 0,
+    priceOfferSavings: 0,
+    deliverySavings: 60,
+  }), {
+    mrpSavings: 0,
+    priceOfferSavings: 0,
+    productSavings: 0,
+    subscriptionPlanSavings: 0,
+    deliverySavings: 60,
+    totalSavings: 60,
+  });
+  assert.equal(checkoutSavingsBreakdown({ mrpSavings: 20, priceOfferSavings: 10, deliverySavings: 0 }).totalSavings, 30);
+  assert.equal(checkoutSavingsBreakdown({ mrpSavings: 0, priceOfferSavings: 0, deliverySavings: 0 }).totalSavings, 0);
+});
+
+test('subscription plan savings use the selected plan selling option and scale by cart quantity', () => {
+  const plan = {
+    sellingOptions: [
+      { id: 'pack-100', weightGrams: 100, planPrice: 400, maximumPlanPrice: 480 },
+      { id: 'pack-250', weightGrams: 250, planPrice: 900, maximumPlanPrice: 1000 },
+    ],
+  };
+  assert.deepEqual(resolveSubscriptionPlanSavings(plan, {
+    sellingOptionId: 'pack-100',
+    packaging: 100,
+    planPrice: 400,
+    quantity: 2,
+  }), { maximumPlanPrice: 480, savings: 160 });
+  assert.deepEqual(resolveSubscriptionPlanSavings(plan, {
+    sellingOptionId: 'pack-250',
+    packaging: 250,
+    planPrice: 900,
+    quantity: 1,
+  }), { maximumPlanPrice: 1000, savings: 100 });
+  assert.deepEqual(resolveSubscriptionPlanSavings({
+    sellingOptions: [{ id: 'quarterly-100', weightGrams: 100, planPrice: 1100, maximumPlanPrice: 1320 }],
+  }, {
+    sellingOptionId: 'quarterly-100',
+    packaging: 100,
+    planPrice: 1100,
+    quantity: 1,
+  }), { maximumPlanPrice: 1320, savings: 220 });
+});
+
+test('subscription savings omit missing, equal, mismatched, or unrelated selling-option references', () => {
+  const options = { sellingOptions: [
+    { id: 'pack-100', weightGrams: 100, planPrice: 400, maximumPlanPrice: 400 },
+    { id: 'pack-250', weightGrams: 250, planPrice: 900, maximumPlanPrice: 1000 },
+    { id: 'legacy-500', weightGrams: 500, planPrice: 1400 },
+  ] };
+  const selection = { sellingOptionId: 'pack-100', packaging: 100, planPrice: 400, quantity: 1 };
+  assert.deepEqual(resolveSubscriptionPlanSavings(options, selection), { maximumPlanPrice: undefined, savings: 0 });
+  assert.deepEqual(resolveSubscriptionPlanSavings(options, { ...selection, sellingOptionId: 'legacy-500', packaging: 500, planPrice: 1400 }), { maximumPlanPrice: undefined, savings: 0 });
+  assert.deepEqual(resolveSubscriptionPlanSavings(options, { ...selection, sellingOptionId: 'missing', packaging: 100 }), { maximumPlanPrice: undefined, savings: 0 });
+  assert.deepEqual(resolveSubscriptionPlanSavings(options, { ...selection, sellingOptionId: 'pack-250', packaging: 100, planPrice: 900 }), { maximumPlanPrice: undefined, savings: 0 });
+  assert.deepEqual(resolveSubscriptionPlanSavings(undefined, selection), { maximumPlanPrice: undefined, savings: 0 });
+});
+
+test('subscription plan and delivery savings combine to ₹140 without changing the ₹516 payable total', () => {
+  const preLaunch: CustomerOffer = {
+    id: 'pre-launch',
+    name: 'Pre Launch',
+    type: 'deliveryCharge',
+    active: true,
+    locationType: 'all',
+    discountType: 'flat',
+    discountValue: 15,
+  };
+  const plan = {
+    ...monthly,
+    sellingOptions: [{ id: 'pm100', weightGrams: 100, planPrice: 400, maximumPlanPrice: 480 }],
+  };
+  const checkout = clientCheckout([], [
+    { product: broccoli, plan, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' },
+  ], [preLaunch], { ...geo, data: { ...geo.data, deliveryCharge: 44 } });
+  const planSavings = resolveSubscriptionPlanSavings(plan, {
+    sellingOptionId: 'pm100',
+    packaging: 100,
+    planPrice: 400,
+    quantity: 1,
+  }).savings;
+  const savings = checkoutSavingsBreakdown({
+    mrpSavings: 0,
+    priceOfferSavings: 0,
+    subscriptionPlanSavings: planSavings,
+    deliverySavings: checkout.offerResult.deliverySavings,
+  });
+  assert.equal(checkout.offerResult.deliverySavings, 60);
+  assert.equal(savings.subscriptionPlanSavings, 80);
+  assert.equal(savings.totalSavings, 140);
+  assert.equal(checkout.orders['ord-sub-1'].total, 516);
+});
+
+test('mixed checkout totals MRP, Price Offer and Delivery Charge savings without changing the payable amount', () => {
+  const product = {
+    ...broccoli,
+    sellingOptions: [{ id: 'b100', weightGrams: 100, price: 130, mrp: 150, active: true }],
+  };
+  const priceOffer: CustomerOffer = {
+    id: 'price-10',
+    name: 'Price Offer',
+    type: 'price',
+    active: true,
+    locationType: 'all',
+    discountType: 'flat',
+    discountValue: 10,
+  };
+  const deliveryOffer: CustomerOffer = {
+    id: 'delivery-15',
+    name: 'Pre Launch',
+    type: 'deliveryCharge',
+    active: true,
+    locationType: 'all',
+    discountType: 'flat',
+    discountValue: 15,
+  };
+  const checkout = clientCheckout(
+    [{ product, packaging: 100, quantity: 1, date: '2026-10-17' }],
+    [{ product, plan: monthly, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }],
+    [priceOffer, deliveryOffer],
+    { ...geo, data: { ...geo.data, deliveryCharge: 44 } },
+  );
+  const savings = checkoutSavingsBreakdown({
+    mrpSavings: 20,
+    priceOfferSavings: checkout.offerResult.priceSavings,
+    deliverySavings: checkout.offerResult.deliverySavings,
+  });
+  assert.deepEqual(savings, {
+    mrpSavings: 20,
+    priceOfferSavings: 10,
+    productSavings: 30,
+    subscriptionPlanSavings: 0,
+    deliverySavings: 60,
+    totalSavings: 90,
+  });
+  assert.equal(checkout.orders['ord-2026-10-17'].discount, 22.45);
+  assert.equal(checkout.orders['ord-sub-1'].discount, 7.55);
+  assert.equal(Object.values(checkout.orders).reduce((sum, order: any) => sum + Number(order.total || 0), 0), 636);
+});
+
+test('subscription checkout applies one flat delivery discount per scheduled delivery and server verifies it', async () => {
+  const preLaunch: CustomerOffer = {
+    id: 'pre-launch',
+    name: 'Pre Launch',
+    type: 'Delivery Charge',
+    active: true,
+    locationType: 'All Pincodes',
+    startDate: '2026-10-10',
+    endDate: '2026-10-31',
+    discountType: 'flat',
+    discountValue: 15,
+  };
+  const checkout = clientCheckout([], [
+    { product: broccoli, plan: monthly, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' },
+  ], [preLaunch]);
+  const order = checkout.orders['ord-sub-1'];
+  assert.equal(checkout.deliveryCharges.subscriptions[0].chargedDeliveryDates.length, 4);
+  assert.equal(checkout.offerResult.deliverySavings, 60);
+  assert.equal(order.deliveryFee, 100);
+  assert.equal(order.total, 500);
+  assert.equal((await (await verify(checkout, { offers: [preLaunch] })).run).reused, false);
+});
+
+test('mixed checkout discounts unique delivery dates once across one-time and subscription orders', () => {
+  const preLaunch: CustomerOffer = {
+    id: 'pre-launch',
+    name: 'Pre Launch',
+    type: 'deliveryCharge',
+    active: true,
+    locationType: 'all',
+    discountType: 'flat',
+    discountValue: 15,
+  };
+  const checkout = clientCheckout(
+    [{ product: broccoli, packaging: 100, quantity: 1, date: '2026-10-17' }],
+    [{ product: broccoli, plan: monthly, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }],
+    [preLaunch],
+  );
+  const deliveryPaid = Object.values(checkout.orders).reduce((sum, order: any) => sum + Number(order.deliveryFee || 0), 0);
+  assert.equal(checkout.deliveryCharges.uniqueDeliveryDates.length, 4);
+  assert.equal(checkout.offerResult.deliverySavings, 60);
+  assert.equal(deliveryPaid, 100);
+});
+
 // ---------------------------------------------------------------------------
 // G2 — server-authoritative totals
 // ---------------------------------------------------------------------------
@@ -204,7 +505,7 @@ test('G2: tampered subscription record (weight or deliveries) is rejected', asyn
 test('G2: subscription order priced below the plan is rejected', () => rejects((c) => { const o = c.orders['ord-sub-1']; o.items[0].unitPrice = 1; o.items[0].lineTotal = 1; o.subtotal = 1; o.total = 1; }));
 test('G2: orders for different delivery pincodes are rejected', () => rejects((c) => { c.orders['ord-sub-1'].deliveryAddress = { pincode: '560001' }; }));
 
-test('G2: paying more than the authoritative amount is accepted (single-subscription flow applies no offers)', async () => {
+test('G2: paying more than the authoritative amount is accepted for an order created before a price offer', async () => {
   const checkout = clientCheckout([], [{ product: broccoli, plan: monthly, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }], []);
   // Stored without the 10% offer that is active now.
   const { run } = await verify(checkout, { offers: [tenPercent] });
@@ -237,14 +538,15 @@ test('G2: without a record, an offer that ended after checkout makes the old low
   await assert.rejects(run, { message: TOTAL_NOT_VERIFIED });
 });
 
-test('G2: two subscriptions on the same plan — the existing per-plan delivery-fee lookup can only overcharge, never undercharge', async () => {
+test('G2: two subscriptions on the same plan allocate shared delivery dates only once', async () => {
   const checkout = clientCheckout([], [
     { product: broccoli, plan: monthly, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' },
     { product: radish, plan: monthly, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' },
   ], []);
-  // Same dates: the second subscription has no new delivery dates, but the per-plan lookup charges it again.
+  // Same dates: the second subscription has no new delivery dates and pays no duplicate delivery fee.
   assert.equal(checkout.deliveryCharges.subscriptions[1].termCharge, 0);
-  assert.equal(checkout.orders['ord-sub-2'].deliveryFee, 160);
+  assert.equal(checkout.orders['ord-sub-2'].deliveryFee, 0);
+  assert.equal(checkout.orders['ord-sub-2'].total, 400);
   assert.equal((await (await verify(checkout)).run).reused, false);
 });
 

@@ -38,6 +38,8 @@ import {
   loadActiveCustomerSubscriptionPlans,
   type CustomerSubscriptionPlan,
 } from "@/lib/customerSubscriptions";
+import { resolvePriceDisplay, scalePriceDisplay } from "@/lib/priceDisplay";
+import { getSubscriptionSellingOptions } from "@/lib/subscriptionPlanPricing";
 
 const money = (value: number, currency = "INR") => {
   try {
@@ -75,13 +77,7 @@ const activeProductOptions = (product?: SalesProduct): SalesProductSellingOption
     .sort((a, b) => a.weightGrams - b.weightGrams);
 
 const planOptions = (plan?: CustomerSubscriptionPlan) =>
-  (plan?.sellingOptions ?? [])
-    .filter((option) => Number(option.weightGrams) > 0 && Number(option.planPrice) >= 0)
-    .map((option) => ({
-      ...option,
-      weightGrams: Number(option.weightGrams),
-      planPrice: Number(option.planPrice),
-    }));
+  plan ? getSubscriptionSellingOptions(plan) : [];
 
 const groupCartItems = (oneTimeItems: CartItem[], subscriptionItems: SubscriptionCartItem[]) => {
   const groups = new Map<string, CartProductGroup>();
@@ -143,6 +139,19 @@ function CartProductCard({
   const selectedPlanEntry = availablePlanEntries.find((entry) => entry.plan.id === planId) ?? availablePlanEntries.find((entry) => entry.option);
   const quantity = Math.max(1, Number(current?.quantity ?? 1));
   const currency = product?.currency || current?.currency || "INR";
+  const oneTimePrice = Number(group.oneTime?.price ?? selectedProductOption?.price ?? 0);
+  const oneTimeMrp = Number(selectedProductOption?.mrp) > 0
+    ? selectedProductOption?.mrp
+    : group.oneTime?.mrp;
+  const oneTimePriceDisplay = resolvePriceDisplay(oneTimePrice, oneTimeMrp);
+  const subscriptionPrice = Number(group.subscription?.price ?? selectedPlanEntry?.option?.planPrice ?? 0);
+  const subscriptionPriceDisplay = resolvePriceDisplay(
+    subscriptionPrice,
+    selectedPlanEntry?.option?.maximumPlanPrice,
+  );
+  const selectedUnitPrice = mode === "one-time" ? oneTimePrice : subscriptionPrice;
+  const selectedPriceDisplay = mode === "one-time" ? oneTimePriceDisplay : subscriptionPriceDisplay;
+  const selectedTotalPriceDisplay = scalePriceDisplay(selectedPriceDisplay, quantity);
 
   const applyPackaging = (nextPackaging: number) => {
     setPackaging(nextPackaging);
@@ -296,16 +305,27 @@ function CartProductCard({
             <span className="cart-purchase-option-radio" aria-hidden="true">{mode === "one-time" ? "✓" : ""}</span>
             <span className="cart-purchase-option-copy">
               <strong>One-time</strong>
-              <small>{oneTimeOption ? money(oneTimeOption.price, currency) : "Not available"}</small>
+              <small>
+                {oneTimeOption && oneTimePriceDisplay.originalPrice !== undefined ? (
+                  <del className="mr-1 text-[10px] font-medium text-[var(--soft)]">
+                    {money(oneTimePriceDisplay.originalPrice, currency)}
+                  </del>
+                ) : null}
+                {oneTimeOption ? money(oneTimeOption.price, currency) : "Not available"}
+              </small>
             </span>
-            {oneTimeOption && oneTimeOption.mrp > oneTimeOption.price ? (
-              <span className="cart-purchase-save">Save {money(oneTimeOption.mrp - oneTimeOption.price, currency)}</span>
+            {oneTimeOption && oneTimePriceDisplay.savings !== undefined ? (
+              <span className="cart-purchase-save">Save {money(oneTimePriceDisplay.savings, currency)}</span>
             ) : null}
           </button>
 
           {availablePlanEntries.map(({ plan, option }) => {
             const selected = mode === "subscription" && plan.id === planId;
             const planName = plan.name || "Subscription";
+            const planPriceDisplay = resolvePriceDisplay(
+              Number(option?.planPrice ?? 0),
+              option?.maximumPlanPrice,
+            );
             return (
               <button
                 type="button"
@@ -318,10 +338,18 @@ function CartProductCard({
                 <span className="cart-purchase-option-copy">
                   <strong>{planName}</strong>
                   <small>
+                    {option && planPriceDisplay.originalPrice !== undefined ? (
+                      <del className="mr-1 text-[10px] font-medium text-[var(--soft)]">
+                        {money(planPriceDisplay.originalPrice, currency)}
+                      </del>
+                    ) : null}
                     {option ? money(option.planPrice, currency) : "Not available"}
                     {Number(plan.deliveriesPerTerm ?? 0) > 0 ? ` · ${Number(plan.deliveriesPerTerm)} deliveries` : ""}
                   </small>
                 </span>
+                {option && planPriceDisplay.savings !== undefined ? (
+                  <span className="cart-purchase-save">Save {money(planPriceDisplay.savings, currency)}</span>
+                ) : null}
               </button>
             );
           })}
@@ -345,10 +373,23 @@ function CartProductCard({
           </button>
         </div>
 
-        <strong className="cart-page-item-price cart-product-row-price">
-          {money(Number(current?.price ?? 0) * quantity, currency)}
-          {mode === "subscription" ? " / term" : ""}
-        </strong>
+        <div className="cart-page-item-price cart-product-row-price">
+          {selectedTotalPriceDisplay.originalPrice !== undefined ? (
+            <del className="block text-[11px] font-medium text-[var(--soft)]">
+              {money(selectedTotalPriceDisplay.originalPrice, currency)}
+              {mode === "subscription" ? " / term" : ""}
+            </del>
+          ) : null}
+          <strong className="block">
+            {money(selectedUnitPrice * quantity, currency)}
+            {mode === "subscription" ? " / term" : ""}
+          </strong>
+          {selectedTotalPriceDisplay.savings !== undefined ? (
+            <small className="block text-[11px] font-bold text-[var(--green-dark)]">
+              Save {money(selectedTotalPriceDisplay.savings, currency)}
+            </small>
+          ) : null}
+        </div>
       </div>
 
       {mode === "subscription" && group.subscription?.startDate ? (

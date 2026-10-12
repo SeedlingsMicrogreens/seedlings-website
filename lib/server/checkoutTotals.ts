@@ -1,6 +1,7 @@
 import {
   NO_OFFERS,
   allocateCheckoutTotals,
+  checkoutDeliveryChargeAmounts,
   computeCheckoutDeliveryCharges,
   computeCustomerOffers,
   getWeeklyDeliveryDates,
@@ -149,7 +150,7 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
       pincode, geoId, locationName: geoName,
       oneTimeSubtotal: oneSubtotal,
       subscriptionSubtotal: subscriptionEntries.reduce((sum, entry) => sum + entry.subtotal, 0),
-      oneTimeDelivery: deliveryCharges!.oneTimeTotal,
+      deliveryChargeAmounts: checkoutDeliveryChargeAmounts(deliveryCharges!),
     }, input.today)
     : NO_OFFERS;
 

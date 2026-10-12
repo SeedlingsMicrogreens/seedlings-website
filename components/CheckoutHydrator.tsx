@@ -2,9 +2,10 @@
 
 import React, { useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
+import { doc, getDoc } from 'firebase/firestore';
 import CheckoutAddressManager from '@/components/checkout/CheckoutAddressManager';
 import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
 import { waitForCustomerAuthReady } from '@/lib/authFlow';
 import { getCustomerAccount, updateCustomerAddresses, updateCustomerName, type CustomerAccount, type CustomerAddress } from '@/lib/customerAccount';
 import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
@@ -15,6 +16,8 @@ import { normalizeCustomerMobile } from '@/lib/customerIdentity';
 import { confirmHighDemandEnquiry, confirmPincodeUnavailable, showCustomerSuccess } from '@/lib/customerAlerts';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates, type CheckoutDeliveryCharges } from '@/lib/deliveryCharges';
 import { calculateCustomerOffers, type CheckoutOfferResult } from '@/lib/offers';
+import { checkoutDeliveryChargeAmounts, checkoutSavingsBreakdown, resolveSubscriptionPlanSavings } from '@/lib/checkoutPricing';
+import { resolvePriceDisplay, scalePriceDisplay } from '@/lib/priceDisplay';
 import { openCashfreeCheckout } from '@/lib/cashfreeClient';
 import { createCashfreeOrder } from '@/lib/cashfreeFunctions';
 
@@ -45,7 +48,11 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
     };
     const renderEmpty = () => root.innerHTML = `<section class="auth-wrap"><div class="auth-card"><span class="eyebrow">Checkout</span><h1>Your cart is empty</h1><p>Add fresh microgreens from the catalogue before checkout.</p><a class="btn primary" style="width:100%;text-align:center" href="/microgreens">Browse Microgreens</a></div></section>`;
 
-    const render = (mobile: string, account: CustomerAccount) => {
+    const render = (
+      mobile: string,
+      account: CustomerAccount,
+      subscriptionPlans: Map<string, Record<string, unknown>>,
+    ) => {
       const cart = getUnifiedCart();
       let addresses: CustomerAddress[] = Array.isArray(account.addresses) ? account.addresses.map((a, index) => ({ ...a, id: String(a.id || `address-${index}`) })) : [];
       let saved: any = null;
@@ -117,7 +124,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
         const rows: string[] = [];
         const hasSubscription = subs.length > 0;
         const oneTimeChargeBeforeOffer = Number(result.oneTimeTotal || 0);
-        const oneTimeDeliverySaving = hasSubscription ? 0 : Number(offerResult.deliverySavings || 0);
+        const oneTimeDeliverySaving = Number(offerResult.deliverySavings || 0);
         const oneTimeCharge = Math.max(0, oneTimeChargeBeforeOffer - oneTimeDeliverySaving);
 
         const deliveryAmounts = result.subscriptions.map((d, index) => ({
@@ -127,16 +134,21 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
             ? `${esc(subs[index]?.planName || 'Subscription')} · delivery dates already covered`
             : `${esc(subs[index]?.planName || 'Subscription')} · ${esc(money(d.perDeliveryCharge, currency))} × ${d.chargedDeliveryDates.length} delivery dates`,
         }));
-        const totalDeliveryCharge = hasSubscription
-          ? Number(result.total || 0)
-          : oneTimeCharge;
+        const oneTimeDetails = result.oneTime.chargedDeliveryDates.length
+          ? `${esc(money(result.oneTime.perDeliveryCharge, currency))} × ${result.oneTime.chargedDeliveryDates.length} one-time delivery dates`
+          : '';
+
+        const totalDeliveryCharge = Number(result.total || 0);
+        const finalDeliveryCharge = Math.max(0, totalDeliveryCharge - Number(offerResult.deliverySavings || 0));
 
         if (hasSubscription) {
-          const details = deliveryAmounts.map((entry) => entry.detail).join(' · ');
-          const deliveryValue = totalDeliveryCharge === 0
+          const details = [oneTimeDetails, ...deliveryAmounts.map((entry) => entry.detail)].filter(Boolean).join(' · ');
+          const deliveryMarkup = Number(offerResult.deliverySavings || 0) > 0
+            ? `<span class="checkout-delivery-price-stack"><s>${esc(money(totalDeliveryCharge, currency))}</s><strong>${esc(money(finalDeliveryCharge, currency))}</strong></span>`
+            : finalDeliveryCharge === 0
             ? '<strong>₹0 — FREE</strong>'
-            : `<strong>${esc(money(totalDeliveryCharge, currency))}</strong>`;
-          rows.push(`<div class="summary-row"><span>Delivery charge${details ? `<small class="muted" style="display:block">${details}</small>` : ''}</span><span>${deliveryValue}</span></div>`);
+            : `<strong>${esc(money(finalDeliveryCharge, currency))}</strong>`;
+          rows.push(`<div class="summary-row"><span>Delivery charge${details ? `<small class="muted" style="display:block">${details}</small>` : ''}</span><span>${deliveryMarkup}</span></div>`);
         } else if (one.length) {
           const deliveryMarkup = oneTimeDeliverySaving > 0
             ? `<span class="summary-amount-change"><s>${esc(money(oneTimeChargeBeforeOffer, currency))}</s> <strong>${esc(money(oneTimeCharge, currency))}</strong></span>`
@@ -148,12 +160,17 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
         // are shown above. This avoids showing an offer without applying it to
         // the amount the customer will actually pay.
         const offerPriceSaving = Math.max(0, Number(offerResult.priceSavings || 0));
-        const offerDeliverySaving = hasSubscription ? 0 : Math.max(0, Number(offerResult.deliverySavings || 0));
-        const baseDeliveryTotal = hasSubscription ? Number(result.total || 0) : oneTimeChargeBeforeOffer;
+        const offerDeliverySaving = Math.max(0, Number(offerResult.deliverySavings || 0));
+        const baseDeliveryTotal = Number(result.total || 0);
         const grandTotalValue = Math.max(0, subtotal + baseDeliveryTotal - offerPriceSaving - offerDeliverySaving);
-        const visibleOfferSaving = offerPriceSaving + offerDeliverySaving;
 
-        const applyItemOfferPrices = (selector: string, items: ReadonlyArray<{ price: number; quantity: number }>, totalSaving: number) => {
+        const applyItemOfferPrices = (
+          selector: string,
+          items: ReadonlyArray<{ price: number; quantity: number; mrp?: number; maximumPlanPrice?: number }>,
+          totalSaving: number,
+          showMrp = false,
+          referenceLabel = '',
+        ) => {
           const saving = Math.max(0, Number(totalSaving || 0));
           const total = items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
           let allocated = 0;
@@ -168,24 +185,74 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
             const finalPrice = Math.max(0, itemTotal - itemSaving);
             const node = root.querySelector(`${selector}[data-${selector.includes('subscription') ? 'subscription' : 'one-time'}-item-price="${index}"]`) as HTMLElement | null;
             if (!node) return;
-            node.innerHTML = itemSaving > 0
-              ? `<span class="summary-amount-change"><s>${esc(money(itemTotal, currency))}</s> <strong>${esc(money(finalPrice, currency))}</strong></span>`
-              : esc(money(itemTotal, currency));
+            const mrpDisplay = showMrp
+              ? scalePriceDisplay(resolvePriceDisplay(item.price, item.mrp), item.quantity)
+              : { originalPrice: undefined, savings: undefined };
+            const referenceDisplay = showMrp
+              ? mrpDisplay
+              : scalePriceDisplay(resolvePriceDisplay(item.price, item.maximumPlanPrice), item.quantity);
+            const referenceMarkup = referenceDisplay.originalPrice !== undefined
+              ? `<small class="checkout-item-mrp">${showMrp ? 'MRP ' : ''}<s>${esc(money(referenceDisplay.originalPrice, currency))}</s></small>`
+              : '';
+            const currentPriceMarkup = itemSaving > 0
+              ? `<span class="summary-amount-change"><s>${esc(money(itemTotal, currency))}</s><strong>${esc(money(finalPrice, currency))}</strong></span>`
+              : `<strong>${esc(money(itemTotal, currency))}</strong>`;
+            node.innerHTML = showMrp
+              ? `${referenceMarkup}${currentPriceMarkup}`
+              : `<span class="checkout-subscription-price-stack">${referenceMarkup}${currentPriceMarkup}</span>`;
           });
         };
 
-        applyItemOfferPrices('[data-subscription-item-price]', subs, offerResult.subscriptionPriceSavings);
-        applyItemOfferPrices('[data-one-time-item-price]', one, offerResult.oneTimePriceSavings);
+        const subscriptionPlanDisplays = subs.map((item) => {
+          const planDisplay = resolveSubscriptionPlanSavings(subscriptionPlans.get(item.planId), {
+            sellingOptionId: item.sellingOptionId,
+            packaging: item.packaging,
+            planPrice: item.price,
+            quantity: item.quantity,
+          });
+          return { ...item, maximumPlanPrice: planDisplay.maximumPlanPrice, planSavings: planDisplay.savings };
+        });
+        const subscriptionPlanSaving = subscriptionPlanDisplays.reduce((sum, item) => sum + item.planSavings, 0);
+        applyItemOfferPrices('[data-subscription-item-price]', subscriptionPlanDisplays, offerResult.subscriptionPriceSavings);
+        applyItemOfferPrices('[data-one-time-item-price]', one, offerResult.oneTimePriceSavings, true);
 
-        if (visibleOfferSaving > 0) {
-          const offerNames = [offerResult.priceOffer?.name, offerResult.deliveryOffer?.name]
-            .filter(Boolean)
-            .map((name) => cleanOfferLabel(name))
-            .filter(Boolean);
-          const offerMessage = offerNames.length === 1
-            ? `🎉 You saved ${money(visibleOfferSaving, currency)} with the ${offerNames[0]} offer`
-            : `🎉 You saved ${money(visibleOfferSaving, currency)} with your offers`;
-          rows.push(`<div class="summary-row summary-saving checkout-offer-total-saving"><span>${esc(offerMessage)}</span></div>`);
+        const mrpSavings = one.reduce((sum, item) =>
+          sum + (scalePriceDisplay(resolvePriceDisplay(item.price, item.mrp), item.quantity).savings || 0), 0);
+        const savings = checkoutSavingsBreakdown({
+          mrpSavings,
+          priceOfferSavings: offerResult.priceSavings,
+          subscriptionPlanSavings: subscriptionPlanSaving,
+          deliverySavings: offerResult.deliverySavings,
+        });
+        const priceOfferName = cleanOfferLabel(offerResult.priceOffer?.name);
+        const deliveryOfferName = cleanOfferLabel(offerResult.deliveryOffer?.name);
+        const offerLabel = (name: string, fallback: string) =>
+          `${name || fallback}${/offer$/i.test(name) ? '' : ' offer'}`;
+        const priceOfferApplied = offerResult.priceSavings > 0;
+        if (savings.productSavings > 0 && (priceOfferApplied || savings.mrpSavings > 0)) {
+          const title = priceOfferApplied
+            ? `🎉 You saved ${money(savings.productSavings, currency)} with the ${esc(offerLabel(priceOfferName, 'Price Offer'))}!`
+            : `🎉 You saved ${money(savings.productSavings, currency)} on product pricing!`;
+          const productBreakdown = [
+            savings.mrpSavings > 0 ? `${money(savings.mrpSavings, currency)} MRP savings` : '',
+            offerPriceSaving > 0 ? `${money(offerPriceSaving, currency)} offer savings` : '',
+          ].filter(Boolean).join(' + ');
+          rows.push(`<div class="checkout-savings-banner"><strong>${title}</strong>${productBreakdown ? `<small>${esc(productBreakdown)}</small>` : ''}</div>`);
+        }
+        if (savings.deliverySavings > 0) {
+          const name = offerLabel(deliveryOfferName, 'Delivery Charge');
+          rows.push(`<div class="checkout-savings-banner"><strong>🎉 You saved ${esc(money(savings.deliverySavings, currency))} with the ${esc(name)}!</strong></div>`);
+        }
+        if (savings.subscriptionPlanSavings > 0) {
+          rows.push(`<div class="checkout-savings-banner"><strong>🎉 You saved ${esc(money(savings.subscriptionPlanSavings, currency))} on subscription plans!</strong></div>`);
+        }
+        if (savings.totalSavings > 0) {
+          const combinedBreakdown = [
+            savings.productSavings > 0 ? `${money(savings.productSavings, currency)} product savings` : '',
+            savings.subscriptionPlanSavings > 0 ? `${money(savings.subscriptionPlanSavings, currency)} subscription savings` : '',
+            savings.deliverySavings > 0 ? `${money(savings.deliverySavings, currency)} delivery savings` : '',
+          ].filter(Boolean).join(' + ');
+          rows.push(`<div class="checkout-savings-banner checkout-savings-combined"><span>🎉 You saved a total of</span><strong>${esc(money(savings.totalSavings, currency))}</strong><small>${esc(combinedBreakdown)}</small></div>`);
         }
 
         if (deliverySummary) deliverySummary.innerHTML = rows.join('');
@@ -221,7 +288,14 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           const geoId = result.oneTime.sourceId || result.subscriptions[0]?.sourceId || '';
           const locationName = result.oneTime.sourceName || result.subscriptions[0]?.sourceName || '';
           const offerResult = (one.length || subs.length) && geoId
-            ? await calculateCustomerOffers({ pincode, geoId, locationName, oneTimeSubtotal: oneTotal, subscriptionSubtotal: subTotal, oneTimeDelivery: result.oneTimeTotal })
+            ? await calculateCustomerOffers({
+              pincode,
+              geoId,
+              locationName,
+              oneTimeSubtotal: oneTotal,
+              subscriptionSubtotal: subTotal,
+              deliveryChargeAmounts: checkoutDeliveryChargeAmounts(result),
+            })
             : { priceSavings: 0, oneTimePriceSavings: 0, subscriptionPriceSavings: 0, deliverySavings: 0, totalSavings: 0 };
           if (dead || request !== deliveryRequest) return;
           renderDelivery(result, offerResult);
@@ -374,7 +448,18 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           window.dispatchEvent(new CustomEvent('seedlings-open-login', { detail: { redirectTo: null } }));
           return;
         }
-        render(mobile, account);
+        const planIds = [...new Set(c.subscriptionItems.map((item) => item.planId).filter(Boolean))];
+        const planEntries = await Promise.all(planIds.map(async (planId) => {
+          try {
+            const snapshot = await getDoc(doc(db, 'subscriptionPlans', planId));
+            return snapshot.exists() ? [planId, snapshot.data() as Record<string, unknown>] as const : null;
+          } catch (error) {
+            console.error(`Unable to load subscription plan ${planId} for checkout reference pricing.`, error);
+            return null;
+          }
+        }));
+        if (requestId !== latestStartRequest || dead) return;
+        render(mobile, account, new Map(planEntries.filter((entry): entry is NonNullable<typeof entry> => entry !== null)));
       } catch (e) {
         if (requestId !== latestStartRequest || dead) return;
         console.error('Checkout customer hydration failed.', e);

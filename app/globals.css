@@ -437,6 +437,85 @@ button {
   font-weight: 700;
 }
 
+.checkout-savings-banner {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--green-tint);
+  color: var(--green-dark);
+}
+
+.checkout-savings-banner strong {
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.checkout-savings-banner small {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.checkout-savings-combined {
+  justify-items: center;
+  text-align: center;
+  gap: 4px;
+  padding: 16px;
+}
+
+.checkout-savings-combined > span {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.checkout-savings-combined strong {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.checkout-savings-combined small {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.checkout-subscription-price-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.checkout-delivery-price-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.checkout-delivery-price-stack s {
+  color: #8a8176;
+  font-weight: 500;
+}
+
+.checkout-delivery-price-stack strong {
+  color: var(--green-dark);
+  font-weight: 800;
+}
+
+.checkout-item-mrp {
+  display: block;
+  color: #756d63;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: right;
+}
+
 .summary-offer-adjustment {
   margin-top: 2px;
   color: var(--green-dark);

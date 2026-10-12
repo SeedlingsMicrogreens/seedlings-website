@@ -3,7 +3,14 @@
 import { useEffect, useState } from 'react';
 import type { FeaturedProduct } from '@/lib/products';
 import { productSlug } from '@/lib/salesProducts';
-import { addToCart, getCart, setCartQuantity } from '@/lib/cart';
+import {
+  addToCart,
+  cartQuantityForProduct,
+  getUnifiedCart,
+  latestProductCartEntry,
+  setCartQuantity,
+  setSubscriptionCartQuantity,
+} from '@/lib/cart';
 
 const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 const stripRichText = (value: unknown) => text(value).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -24,8 +31,7 @@ export default function ProductCard({ product, showDescription = true }: Product
 
   useEffect(() => {
     const sync = () => {
-      const item = getCart().find((entry) => entry.productId === product.id);
-      setQuantity(item?.quantity || 0);
+      setQuantity(cartQuantityForProduct(getUnifiedCart(), product.id));
     };
     sync();
     window.addEventListener('seedlings-cart-updated', sync);
@@ -53,13 +59,17 @@ export default function ProductCard({ product, showDescription = true }: Product
   };
 
   const decrease = () => {
-    const current = getCart().find((entry) => entry.productId === product.id);
-    if (current) setCartQuantity(product.id, current.quantity - 1);
+    const current = latestProductCartEntry(getUnifiedCart(), product.id);
+    if (current?.type === 'one-time') setCartQuantity(product.id, current.item.quantity - 1);
+    else if (current?.type === 'subscription') {
+      setSubscriptionCartQuantity(product.id, current.item.planId, current.item.startDate, current.item.quantity - 1);
+    }
   };
 
   const increase = () => {
-    const current = getCart().find((entry) => entry.productId === product.id);
+    const current = getUnifiedCart().oneTimeItems.find((entry) => entry.productId === product.id);
     if (current) setCartQuantity(product.id, current.quantity + 1);
+    else add();
   };
 
   return <article className="card">

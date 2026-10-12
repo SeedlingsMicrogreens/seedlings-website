@@ -13,8 +13,8 @@ import {
 import {
   addToCart,
   addSubscriptionToCart,
-  getCart,
   getUnifiedCart,
+  latestProductCartEntry,
   setCartQuantity,
   setCartPackaging,
   setSubscriptionCartQuantity,
@@ -26,24 +26,24 @@ import {
 import { nextWeekSaturday } from "@/lib/customerOrderAvailability";
 import { PACKAGING_OPTIONS, packagingLabel } from "@/lib/packaging";
 import type { SalesProductSellingOption } from "@/lib/salesProducts";
+import { resolvePriceDisplay } from "@/lib/priceDisplay";
+import {
+  getSubscriptionSellingOptions,
+  resolveSubscriptionPlanPrices,
+  type SubscriptionSellingOptionPrice,
+} from "@/lib/subscriptionPlanPricing";
 import {
   cmsCollections,
   getDocById,
   getPublishedCollection,
 } from "@/lib/cms";
 
-type SubscriptionPlanSellingOption = {
-  id: string;
-  weightGrams: number;
-  planPrice: number;
-};
-
 type SubscriptionPlan = {
   id: string;
   name?: string;
   frequency?: string;
   price?: number;
-  sellingOptions?: SubscriptionPlanSellingOption[];
+  sellingOptions?: SubscriptionSellingOptionPrice[];
   deliveriesPerTerm?: number | string;
   description?: string;
   active?: boolean;
@@ -273,36 +273,40 @@ function activeSellingOptions(product: SalesProduct): SalesProductSellingOption[
 function PurchaseOptions({
   product,
   plans,
+  plansLoaded,
 }: {
   product: SalesProduct;
   plans: SubscriptionPlan[];
+  plansLoaded: boolean;
 }) {
   const options = activeSellingOptions(product);
-  const fallbackWeights = options.length ? options.map((option) => option.weightGrams) : PACKAGING_OPTIONS;
+  const fallbackWeights: readonly number[] = options.length ? options.map((option) => option.weightGrams) : PACKAGING_OPTIONS;
   const initialOption = options[0];
+  const nextSaturday = nextWeekSaturday();
   const [selectedSellingOptionId, setSelectedSellingOptionId] = useState(initialOption?.id || '');
   const [packaging, setPackaging] = useState(initialOption?.weightGrams || 100);
-  const [selectedPurchase, setSelectedPurchase] = useState<string>(product.oneTimePurchase ? 'one-time' : (plans[0] ? `subscription:${plans[0].id}` : ''));
+  const [selectedPurchase, setSelectedPurchase] = useState<string>(
+    product.oneTimePurchase ? 'one-time' : (plans[0] ? `subscription:${plans[0].id}` : ''),
+  );
+  const [selectedSubscriptionStartDate, setSelectedSubscriptionStartDate] = useState(nextSaturday);
   const [quantity, setQuantity] = useState(0);
 
   const selectedOption = options.find((option) => option.id === selectedSellingOptionId)
     ?? options.find((option) => option.weightGrams === packaging);
 
   const planEntries = plans.map((plan) => {
-    const planOptions = (plan.sellingOptions ?? [])
-      .filter((option) => Number(option?.weightGrams) > 0 && Number(option?.planPrice) >= 0)
-      .map((option) => ({
-        ...option,
-        weightGrams: Number(option.weightGrams),
-        planPrice: Number(option.planPrice),
-      }));
-    const matched = planOptions.find((option) => String(option.id) === String(selectedOption?.id))
-      ?? planOptions.find((option) => option.weightGrams === packaging);
+    const planOptions = getSubscriptionSellingOptions(plan);
+    const prices = resolveSubscriptionPlanPrices(plan, {
+      sellingOptionId: selectedOption?.id,
+      packaging,
+    });
+    const matched = prices.option;
     return {
       plan,
       option: matched,
       available: planOptions.length === 0 || Boolean(matched),
-      price: Number(matched?.planPrice ?? plan.price ?? 0),
+      price: prices.price,
+      maximumPlanPrice: prices.maximumPlanPrice,
     };
   });
 
@@ -312,31 +316,86 @@ function PurchaseOptions({
 
   const selectedOneTimePrice = selectedOption?.price ?? Number(product.sellingPrice ?? 0);
   const selectedOneTimeMrp = selectedOption?.mrp ?? Number(product.mrp ?? selectedOneTimePrice);
+  const oneTimePriceDisplay = resolvePriceDisplay(selectedOneTimePrice, selectedOneTimeMrp);
   const selectedSubscriptionPrice = selectedPlanEntry?.price ?? 0;
-  const nextSaturday = nextWeekSaturday();
 
-  const readQuantity = (purchaseKey: string) => {
+  const readQuantity = (purchaseKey: string, startDate = nextSaturday) => {
     const cart = getUnifiedCart();
     if (purchaseKey === 'one-time') {
       return cart.oneTimeItems.find((item) => item.productId === product.id)?.quantity || 0;
     }
     const planId = purchaseKey.replace('subscription:', '');
     return cart.subscriptionItems.find(
-      (item) => item.productId === product.id && item.planId === planId && item.startDate === nextSaturday,
+      (item) => item.productId === product.id && item.planId === planId && item.startDate === startDate,
     )?.quantity || 0;
   };
 
   useEffect(() => {
-    setQuantity(readQuantity(selectedPurchase));
-  }, [selectedPurchase, product.id]);
+    const entry = latestProductCartEntry(getUnifiedCart(), product.id);
+    if (!entry) return;
+
+    const restoredPackaging = fallbackWeights.includes(entry.item.packaging)
+      ? entry.item.packaging
+      : initialOption?.weightGrams || 100;
+    setPackaging(restoredPackaging);
+    setSelectedSellingOptionId(
+      options.find((option) => option.weightGrams === restoredPackaging)?.id
+        || entry.item.sellingOptionId
+        || initialOption?.id
+        || '',
+    );
+    setSelectedPurchase(
+      entry.type === 'one-time' ? 'one-time' : `subscription:${entry.item.planId}`,
+    );
+    if (entry.type === 'subscription') setSelectedSubscriptionStartDate(entry.item.startDate);
+    setQuantity(entry.item.quantity);
+  // Restore only after hydration so server and initial client markup remain consistent.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    if (!selectedPurchase && product.oneTimePurchase) {
-      setSelectedPurchase('one-time');
-    } else if (!selectedPurchase && plans.length > 0) {
-      setSelectedPurchase(`subscription:${plans[0].id}`);
+    const syncQuantity = () => setQuantity(readQuantity(selectedPurchase, selectedSubscriptionStartDate));
+    syncQuantity();
+    window.addEventListener('seedlings-cart-updated', syncQuantity);
+    return () => window.removeEventListener('seedlings-cart-updated', syncQuantity);
+  }, [selectedPurchase, selectedSubscriptionStartDate, product.id]);
+
+  useEffect(() => {
+    if (!plansLoaded) return;
+    const selectedEntry = planEntries.find((entry) => `subscription:${entry.plan.id}` === selectedPurchase);
+    if (selectedPurchase === 'one-time' && product.oneTimePurchase) return;
+    if (selectedEntry?.available) return;
+
+    const availableEntry = planEntries.find((entry) => entry.available);
+    if (availableEntry) {
+      setSelectedPurchase(`subscription:${availableEntry.plan.id}`);
+      setQuantity(readQuantity(`subscription:${availableEntry.plan.id}`, selectedSubscriptionStartDate));
+      return;
     }
-  }, [plans, product.oneTimePurchase, selectedPurchase]);
+
+    const fallbackPlan = plans.find((plan) => {
+      const planOptions = getSubscriptionSellingOptions(plan);
+      return planOptions.some((option) => fallbackWeights.includes(option.weightGrams));
+    });
+    const fallbackPlanOption = fallbackPlan
+      ? getSubscriptionSellingOptions(fallbackPlan).find((option) => fallbackWeights.includes(option.weightGrams))
+      : undefined;
+    if (fallbackPlan && fallbackPlanOption) {
+      setSelectedPurchase(`subscription:${fallbackPlan.id}`);
+      setPackaging(fallbackPlanOption.weightGrams);
+      setSelectedSellingOptionId(options.find((option) => option.weightGrams === fallbackPlanOption.weightGrams)?.id || '');
+      setSelectedSubscriptionStartDate(nextSaturday);
+      setQuantity(readQuantity(`subscription:${fallbackPlan.id}`, nextSaturday));
+    } else if (product.oneTimePurchase) {
+      setSelectedPurchase('one-time');
+      setQuantity(readQuantity('one-time'));
+    } else {
+      setSelectedPurchase('');
+      setQuantity(0);
+    }
+  // Reconcile a restored cart selection only after this product's plan list is loaded.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plansLoaded, product.id, selectedPurchase, packaging, selectedSellingOptionId]);
 
   const changePackaging = (value: number) => {
     const next = Number(value) || fallbackWeights[0] || 100;
@@ -357,15 +416,16 @@ function PurchaseOptions({
     } else if (selectedPurchase.startsWith('subscription:')) {
       const planId = selectedPurchase.replace('subscription:', '');
       const entry = planEntries.find((item) => item.plan.id === planId);
-      if (entry && cart.subscriptionItems.some((item) => item.productId === product.id && item.planId === planId && item.startDate === nextSaturday)) {
-        const option = (entry.plan.sellingOptions ?? [])
-          .map((item) => ({ ...item, weightGrams: Number(item.weightGrams), planPrice: Number(item.planPrice) }))
-          .find((item) => String(item.id) === String(nextOption?.id) || Number(item.weightGrams) === next);
+      if (entry && cart.subscriptionItems.some((item) => item.productId === product.id && item.planId === planId && item.startDate === selectedSubscriptionStartDate)) {
+        const option = resolveSubscriptionPlanPrices(entry.plan, {
+          sellingOptionId: nextOption?.id,
+          packaging: next,
+        }).option;
         if (option) {
           setSubscriptionCartPackaging(
             product.id,
             planId,
-            nextSaturday,
+            selectedSubscriptionStartDate,
             next,
             option.planPrice,
             option.id,
@@ -381,8 +441,13 @@ function PurchaseOptions({
       ? planEntries.find((item) => `subscription:${item.plan.id}` === purchaseKey)
       : undefined;
     if (entry && !entry.available) return;
+    const latestEntry = latestProductCartEntry(getUnifiedCart(), product.id);
+    const startDate = entry && latestEntry?.type === 'subscription' && latestEntry.item.planId === entry.plan.id
+      ? latestEntry.item.startDate
+      : nextSaturday;
+    setSelectedSubscriptionStartDate(startDate);
     setSelectedPurchase(purchaseKey);
-    setQuantity(readQuantity(purchaseKey));
+    setQuantity(readQuantity(purchaseKey, startDate));
   };
 
   const addSelected = () => {
@@ -423,7 +488,7 @@ function PurchaseOptions({
           planName: selectedPlanEntry.plan.name || subscriptionFrequencyLabel(selectedPlanEntry.plan.frequency),
           frequency: selectedPlanEntry.plan.frequency,
           deliveriesPerTerm: Number(selectedPlanEntry.plan.deliveriesPerTerm ?? 0) || undefined,
-          startDate: nextSaturday,
+          startDate: selectedSubscriptionStartDate,
         },
         1,
       );
@@ -437,7 +502,7 @@ function PurchaseOptions({
       setCartQuantity(product.id, nextQuantity);
     } else {
       const planId = selectedPurchase.replace('subscription:', '');
-      setSubscriptionCartQuantity(product.id, planId, nextSaturday, nextQuantity);
+      setSubscriptionCartQuantity(product.id, planId, selectedSubscriptionStartDate, nextQuantity);
     }
     setQuantity(nextQuantity);
   };
@@ -452,7 +517,7 @@ function PurchaseOptions({
       setCartQuantity(product.id, nextQuantity);
     } else {
       const planId = selectedPurchase.replace('subscription:', '');
-      setSubscriptionCartQuantity(product.id, planId, nextSaturday, nextQuantity);
+      setSubscriptionCartQuantity(product.id, planId, selectedSubscriptionStartDate, nextQuantity);
     }
     setQuantity(nextQuantity);
   };
@@ -490,8 +555,17 @@ function PurchaseOptions({
               <small>Buy once</small>
             </span>
             <span className="product-purchase-choice-price">
-              <strong>{money(selectedOneTimePrice, product.currency || 'INR')}</strong>
-              {selectedOneTimeMrp > selectedOneTimePrice ? <small>Save {money(selectedOneTimeMrp - selectedOneTimePrice, product.currency || 'INR')}</small> : null}
+              <span className="flex items-center justify-end gap-2">
+                {oneTimePriceDisplay.originalPrice !== undefined ? (
+                  <del className="text-[11px] font-medium text-[var(--soft)]">
+                    MRP {money(oneTimePriceDisplay.originalPrice, product.currency || 'INR')}
+                  </del>
+                ) : null}
+                <strong>{money(selectedOneTimePrice, product.currency || 'INR')}</strong>
+              </span>
+              {oneTimePriceDisplay.savings !== undefined ? (
+                <small>Save {money(oneTimePriceDisplay.savings, product.currency || 'INR')}</small>
+              ) : null}
             </span>
           </button>
         ) : null}
@@ -519,8 +593,11 @@ function PurchaseOptions({
                 </small>
               </span>
               <span className="product-purchase-choice-price">
+                {entry.available && entry.maximumPlanPrice !== undefined ? (
+                  <del className="text-xs text-[#8a7967]">{money(entry.maximumPlanPrice, product.currency || 'INR')}</del>
+                ) : null}
                 {entry.available ? <strong>{money(price, product.currency || 'INR')}</strong> : <strong>Not available</strong>}
-                {entry.available && selectedOneTimePrice > price ? <small>Save {money(selectedOneTimePrice - price, product.currency || 'INR')}</small> : null}
+                {entry.available && entry.maximumPlanPrice !== undefined ? <small>Save {money(entry.maximumPlanPrice - price, product.currency || 'INR')}</small> : null}
               </span>
             </button>
           );
@@ -551,7 +628,7 @@ function PurchaseOptions({
         ) : null}
       </div>
       {selectedPurchase.startsWith('subscription:') ? (
-        <p className="product-purchase-note">First delivery: {nextSaturday}. You can change the start date in your cart.</p>
+        <p className="product-purchase-note">First delivery: {selectedSubscriptionStartDate}. You can change the start date in your cart.</p>
       ) : null}
     </div>
   );
@@ -589,9 +666,7 @@ function SubscriptionSheet({
       : plans[0]?.id || "",
   );
   const selectedPlan = plans.find((plan) => plan.id === selectedPlanId);
-  const planSellingOptions = (selectedPlan?.sellingOptions ?? [])
-    .filter((option) => Number(option?.weightGrams) > 0 && Number(option?.planPrice) >= 0)
-    .map((option) => ({ ...option, weightGrams: Number(option.weightGrams), planPrice: Number(option.planPrice) }));
+  const planSellingOptions = selectedPlan ? getSubscriptionSellingOptions(selectedPlan) : [];
   const hasPlanSellingOptions = planSellingOptions.length > 0;
   const initialOption = planSellingOptions.find((option) => option.weightGrams === Number(initialPackaging)) ?? planSellingOptions[0];
   const [quantity, setQuantity] = useState(Math.max(1, initialQuantity));
@@ -600,17 +675,19 @@ function SubscriptionSheet({
   const [startDate, setStartDate] = useState(validInitialDate);
 
   useEffect(() => {
-    const options = (plans.find((plan) => plan.id === selectedPlanId)?.sellingOptions ?? [])
-      .filter((option) => Number(option?.weightGrams) > 0 && Number(option?.planPrice) >= 0)
-      .map((option) => ({ ...option, weightGrams: Number(option.weightGrams), planPrice: Number(option.planPrice) }));
+    const selectedPlan = plans.find((plan) => plan.id === selectedPlanId);
+    const options = selectedPlan ? getSubscriptionSellingOptions(selectedPlan) : [];
     const current = options.find((option) => option.id === selectedSellingOptionId);
     const next = current ?? options.find((option) => option.weightGrams === packaging) ?? options[0];
     setSelectedSellingOptionId(next?.id || '');
     setPackaging(next?.weightGrams || Math.max(100, initialPackaging || 100));
   }, [selectedPlanId, plans]);
 
-  const selectedSellingOption = planSellingOptions.find((option) => option.id === selectedSellingOptionId);
-  const selectedPlanPrice = selectedSellingOption?.planPrice ?? Number(selectedPlan?.price ?? 0);
+  const selectedPlanPrices = selectedPlan
+    ? resolveSubscriptionPlanPrices(selectedPlan, { sellingOptionId: selectedSellingOptionId, packaging })
+    : { option: undefined, price: 0, maximumPlanPrice: undefined };
+  const selectedSellingOption = selectedPlanPrices.option;
+  const selectedPlanPrice = selectedPlanPrices.price;
 
   const submit = () => {
     const parsed = new Date(`${startDate}T00:00:00`);
@@ -697,30 +774,41 @@ function SubscriptionSheet({
           </div>
 
           <div className="subscribe-plan-grid-modal">
-            {plans.map((plan) => (
-              <button
-                type="button"
-                key={plan.id}
-                className={`subscribe-plan-option${
-                  plan.id === selectedPlanId ? " active" : ""
-                }`}
-                onClick={() => setSelectedPlanId(plan.id)}
-              >
-                <strong>
-                  {plan.name || subscriptionFrequencyLabel(plan.frequency)}
-                </strong>
-                <span>
-                  {money(Number(plan.price ?? 0), product.currency || "INR")} / term
-                </span>
-                <small>
-                  {Number(plan.deliveriesPerTerm ?? 0) > 0
-                    ? `${Number(plan.deliveriesPerTerm)} deliveries / term`
-                    : "Ongoing deliveries"}{" "}
-                  ·{" "}
-Delivery charge based on delivery address
-                </small>
-              </button>
-            ))}
+            {plans.map((plan) => {
+              const prices = resolveSubscriptionPlanPrices(plan, {
+                sellingOptionId: selectedSellingOptionId,
+                packaging,
+              });
+              return (
+                <button
+                  type="button"
+                  key={plan.id}
+                  className={`subscribe-plan-option${
+                    plan.id === selectedPlanId ? " active" : ""
+                  }`}
+                  onClick={() => setSelectedPlanId(plan.id)}
+                >
+                  <strong>
+                    {plan.name || subscriptionFrequencyLabel(plan.frequency)}
+                  </strong>
+                  {prices.maximumPlanPrice !== undefined ? (
+                    <del className="text-xs text-[#8a7967]">
+                      {money(prices.maximumPlanPrice, product.currency || "INR")}
+                    </del>
+                  ) : null}
+                  <span>{money(prices.price, product.currency || "INR")} / term</span>
+                  {prices.maximumPlanPrice !== undefined ? (
+                    <small>Save {money(prices.maximumPlanPrice - prices.price, product.currency || "INR")}</small>
+                  ) : null}
+                  <small>
+                    {Number(plan.deliveriesPerTerm ?? 0) > 0
+                      ? `${Number(plan.deliveriesPerTerm)} deliveries / term`
+                      : "Ongoing deliveries"}{" "}
+                    · Delivery charge based on delivery address
+                  </small>
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -767,7 +855,17 @@ Delivery charge based on delivery address
               <button type="button" aria-label="Increase quantity" onClick={() => setQuantity((value) => value + 1)}>+</button>
             </div>
             <div className="mt-2 text-sm font-bold text-[#6fa82e]">
+              {selectedPlanPrices.maximumPlanPrice !== undefined ? (
+                <del className="mr-2 text-xs font-medium text-[#8a7967]">
+                  {money(selectedPlanPrices.maximumPlanPrice * quantity, product.currency || "INR")}
+                </del>
+              ) : null}
               {money(selectedPlanPrice * quantity, product.currency || "INR")} / term
+              {selectedPlanPrices.maximumPlanPrice !== undefined ? (
+                <small className="ml-2">
+                  Save {money((selectedPlanPrices.maximumPlanPrice - selectedPlanPrice) * quantity, product.currency || "INR")}
+                </small>
+              ) : null}
             </div>
           </div>
 
@@ -805,6 +903,7 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
   const [loading, setLoading] = useState(true);
   const [productError, setProductError] = useState(false);
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
+  const [plansLoaded, setPlansLoaded] = useState(false);
   const [subscribeOpen, setSubscribeOpen] = useState(false);
   const [navItems, setNavItems] = useState<NavItem[]>([]);
   const [settings, setSettings] = useState<SiteSettings | null>(null);
@@ -904,6 +1003,7 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
     }
 
     let dead = false;
+    setPlansLoaded(false);
     void (async () => {
       try {
         const loaded = await loadActiveCustomerSubscriptionPlans(product.id);
@@ -914,13 +1014,19 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
           )
           .map((plan) => ({ ...plan }) as SubscriptionPlan);
 
-        if (!dead) setPlans(active);
+        if (!dead) {
+          setPlans(active);
+          setPlansLoaded(true);
+        }
       } catch (error) {
         console.warn(
           "Subscription plans could not be loaded from website Firebase",
           error,
         );
-        if (!dead) setPlans([]);
+        if (!dead) {
+          setPlans([]);
+          setPlansLoaded(true);
+        }
       }
     })();
 
@@ -1002,7 +1108,7 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
                       {product.name}
                     </h1>
                     <div className="mt-3">
-                      <PurchaseOptions product={product} plans={plans} />
+                      <PurchaseOptions key={product.id} product={product} plans={plans} plansLoaded={plansLoaded} />
                     </div>
 
                     <div className="mt-5 grid gap-3 sm:grid-cols-3">

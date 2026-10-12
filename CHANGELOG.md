@@ -1,3 +1,26 @@
+## Checkout — Stack delivery prices and center combined savings
+- Stack the undiscounted delivery total above the discounted delivery total when a delivery offer applies, keeping both prices right-aligned and the payable amount green.
+- Render combined savings as three centered lines (heading, prominent amount, and applicable savings breakdown), below the unchanged individual savings banners.
+
+## Checkout — Stack subscription reference pricing and clarify combined savings
+- Show the selected subscription's original reference price as an unlabeled strikethrough above its actual plan price.
+- Keep individual plan and delivery savings banners and present the combined total as one prominent message with a breakdown containing only the savings categories that apply.
+
+## Checkout — Include subscription plan savings in combined savings
+- Display a selected subscription selling option's persisted `maximumPlanPrice` as a reference price when it exceeds `planPrice`; scale its savings by cart quantity and keep it separate from Delivery Charge Offer savings.
+- Include subscription plan savings in the combined savings summary without changing checkout totals or payment amounts. Legacy plans without a valid maximum price retain the existing price display.
+
+## Checkout — Highlight individual and combined offer savings
+- Show one-time MRP and regular selling-price references alongside the final Price Offer price, with MRP savings and applied Price Offer savings itemized in the savings banner.
+- Show applied Delivery Charge Offer savings separately, then show one combined savings panel summing MRP, price-offer and delivery-offer savings without double-counting.
+- Keep subscription plan prices and payable checkout totals unchanged; Quantity Offers remain undisplayed because Website checkout does not currently apply them.
+
+## Checkout — Apply Delivery Charge offers to subscriptions
+- Fixed delivery-offer evaluation to use all unique delivery dates in the checkout, including scheduled subscription deliveries, rather than only one-time delivery charges.
+- Apply configured flat or percentage savings per charged delivery; preserve the undiscounted subscription plan price and apply the delivery savings only to delivery fees.
+- Use the same eligibility and allocation rules in checkout display/order creation, standalone subscription purchases, and server-authoritative total verification.
+- Validate active status, inclusive India-local date ranges, offer type and all-pincodes or matching-pincode scope using Offers Master fields.
+
 ## Customer OTP error handling correction
 - Display an incorrect-OTP message when `/api/customer/auth/verify-otp` returns `Invalid OTP`, instead of replacing it with a generic connection error.
 - Clear the OTP field after an incorrect attempt so the customer can re-enter it without reopening the login modal.

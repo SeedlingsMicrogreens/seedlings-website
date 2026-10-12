@@ -3,7 +3,7 @@ import { adminDb } from '@/lib/server/firebaseAdmin';
 import { cashfreeRequest, cashfreeReturnUrl, cashfreeWebhookUrl } from '@/lib/server/cashfree';
 import { HttpError } from '@/lib/server/httpError';
 import { verifyCheckoutTotals, type CheckoutTotalsStore } from '@/lib/server/checkoutTotals';
-import type { CustomerOffer } from '@/lib/checkoutPricing';
+import { indiaDateToday, type CustomerOffer } from '@/lib/checkoutPricing';
 import { verifyAndFinalizeCashfreePayment } from '@/lib/server/cashfreePayment';
 import { isUnpayableCashfreeStatus, terminateCashfreeOrder } from '@/lib/server/cashfreeTermination';
 
@@ -46,9 +46,6 @@ export const cashfreeGateway = {
   terminate: async (gatewayOrderId: string) => String((await cashfreeRequest<{ order_status?: string }>(`/pg/orders/${encodeURIComponent(gatewayOrderId)}`, { method: 'PATCH', body: JSON.stringify({ order_status: 'TERMINATED' }) })).order_status || ''),
   finalize: (gatewayOrderId: string) => verifyAndFinalizeCashfreePayment(gatewayOrderId),
 };
-
-/** Business dates (offer validity) follow India time regardless of the server time zone. */
-const todayInIndia = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 function checkoutTotalsStore(db: ReturnType<typeof adminDb>): CheckoutTotalsStore {
   return {
@@ -107,7 +104,7 @@ export async function createCashfreePaymentSession(input: {orderIds?: unknown[];
   // DEVELOPMENT-RULES §8: re-price the orders from authoritative data before any
   // Cashfree order is created; browser-written totals are never trusted.
   try {
-    await verifyCheckoutTotals({ orderIds, orders, store: checkoutTotalsStore(db), today: todayInIndia() });
+    await verifyCheckoutTotals({ orderIds, orders, store: checkoutTotalsStore(db), today: indiaDateToday() });
   } catch (error) {
     const reason = (error as { reason?: string }).reason;
     if (reason) console.warn('Checkout total verification failed:', reason);
