@@ -1,3 +1,16 @@
+## 2026-10-14 — Remediate shared delivery login OTP
+- Removed the universal `1234` delivery login credential. Active Admin/Super Admin/Operations accounts issue a random six-digit code through `POST /api/delivery/login/otp`; the code is returned once with `Cache-Control: no-store` for out-of-band delivery.
+- Store only a keyed hash and challenge metadata on the existing `deliveryUsers/{id}` record. Codes expire after five minutes, lock after five invalid submissions, and are consumed transactionally before issuing the existing independent delivery session cookie. Updated the delivery login to accept six digits.
+- Added seven regression tests for authorization roles, secure hashing, expiry, attempt limits, account binding and concurrent single use. The external Admin UI is not part of this Website repository and still needs endpoint integration.
+- SUP-03 SMS transport remains unchanged: public provider information did not establish a supported HTTPS API endpoint. No provider credentials, OTPs, or phone numbers were sent during research. The HTTP transport risk remains documented and unresolved.
+- Validation: focused delivery OTP tests 7/7; full unit suite 301/301; typecheck and production build passed. No live SMS, delivery login, production data, deployment or payment was used.
+
+## 2026-10-14 — Read-only penetration-test reassessment
+- Added [docs/PENETRATION-TEST-REASSESSMENT.md](./docs/PENETRATION-TEST-REASSESSMENT.md), preserving the supplied PT-01–PT-05 outcomes and mapping them to current source evidence and verification limits.
+- Confirmed five additional current-source findings: two High (delivery login uses a shared hardcoded OTP; customer OTP and SMS credentials are sent over HTTP in a GET URL) and three Medium (profile-photo asset ownership can be bypassed; customer OTP resend bypasses cooldown/reset attempts; OTP verification state checks/updates are non-atomic).
+- PT-01's historic unauthenticated Firestore reads are not reproducible from checked-in rules; PT-03, PT-04 and PT-05 are not reproducible in the reviewed source paths; PT-02 remains unverified. Production rules/configuration, authenticated cross-account tests, emulator behavior and payment flows remain unverified.
+- Analysis only: no application code, tests, production data, or configuration was modified. No exploit, live request, deployment, or payment was performed.
+
 ## 2026-10-14 — Responsive design fixes and regression coverage
 - Preserved the Microgreens banner's full intrinsic image instead of cropping its embedded copy; moved its breadcrumb below the image to prevent overlap. Scoped Contact form labels to 14px and mobile controls to 16px/48px minimum height. Fixed empty-cart sentence spacing while retaining the larger-screen line break.
 - Wrapped narrow subscription/account title and status content to prevent viewport overflow. Increased cart quantity buttons to 44×44px and added a visible keyboard focus outline. Removed only duplicated “Locally Grown”/“Premium Quality” benefit cards, retaining unique harvested/taste information and delivery messaging.
@@ -206,6 +219,10 @@
 
 This file consolidates the useful historical context from the previous phase, UAT, bug-fix, checkout and standardization Markdown files. It is not a verbatim archive; the actual source remains authoritative.
 
+## 2026-10-14 — Order feedback modal responsive correction (implementation plan)
+- Confirmed source cause: option labels are inside shrinkable flex pills with `word-break: break-word`, and the mobile rule forces one full-width pill per row. The modal's `vh`-only height cap and missing component-level background scroll lock also need correction for short/dynamic viewports.
+- Before code changes, planned a responsive option grid with natural word wrapping, a dynamic-viewport bounded modal with a dedicated scrollable body and persistent header/footer, background scroll locking, aligned/tappable rating controls, and state reset when the order target changes.
+- Keep feedback options, required rating validation, Firestore collection/document IDs/fields, submission and errors unchanged. Record actual implementation and test results after validation.
 
 ## Phase 38 — Customer Order & Delivery Feedback
 - Added a customer feedback popup available only after a delivery is completed.

@@ -16,6 +16,7 @@ Website and Mobile use the same server-authoritative customer OTP flow. Firebase
 ### Real mode
 - `CUSTOMER_OTP_DEMO_MODE=false` sends the OTP using the server-side SMS provider.
 - SMS credentials are server-only and must never use `NEXT_PUBLIC_` variables.
+- **Transport risk (security reassessment, 2026-10-14):** the currently configured `sms.bulkssms.com/submitsms.jsp` integration uses HTTP and places the SMS key, destination number and OTP-bearing message in the request URL. Do not describe this path as secure. Public provider pages reviewed for the reassessment advertise SMS APIs/OTP but do not document a supported HTTPS endpoint or request format; the HTTPS endpoint could not be retrieved in the audit environment. Keep the existing integration unchanged until the provider confirms a supported HTTPS interface or an approved secure replacement is ready. Prefer a TLS-supported provider; never downgrade TLS or put credentials in browser code.
 
 ### Identity
 After successful verification the server resolves/creates the existing customer Firebase Auth identity, updates `customers/{mobile}`, and creates the Firebase Custom Token. Website and Mobile therefore sign into the same Firebase UID.

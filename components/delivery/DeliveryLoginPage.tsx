@@ -40,8 +40,8 @@ export default function DeliveryLoginPage() {
   async function login(event: FormEvent) {
     event.preventDefault();
     setError('');
-    if (!/^\d{4}$/.test(otp.trim())) {
-      setError('Enter the 4-digit OTP.');
+    if (!/^\d{6}$/.test(otp.trim())) {
+      setError('Enter the 6-digit OTP.');
       return;
     }
 
@@ -85,16 +85,16 @@ export default function DeliveryLoginPage() {
             </form>
           </> : <>
             <h2>Enter OTP</h2>
-            <p className="muted">Enter the 4-digit OTP for <strong>+91 {mobileNumber}</strong>.</p>
+            <p className="muted">Enter the one-time code issued by delivery operations for <strong>+91 {mobileNumber}</strong>.</p>
             <form onSubmit={login}>
               <label className="field-label" htmlFor="delivery-otp">OTP</label>
-              <input id="delivery-otp" className="input delivery-otp-input" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={4} value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="Enter 4-digit OTP" autoFocus />
+              <input id="delivery-otp" className="input delivery-otp-input" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="Enter 6-digit code" autoFocus />
               <button className="btn primary delivery-auth-button" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Verify & Login'}</button>
               <button className="delivery-back-button" type="button" onClick={() => { setStep('mobile'); setOtp(''); setError(''); }} disabled={busy}>Change mobile number</button>
             </form>
           </>}
           {error && <p className="delivery-auth-error" role="alert">{error}</p>}
-          <p className="delivery-auth-note">Use the OTP provided by your delivery operations team.</p>
+          <p className="delivery-auth-note">Codes expire after five minutes and can be used once.</p>
         </div>
       </section>
     </main>

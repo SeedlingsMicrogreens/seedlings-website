@@ -46,6 +46,19 @@ export function createDeliverySession(deliveryUserId: string, authUid: string) {
   return `${body}.${sign(body)}`;
 }
 
+export function hashDeliveryLoginOtp(mobileNumber: string, otp: string) {
+  return createHmac('sha256', getSecret())
+    .update(`delivery-login:${mobileNumber}:${otp}`)
+    .digest('hex');
+}
+
+export function matchesDeliveryLoginOtp(mobileNumber: string, otp: string, expectedHash: string) {
+  if (!/^[a-f0-9]{64}$/i.test(expectedHash)) return false;
+  const actual = Buffer.from(hashDeliveryLoginOtp(mobileNumber, otp), 'hex');
+  const expected = Buffer.from(expectedHash, 'hex');
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 export function verifyDeliverySession(value: string | undefined): DeliverySessionPayload {
   if (!value) throw new HttpError(401, 'Delivery partner authentication is required.');
   const [body, signature] = value.split('.');

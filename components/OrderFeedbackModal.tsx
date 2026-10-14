@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { collection, doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { isFeedbackRatingValid, toggleFeedbackOption } from "@/lib/orderFeedback";
 
 export const ORDER_FEEDBACK_OPTIONS = [
   ["freshness", "Freshness"],
@@ -47,7 +48,15 @@ export default function OrderFeedbackModal({ open, orderId, orderNumber, custome
   useEffect(() => {
     if (!open) return;
     setOrderRating(0); setDeliveryRating(0); setOrderOptions([]); setDeliveryOptions([]); setComment(""); setError("");
-    setTimeout(() => first.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => first.current?.focus(), 0);
+    return () => window.clearTimeout(focusTimer);
+  }, [open, orderId, subscriptionDeliveryId]);
+
+  useEffect(() => {
+    if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
   }, [open]);
 
   useEffect(() => {
@@ -59,10 +68,10 @@ export default function OrderFeedbackModal({ open, orderId, orderNumber, custome
 
   if (!open) return null;
 
-  const toggle = (value: string, set: React.Dispatch<React.SetStateAction<string[]>>) => set((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
+  const toggle = (value: string, set: React.Dispatch<React.SetStateAction<string[]>>) => set((current) => toggleFeedbackOption(current, value));
 
   const submit = async () => {
-    if (orderRating < 1 || deliveryRating < 1) { setError("Please give both the order and delivery a rating."); return; }
+    if (!isFeedbackRatingValid(orderRating, deliveryRating)) { setError("Please give both the order and delivery a rating."); return; }
     setSaving(true); setError("");
     try {
       const feedbackId = subscriptionDeliveryId ? `${orderId}_${subscriptionDeliveryId}` : orderId;
