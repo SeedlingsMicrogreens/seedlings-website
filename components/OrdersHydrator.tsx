@@ -4,7 +4,8 @@ import { useEffect, useRef } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
-import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { getCustomerSession } from '@/lib/clientOnboarding';
+import { isCurrentCustomerSession } from '@/lib/customerAuthState';
 
 type OrderItem = {
   productName?: string;
@@ -136,11 +137,13 @@ export default function OrdersHydrator({ children }: { children: React.ReactNode
 
     const renderCurrent = () => render(root, orders, filter);
 
-    const load = async (userPresent: boolean) => {
-      const currentRequest = ++requestId;
-      const mobile = getStoredCustomerMobile();
+    const load = async (currentRequest: number, userPresent: boolean, customerMobile = '', uid = '') => {
+      const mobile = customerMobile;
       if (!userPresent || !mobile) {
-        if (alive && currentRequest === requestId) renderSignedOut();
+        if (alive && currentRequest === requestId) {
+          orders = [];
+          renderSignedOut();
+        }
         return;
       }
 
@@ -151,10 +154,11 @@ export default function OrdersHydrator({ children }: { children: React.ReactNode
           .map(doc => ({ id: doc.id, ...doc.data() } as Order))
           .filter(order => String((order as any).customerId ?? '').replace(/\D/g, '') === mobile);
         loaded.sort((a, b) => (dateObject(b.createdAt)?.getTime() || 0) - (dateObject(a.createdAt)?.getTime() || 0));
+        if (!alive || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
         orders = loaded;
-        if (alive && currentRequest === requestId) renderCurrent();
+        renderCurrent();
       } catch (error) {
-        if (!alive || currentRequest !== requestId) return;
+        if (!alive || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
         panel.innerHTML = `<div class="empty-state"><h3>Unable to load orders</h3><p class="muted">${esc(error instanceof Error ? error.message : 'Unable to load orders.')}</p></div>`;
       }
     };
@@ -167,7 +171,15 @@ export default function OrdersHydrator({ children }: { children: React.ReactNode
       });
     });
 
-    const unsubscribe = onAuthStateChanged(auth, user => { void load(Boolean(user)); });
+    const unsubscribe = onAuthStateChanged(auth, () => {
+      const currentRequest = ++requestId;
+      orders = [];
+      panel.innerHTML = skeleton();
+      void getCustomerSession().then((session) => {
+        if (currentRequest !== requestId) return;
+        void load(currentRequest, session.signedIn, session.signedIn ? session.mobile : '', session.signedIn ? session.uid : '');
+      });
+    });
     return () => { alive = false; requestId += 1; unsubscribe(); };
   }, []);
 

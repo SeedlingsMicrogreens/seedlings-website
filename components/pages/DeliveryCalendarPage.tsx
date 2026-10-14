@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
 import { collection, getDocsFromServer, query, where } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
-import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { auth, db } from '@/lib/firebase';
+import { getCustomerSession } from '@/lib/clientOnboarding';
+import { isCurrentCustomerSession } from '@/lib/customerAuthState';
 import { getActiveSalesProducts, type SalesProduct } from '@/lib/salesProducts';
 import { updateSubscriptionDelivery } from '@/lib/customerSubscriptionDeliveryActions';
 import Header from '@/components/layout/Header';
@@ -168,54 +170,94 @@ export default function DeliveryCalendarPage() {
   const [signedOut, setSignedOut] = useState(false);
   const [view, setView] = useState(() => new Date());
   const [selectedDate, setSelectedDate] = useState('');
+  const selectedDateRef = useRef(selectedDate);
+  selectedDateRef.current = selectedDate;
+  const reloadRef = useRef<(() => Promise<void>) | null>(null);
   const [busyAction, setBusyAction] = useState<'skip' | 'reschedule' | ''>('');
   const [detailsOpen, setDetailsOpen] = useState(false);
 
-  const load = async () => {
-    const mobile = getStoredCustomerMobile();
-    if (!mobile) {
-      setSignedOut(true);
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-    try {
-      const [subscriptionSnapshot, deliverySnapshot, activeProducts] = await Promise.all([
-        getDocsFromServer(query(collection(db, 'subscriptions'), where('customerId', '==', mobile))),
-        getDocsFromServer(query(collection(db, 'subscriptionDeliveries'), where('customerId', '==', mobile))),
-        getActiveSalesProducts(),
-      ]);
-      const cleanMobile = mobile.replace(/\D/g, '');
-      const nextSubscriptions = subscriptionSnapshot.docs
-        .map((doc) => ({ id: doc.id, ...doc.data() }) as Subscription)
-        .filter((item) => String(item.customerId || '').replace(/\D/g, '') === cleanMobile);
-      const nextDeliveries = deliverySnapshot.docs
-        .map((doc) => ({ id: doc.id, ...doc.data() }) as DeliveryRecord)
-        .filter((item) => String(item.customerId || '').replace(/\D/g, '') === cleanMobile);
-
-      setSubscriptions(nextSubscriptions);
-      setDeliveries(nextDeliveries);
-      setProducts(activeProducts);
-
-      if (!selectedDate) {
-        const upcoming = mapDeliveryRecords(nextDeliveries, nextSubscriptions, activeProducts)
-          .filter((event) => event.date >= todayIso() && ['upcoming'].includes(event.status))
-          .sort((a, b) => a.date.localeCompare(b.date))[0];
-        const virtual = buildVirtualEvents(nextSubscriptions, nextDeliveries, activeProducts)
-          .sort((a, b) => a.date.localeCompare(b.date))[0];
-        setSelectedDate(upcoming?.date || virtual?.date || '');
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Unable to load your delivery calendar.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    void load();
+    let requestId = 0;
+    let active = true;
+    const load = async (currentRequest: number) => {
+      let session: Awaited<ReturnType<typeof getCustomerSession>>;
+      try {
+        session = await getCustomerSession();
+      } catch (error) {
+        if (active && currentRequest === requestId) {
+          setError(error instanceof Error ? error.message : 'Unable to restore your customer session.');
+          setLoading(false);
+        }
+        return;
+      }
+
+      if (!active || currentRequest !== requestId) return;
+      if (!session.signedIn) {
+        setSubscriptions([]);
+        setDeliveries([]);
+        setProducts([]);
+        setDetailsOpen(false);
+        setSelectedDate('');
+        setSignedOut(true);
+        setLoading(false);
+        return;
+      }
+      const { mobile, uid } = session;
+      setSignedOut(false);
+
+      setLoading(true);
+      setError('');
+      try {
+        const [subscriptionSnapshot, deliverySnapshot, activeProducts] = await Promise.all([
+          getDocsFromServer(query(collection(db, 'subscriptions'), where('customerId', '==', mobile))),
+          getDocsFromServer(query(collection(db, 'subscriptionDeliveries'), where('customerId', '==', mobile))),
+          getActiveSalesProducts(),
+        ]);
+        if (!active || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
+        const cleanMobile = mobile.replace(/\D/g, '');
+        const nextSubscriptions = subscriptionSnapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() }) as Subscription)
+          .filter((item) => String(item.customerId || '').replace(/\D/g, '') === cleanMobile);
+        const nextDeliveries = deliverySnapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() }) as DeliveryRecord)
+          .filter((item) => String(item.customerId || '').replace(/\D/g, '') === cleanMobile);
+
+        setSubscriptions(nextSubscriptions);
+        setDeliveries(nextDeliveries);
+        setProducts(activeProducts);
+
+        if (!selectedDateRef.current) {
+          const upcoming = mapDeliveryRecords(nextDeliveries, nextSubscriptions, activeProducts)
+            .filter((event) => event.date >= todayIso() && ['upcoming'].includes(event.status))
+            .sort((a, b) => a.date.localeCompare(b.date))[0];
+          const virtual = buildVirtualEvents(nextSubscriptions, nextDeliveries, activeProducts)
+            .sort((a, b) => a.date.localeCompare(b.date))[0];
+          setSelectedDate(upcoming?.date || virtual?.date || '');
+        }
+      } catch (error) {
+        if (active && currentRequest === requestId) {
+          setError(error instanceof Error ? error.message : 'Unable to load your delivery calendar.');
+        }
+      } finally {
+        if (active && currentRequest === requestId) setLoading(false);
+      }
+    };
+    const unsubscribe = onAuthStateChanged(auth, () => {
+      const currentRequest = ++requestId;
+      setSubscriptions([]);
+      setDeliveries([]);
+      setProducts([]);
+      setSelectedDate('');
+      setDetailsOpen(false);
+      setBusyAction('');
+      setLoading(true);
+      void load(currentRequest);
+    });
+    reloadRef.current = async () => {
+      const currentRequest = ++requestId;
+      await load(currentRequest);
+    };
+    return () => { active = false; requestId += 1; reloadRef.current = null; unsubscribe(); };
   }, []);
 
   useEffect(() => {
@@ -279,7 +321,7 @@ export default function DeliveryCalendarPage() {
     try {
       await updateSubscriptionDelivery({ subscriptionId: selectedSubscription.id, action: 'skip', deliveryDate: selectedEvent.date });
       await Swal.fire({ customClass: { container: 'delivery-action-swal-container' }, icon: 'success', title: 'Delivery skipped', text: 'Your delivery has been skipped successfully.', confirmButtonText: 'OK' });
-      await load();
+      await reloadRef.current?.();
     } catch (e) {
       await Swal.fire({ customClass: { container: 'delivery-action-swal-container' }, icon: 'error', title: 'Unable to skip delivery', text: e instanceof Error ? e.message : 'Please try again.' });
     } finally {
@@ -323,7 +365,7 @@ export default function DeliveryCalendarPage() {
       await updateSubscriptionDelivery({ subscriptionId: selectedSubscription.id, action: 'reschedule', deliveryDate: selectedEvent.date, newDate: selected });
       setSelectedDate(selected);
       await Swal.fire({ customClass: { container: 'delivery-action-swal-container' }, icon: 'success', title: 'Delivery rescheduled', text: `Your delivery has been rescheduled to ${fullDate(selected)}.`, confirmButtonText: 'OK' });
-      await load();
+      await reloadRef.current?.();
     } catch (e) {
       await Swal.fire({ customClass: { container: 'delivery-action-swal-container' }, icon: 'error', title: 'Unable to reschedule delivery', text: e instanceof Error ? e.message : 'Please try again.' });
     } finally {

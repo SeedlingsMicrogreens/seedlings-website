@@ -1,6 +1,6 @@
 import { collection, doc, documentId, getDoc, getDocs, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
-import { auth } from './firebase';
 import { db } from './firebase';
+import { getCustomerSession } from './clientOnboarding';
 import { checkProductAvailability, nextWeekSaturday, resolveCartDeliveryDates } from './customerOrderAvailability';
 import { checkoutSubscriptionDate, type CartItem, type SubscriptionCartItem } from './cart';
 import type { CustomerAddress } from './customerAccount';
@@ -8,7 +8,7 @@ import type { SalesProduct } from './salesProducts';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from './deliveryCharges';
 
 import { calculateCustomerOffers, calculateCustomerSubscriptionEntitlements } from './offers';
-import { allocateCheckoutTotals, checkoutDeliveryChargeAmounts, resolveOneTimePrice, resolveSubscriptionPrice, subscriptionDeliveriesPerTerm, subscriptionEndDate } from './checkoutPricing';
+import { allocateCheckoutTotals, checkoutDeliveryChargeAmounts, NO_OFFERS, resolveOneTimePrice, resolveSubscriptionPrice, subscriptionDeliveriesPerTerm, subscriptionEndDate } from './checkoutPricing';
 import { summaryFromOrders } from './checkoutFingerprint';
 import { resumedMixedCheckoutResult } from './checkoutClaimFlow';
 import { beginCheckoutClaim, registerCheckoutClaim } from './checkoutClaimClient';
@@ -18,9 +18,8 @@ const mobileOf=(v:unknown)=>String(v??'').replace(/\D/g,'').slice(-10);
 const orderNumber=()=>`ORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
 
 export async function createCustomerMixedCheckout(input:{mobile:string;addressId:string;deliverySlot:string;paymentMethod?:string;oneTimeItems:CartItem[];subscriptionItems:SubscriptionCartItem[]}){
- const authUid = auth.currentUser?.uid;
- if (!authUid) throw new Error('Your login session expired. Please sign in again.');
- const mobile=mobileOf(input.mobile);if(mobile.length!==10)throw new Error('Invalid customer mobile number.');const deliverySlot=clean(input.deliverySlot)||nextWeekSaturday();const paymentMethod='online';
+ const session=await getCustomerSession();if(!session.signedIn)throw new Error('Your login session expired. Please sign in again.');
+ const authUid=session.uid;const mobile=mobileOf(input.mobile);if(mobile.length!==10)throw new Error('Invalid customer mobile number.');if(mobile!==session.mobile)throw new Error('Your signed-in account does not match this checkout.');const deliverySlot=clean(input.deliverySlot)||nextWeekSaturday();const paymentMethod='online';
  if(!clean(input.addressId))throw new Error('Delivery address is required.');
  if(!input.oneTimeItems.length&&!input.subscriptionItems.length)throw new Error('Cart is empty.');
  const customerRef=doc(db,'customers',mobile);const customerSnap=await getDoc(customerRef);if(!customerSnap.exists())throw new Error('Customer account not found.');
@@ -218,7 +217,7 @@ export async function createCustomerMixedCheckout(input:{mobile:string;addressId
  if(highDemandKeys.length) throw new Error(`HIGH_DEMAND_ENQUIRY_REQUIRED:${JSON.stringify(highDemandKeys)}`);
  const hasShortage=availabilityResults.some(r=>r.hasShortage);
  if(hasShortage)throw new Error('DELIVERY_DATE_RECHECK_REQUIRED');
- const oneTimeDeliveryBase=deliveryCharges.oneTimeTotal; const offerResult=(input.oneTimeItems.length||input.subscriptionItems.length)&&geoId ? await calculateCustomerOffers({pincode:String((address as any).pincode||''),geoId,locationName:geoName,oneTimeSubtotal:oneSubtotal,subscriptionSubtotal:subscriptionWrites.reduce((sum,w)=>sum+Number(w.order.subtotal||0),0),deliveryChargeAmounts:checkoutDeliveryChargeAmounts(deliveryCharges)}) : {priceSavings:0,oneTimePriceSavings:0,subscriptionPriceSavings:0,deliverySavings:0,totalSavings:0};
+ const oneTimeDeliveryBase=deliveryCharges.oneTimeTotal; const offerResult=(input.oneTimeItems.length||input.subscriptionItems.length)&&geoId ? await calculateCustomerOffers({pincode:String((address as any).pincode||''),geoId,locationName:geoName,oneTimeItems:oneOrders.map(item=>({price:Number(item.unitPrice||0),quantity:Number(item.quantity||0)})),subscriptionItems:subscriptionWrites.map(w=>{const item=(w.order.items as Record<string,unknown>[])[0];return {price:Number(item.unitPrice||0),quantity:Number(item.quantity||0)};}),deliveryChargeAmounts:checkoutDeliveryChargeAmounts(deliveryCharges)}) : NO_OFFERS;
 
 
 
@@ -228,7 +227,8 @@ export async function createCustomerMixedCheckout(input:{mobile:string;addressId
  const oneOrderWrites:{ref:ReturnType<typeof doc>;data:Record<string,unknown>}[]=[];
  // Offers and delivery charges are allocated by the shared rule also used by
  // the server total verification (lib/checkoutPricing.ts).
- const allocation=allocateCheckoutTotals({oneTimeGroups:oneTimeDates.map(date=>{const items=oneTimeOrderGroups.get(date)||[];return {date,subtotal:items.reduce((sum,item)=>sum+Number(item.lineTotal||0),0),mrpSubtotal:items.reduce((sum,item)=>sum+Number(item.mrp||item.unitPrice||0)*Number(item.quantity||0),0)};}),subscriptions:subscriptionWrites.map(w=>({subtotal:Number(w.order.subtotal||0),deliveryFee:Number(w.order.deliveryFee||0)})),deliveryCharges,offers:offerResult});
+ const oneTimeSavingsByDate=new Map<string,number>();oneOrders.forEach((item,index)=>{const date=String(item.deliveryDate||targetDate);oneTimeSavingsByDate.set(date,(oneTimeSavingsByDate.get(date)||0)+Number(offerResult.oneTimeItemSavings[index]||0));});
+ const allocation=allocateCheckoutTotals({oneTimeGroups:oneTimeDates.map(date=>{const items=oneTimeOrderGroups.get(date)||[];return {date,subtotal:items.reduce((sum,item)=>sum+Number(item.lineTotal||0),0),mrpSubtotal:items.reduce((sum,item)=>sum+Number(item.mrp||item.unitPrice||0)*Number(item.quantity||0),0),priceOfferSavings:oneTimeSavingsByDate.get(date)||0};}),subscriptions:subscriptionWrites.map((w,index)=>({subtotal:Number(w.order.subtotal||0),deliveryFee:Number(w.order.deliveryFee||0),priceOfferSavings:offerResult.subscriptionItemSavings[index]||0})),deliveryCharges,offers:offerResult});
  subscriptionWrites.forEach((w,index)=>{ const allocated=allocation.subscriptions[index].allocated; const deliveryOfferSaving=allocation.subscriptions[index].deliveryOfferSaving; w.order.deliveryChargeOriginal=Number(w.order.deliveryFee||0); w.order.deliveryChargeSnapshot=allocation.subscriptions[index].deliveryFee; w.order.deliveryChargeTermSavings=deliveryOfferSaving; w.order.deliveryFee=allocation.subscriptions[index].deliveryFee; w.order.discount=allocated; w.order.total=allocation.subscriptions[index].total; w.order.offerDiscount=allocated+deliveryOfferSaving; w.order.offerPriceSavings=allocated; w.order.offerDeliverySavings=deliveryOfferSaving; w.order.offerPriceName=offerResult.priceOffer?.name||''; w.order.offerDeliveryName=offerResult.deliveryOffer?.name||''; w.order.offerTotalSavings=allocated+deliveryOfferSaving; });
  for(const [index,date] of oneTimeDates.entries()){
   const items=oneTimeOrderGroups.get(date)||[];
@@ -241,7 +241,7 @@ export async function createCustomerMixedCheckout(input:{mobile:string;addressId
   const groupMrpSaving=groupAmounts.mrpSaving;
   const ref=doc(collection(db,'orders'));
   const number=orderNumber();
-  oneOrderWrites.push({ref,data:{authUid,orderNumber:number,customerId:mobile,customerName:clean(customer.name),customerMobile:clean(customer.mobileNumber||customer.mobile||mobile),items,subtotal:groupSubtotal,deliveryFee:groupDeliveryFee,discount:groupMrpSaving+allocatedOffer,total:Math.max(0,groupSubtotal-allocatedOffer)+groupDeliveryFee,currency:'INR',paymentStatus:'pending',paymentMethod,status:'pending_payment',deliveryAddress:address,scheduledDeliveryDate:date,deliveryDate:date,deliverySlot,notes:'',orderType:'one_time',subscriptionId:null,deliveryChargeId:deliveryCharges.oneTime.sourceId,deliveryChargeName:deliveryCharges.oneTime.sourceName,deliveryChargeSnapshot:groupDeliveryFee,deliveryChargeOriginal:index===0?oneTimeDeliveryBase:0,offerDiscount:groupOfferTotalSaving,offerPriceSavings:allocatedOffer,offerDeliverySavings:groupDeliveryOfferSaving,offerPriceName:offerResult.priceOffer?.name||'',offerDeliveryName:offerResult.deliveryOffer?.name||'',offerTotalSavings:groupOfferTotalSaving,deliveryChargeWaivedBySubscription:false,deliveryChargeDetails:deliveryCharges.oneTime.snapshot,packingStatus:'pending',requiresCustomerContact:false,availabilityDecision:'continue',createdAt:serverTimestamp(),updatedAt:serverTimestamp()}});
+  oneOrderWrites.push({ref,data:{authUid,orderNumber:number,customerId:mobile,customerName:clean(customer.name),customerMobile:clean(customer.mobileNumber||customer.mobile||mobile),items,subtotal:groupSubtotal,deliveryFee:groupDeliveryFee,discount:allocatedOffer,mrpSavings:groupMrpSaving,total:Math.max(0,groupSubtotal-allocatedOffer)+groupDeliveryFee,currency:'INR',paymentStatus:'pending',paymentMethod,status:'pending_payment',deliveryAddress:address,scheduledDeliveryDate:date,deliveryDate:date,deliverySlot,notes:'',orderType:'one_time',subscriptionId:null,deliveryChargeId:deliveryCharges.oneTime.sourceId,deliveryChargeName:deliveryCharges.oneTime.sourceName,deliveryChargeSnapshot:groupDeliveryFee,deliveryChargeOriginal:index===0?oneTimeDeliveryBase:0,offerDiscount:groupOfferTotalSaving,offerPriceSavings:allocatedOffer,offerDeliverySavings:groupDeliveryOfferSaving,offerPriceName:offerResult.priceOffer?.name||'',offerDeliveryName:offerResult.deliveryOffer?.name||'',offerTotalSavings:groupOfferTotalSaving,deliveryChargeWaivedBySubscription:false,deliveryChargeDetails:deliveryCharges.oneTime.snapshot,packingStatus:'pending',requiresCustomerContact:false,availabilityDecision:'continue',createdAt:serverTimestamp(),updatedAt:serverTimestamp()}});
  }
  // One pending checkout per customer (server-enforced): the same purchase resumes
  // its existing records; new records carry the claim token and are registered.

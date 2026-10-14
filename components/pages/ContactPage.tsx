@@ -5,10 +5,12 @@ import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import { getActiveSalesProducts, type SalesProduct } from '@/lib/salesProducts';
 import { createCustomerContactRequest } from '@/lib/customerContactRequests';
-import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { getCustomerSession, getStoredCustomerMobile } from '@/lib/clientOnboarding';
 import { getCustomerAccount } from '@/lib/customerAccount';
-import { auth } from '@/lib/firebase';
+import { auth, authPersistenceReady } from '@/lib/firebase';
 import { signInAnonymously } from 'firebase/auth';
+import { mayStartGuestSession } from '@/lib/customerSession';
+import { isCurrentCustomerSession } from '@/lib/customerAuthState';
 
 export default function ContactPage() {
   const [products, setProducts] = useState<SalesProduct[]>([]);
@@ -25,23 +27,14 @@ export default function ContactPage() {
     let active = true;
     (async () => {
       try {
-        if (!auth.currentUser) await signInAnonymously(auth);
-        const [loadedProducts, storedMobile] = await Promise.all([
-          getActiveSalesProducts(),
-          Promise.resolve(getStoredCustomerMobile()),
-        ]);
+        // Wait for the persisted session: before it is restored `currentUser` is null, and
+        // signing in anonymously then would replace a signed-in customer's session.
+        await authPersistenceReady;
+        await auth.authStateReady();
+        if (mayStartGuestSession(auth.currentUser, getStoredCustomerMobile())) await signInAnonymously(auth);
+        const loadedProducts = await getActiveSalesProducts();
         if (!active) return;
         setProducts(loadedProducts);
-        if (storedMobile) {
-          const account = await getCustomerAccount(storedMobile);
-          if (!active) return;
-          if (account) {
-            setName(String(account.name || ''));
-            setMobileEmail(String(account.mobileNumber || account.mobile || account.email || storedMobile));
-          }
-        } else if (auth.currentUser?.email) {
-          setMobileEmail(auth.currentUser.email);
-        }
       } catch {
         // The form remains usable even if product/account loading fails.
       } finally {
@@ -49,6 +42,32 @@ export default function ContactPage() {
       }
     })();
     return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let requestId = 0;
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      const currentRequest = ++requestId;
+      setName('');
+      setMobileEmail('');
+      setResult(null);
+      void getCustomerSession().then(async (session) => {
+        if (currentRequest !== requestId) return;
+        if (!session.signedIn) {
+          if (user?.isAnonymous && user.email) setMobileEmail(user.email);
+          return;
+        }
+        const account = await getCustomerAccount(session.mobile);
+        if (currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid: session.uid, mobile: session.mobile }))) return;
+        if (account) {
+          setName(String(account.name || ''));
+          setMobileEmail(String(account.mobileNumber || account.mobile || account.email || session.mobile));
+        }
+      }).catch((error) => {
+        if (currentRequest === requestId) console.error('Contact form customer details could not be loaded.', error);
+      });
+    });
+    return () => { requestId += 1; unsubscribe(); };
   }, []);
 
   const selectedProductName = useMemo(() => {
@@ -69,8 +88,11 @@ export default function ContactPage() {
 
     setSending(true);
     try {
-      const storedMobile = getStoredCustomerMobile();
-      const account = storedMobile ? await getCustomerAccount(storedMobile) : null;
+      const session = await getCustomerSession();
+      const account = session.signedIn ? await getCustomerAccount(session.mobile) : null;
+      if (session.signedIn && !(await isCurrentCustomerSession(auth, { uid: session.uid, mobile: session.mobile }))) {
+        throw new Error('Your sign-in changed. Please review your contact details and try again.');
+      }
       const looksLikeEmail = contact.includes('@');
       await createCustomerContactRequest({
         customerId: account?.id,

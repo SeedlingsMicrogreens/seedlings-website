@@ -3,7 +3,8 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
-import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { getCustomerSession } from '@/lib/clientOnboarding';
+import { isCurrentCustomerSession } from '@/lib/customerAuthState';
 import { getCustomerAccount, updateCustomerAddresses, type CustomerAddress } from '@/lib/customerAccount';
 import { confirmCustomerAddressDelete } from '@/lib/customerAlerts';
 
@@ -71,15 +72,21 @@ export default function AddressHydrator({ children }: { children: ReactNode }) {
     const root = ref.current;
     if (!root) return;
     let alive = true;
+    let requestId = 0;
+    const initialMarkup = root.innerHTML;
 
     const load = async () => {
-      const mobile = getStoredCustomerMobile();
-      if (!mobile || !auth.currentUser) { renderLogin(root); return; }
+      const currentRequest = ++requestId;
+      const session = await getCustomerSession();
+      if (!alive || currentRequest !== requestId) return;
+      if (!session.signedIn) { renderLogin(root); return; }
+      const { mobile, uid } = session;
+      if (!root.querySelector('.address-grid')) root.innerHTML = initialMarkup;
       const grid = root.querySelector('.address-grid') as HTMLElement | null;
       if (!grid) return;
       const cached = readAddressCache(mobile);
       if (cached) {
-        if (alive) renderAddresses(root, mobile, cached);
+        if (alive && currentRequest === requestId && await isCurrentCustomerSession(auth, { uid, mobile })) renderAddresses(root, mobile, uid, cached);
         return;
       }
 
@@ -89,22 +96,23 @@ export default function AddressHydrator({ children }: { children: ReactNode }) {
         if (!customer) throw new Error('Customer account not found.');
         const addresses = (Array.isArray(customer.addresses) ? customer.addresses : [])
           .map((address, index) => ({ ...address, id: String(address.id || `address-${index}`) }));
+        if (!alive || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
         writeAddressCache(mobile, addresses);
-        if (alive) renderAddresses(root, mobile, addresses);
+        renderAddresses(root, mobile, uid, addresses);
       } catch (error) {
         console.error('Customer addresses load failed', error);
-        if (alive) grid.innerHTML = `<div class="panel" style="grid-column:1/-1"><p class="muted">${esc(error instanceof Error ? error.message : 'Unable to load addresses.')}</p></div>`;
+        if (alive && currentRequest === requestId && await isCurrentCustomerSession(auth, { uid, mobile })) grid.innerHTML = `<div class="panel" style="grid-column:1/-1"><p class="muted">${esc(error instanceof Error ? error.message : 'Unable to load addresses.')}</p></div>`;
       }
     };
 
     const unsubscribe = onAuthStateChanged(auth, () => void load());
-    return () => { alive = false; unsubscribe(); };
+    return () => { alive = false; requestId += 1; unsubscribe(); };
   }, []);
 
   return <div ref={ref}>{children}</div>;
 }
 
-function renderAddresses(root: HTMLElement, mobile: string, addresses: Address[]) {
+function renderAddresses(root: HTMLElement, mobile: string, uid: string, addresses: Address[]) {
   const grid = root.querySelector('.address-grid') as HTMLElement | null;
   const accountMain = root.querySelector('.account-main') as HTMLElement | null;
   if (!grid || !accountMain) return;
@@ -121,10 +129,12 @@ function renderAddresses(root: HTMLElement, mobile: string, addresses: Address[]
   const saveAddresses = async (next: Address[], success: string, button?: HTMLButtonElement) => {
     if (button) { button.disabled = true; button.textContent = 'Saving…'; }
     try {
+      if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
       const cleaned = next.map(({ id, ...address }) => ({ ...address, id }));
       await updateCustomerAddresses(mobile, cleaned);
+      if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
       writeAddressCache(mobile, cleaned as Address[]);
-      renderAddresses(root, mobile, cleaned as Address[]);
+      renderAddresses(root, mobile, uid, cleaned as Address[]);
       setMessage(success);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to save address.', true);
@@ -153,7 +163,15 @@ function renderAddresses(root: HTMLElement, mobile: string, addresses: Address[]
       if (!/^\d{10}$/.test(mobileNumber)) { setMessage('Enter a valid 10-digit mobile number.', true); submit.disabled = false; submit.textContent = address ? 'Save changes' : 'Add address'; return; }
       if (!updated.name || !updated.addressLine1 || !updated.city || !updated.state || !/^\d{6}$/.test(pincode)) { setMessage('Please complete all required address fields.', true); submit.disabled = false; submit.textContent = address ? 'Save changes' : 'Add address'; return; }
       const next = address ? addresses.map(item => item.id === address.id ? updated : item) : [...addresses, updated];
-      try { await updateCustomerAddresses(mobile, next); writeAddressCache(mobile, next); formWrap.remove(); renderAddresses(root, mobile, next); setMessage(address ? 'Address updated.' : 'Address added.'); }
+      try {
+        if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
+        await updateCustomerAddresses(mobile, next);
+        if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
+        writeAddressCache(mobile, next);
+        formWrap.remove();
+        renderAddresses(root, mobile, uid, next);
+        setMessage(address ? 'Address updated.' : 'Address added.');
+      }
       catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to save address.', true); submit.disabled = false; submit.textContent = address ? 'Save changes' : 'Add address'; }
     });
     formWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -192,8 +210,9 @@ function renderAddresses(root: HTMLElement, mobile: string, addresses: Address[]
     const next = addresses.filter(item => item.id !== id);
     try {
       await updateCustomerAddresses(mobile, next);
+      if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
       writeAddressCache(mobile, next);
-      renderAddresses(root, mobile, next);
+      renderAddresses(root, mobile, uid, next);
       setMessage('Address deleted.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to delete address.', true);

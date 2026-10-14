@@ -28,8 +28,10 @@ const PINCODE = '411001';
 const geo = { id: 'geo-1', data: { active: true, pincode: PINCODE, locationName: 'Pune Central', deliveryCharge: 40 } };
 const broccoli = { id: 'broccoli-106', name: 'Broccoli 106 gms', type: 'single', active: true, oneTimePurchase: true, sellingPrice: 120, components: [{ productId: 'micro-broccoli', quantityGrams: 105 }], sellingOptions: [{ id: 'b100', weightGrams: 100, price: 120, mrp: 150, active: true }, { id: 'b200', weightGrams: 200, price: 220, mrp: 260, active: true }] };
 const radish = { id: 'radish-100', name: 'Radish', type: 'single', active: true, oneTimePurchase: true, sellingPrice: 90, components: [{ productId: 'micro-radish', quantityGrams: 100 }], sellingOptions: [{ id: 'r100', weightGrams: 100, price: 90, mrp: 100, active: true }] };
+const powerCombo = { id: 'power-combo', name: 'Power Combo', type: 'multiple', active: true, oneTimePurchase: true, sellingPrice: 400, components: [{ productId: 'micro-broccoli', quantityGrams: 50 }, { productId: 'micro-radish', quantityGrams: 50 }], sellingOptions: [{ id: 'pc100', weightGrams: 100, price: 400, mrp: 480, active: true }] };
 const monthly = { id: 'plan-monthly', name: 'Monthly', active: true, frequency: 'monthly', deliveriesPerTerm: 4, sellingOptions: [{ id: 'pm100', weightGrams: 100, planPrice: 400 }] };
 const tenPercent: CustomerOffer = { id: 'offer-10', name: '10% off', type: 'price', active: true, discountType: 'percentage', discountValue: 10, locationType: 'all' };
+const flatTenPrice: CustomerOffer = { id: 'price-flat-10', name: '₹10 off', type: 'price', active: true, discountType: 'flat', discountValue: 10, locationType: 'all' };
 const freeDelivery: CustomerOffer = { id: 'offer-del', name: 'Free delivery', type: 'deliveryCharge', active: true, discountType: 'flat', discountValue: 40, locationType: 'all' };
 const subscriptionBonus: CustomerOffer = {
   id: 'offer-sub-2',
@@ -69,12 +71,37 @@ function clientCheckout(oneTime: Line[], subs: SubLine[], offers: CustomerOffer[
     pincode: PINCODE, oneTime: oneTime.length > 0, oneTimeDates: dates,
     subscriptions: subEntries.map((entry) => ({ planId: entry.line.plan.id, planName: entry.line.plan.name, deliveryDates: entry.dates })),
   });
-  const oneSubtotal = dates.reduce((sum, date) => sum + groups.get(date)!.reduce((s, item) => s + item.lineTotal, 0), 0);
-  const offerResult = computeCustomerOffers(offers, { pincode: PINCODE, geoId: deliveryGeo.id, locationName: deliveryGeo.data.locationName, oneTimeSubtotal: oneSubtotal, subscriptionSubtotal: subEntries.reduce((s, e) => s + e.priced.price * e.line.quantity, 0), deliveryChargeAmounts: checkoutDeliveryChargeAmounts(deliveryCharges) }, TODAY);
+  const offerResult = computeCustomerOffers(offers, {
+    pincode: PINCODE,
+    geoId: deliveryGeo.id,
+    locationName: deliveryGeo.data.locationName,
+    oneTimeItems: oneTime.map((line) => ({
+      price: resolveOneTimePrice(line.product, line.packaging).price,
+      quantity: line.quantity,
+    })),
+    subscriptionItems: subEntries.map((entry) => ({
+      price: entry.priced.price,
+      quantity: entry.line.quantity,
+    })),
+    deliveryChargeAmounts: checkoutDeliveryChargeAmounts(deliveryCharges),
+  }, TODAY);
+  const oneTimeSavingsByDate = new Map<string, number>();
+  oneTime.forEach((line, index) => {
+    oneTimeSavingsByDate.set(line.date, (oneTimeSavingsByDate.get(line.date) || 0) + offerResult.oneTimeItemSavings[index]);
+  });
   const allocation = allocateCheckoutTotals({
-    oneTimeGroups: dates.map((date) => ({ date, subtotal: groups.get(date)!.reduce((s, i) => s + i.lineTotal, 0), mrpSubtotal: groups.get(date)!.reduce((s, i) => s + i.mrp * i.quantity, 0) })),
+    oneTimeGroups: dates.map((date) => ({
+      date,
+      subtotal: groups.get(date)!.reduce((s, i) => s + i.lineTotal, 0),
+      mrpSubtotal: groups.get(date)!.reduce((s, i) => s + i.mrp * i.quantity, 0),
+      priceOfferSavings: oneTimeSavingsByDate.get(date) || 0,
+    })),
     // The checkout looks up each subscription's delivery fee by plan ID.
-    subscriptions: subEntries.map((entry, index) => ({ subtotal: entry.priced.price * entry.line.quantity, deliveryFee: deliveryCharges.subscriptions[index]?.termCharge || 0 })),
+    subscriptions: subEntries.map((entry, index) => ({
+      subtotal: entry.priced.price * entry.line.quantity,
+      deliveryFee: deliveryCharges.subscriptions[index]?.termCharge || 0,
+      priceOfferSavings: offerResult.subscriptionItemSavings[index] || 0,
+    })),
     deliveryCharges, offers: offerResult,
   });
   const address = { id: 'addr-1', pincode: PINCODE };
@@ -84,7 +111,7 @@ function clientCheckout(oneTime: Line[], subs: SubLine[], offers: CustomerOffer[
   dates.forEach((date, index) => {
     const id = `ord-${date}`;
     const a = allocation.oneTime[index];
-    orders[id] = { authUid: 'customer-auth', customerId: '9876543210', orderType: 'one_time', subscriptionId: null, items: groups.get(date), subtotal: a.subtotal, deliveryFee: a.deliveryFee, discount: a.discount, total: a.total, scheduledDeliveryDate: date, deliveryAddress: address, status: 'pending_payment', paymentStatus: 'pending' };
+    orders[id] = { authUid: 'customer-auth', customerId: '9876543210', orderType: 'one_time', subscriptionId: null, items: groups.get(date), subtotal: a.subtotal, deliveryFee: a.deliveryFee, discount: a.discount, mrpSavings: a.mrpSaving, offerPriceSavings: a.allocatedOffer, total: a.total, scheduledDeliveryDate: date, deliveryAddress: address, status: 'pending_payment', paymentStatus: 'pending' };
     orderIds.push(id);
   });
   subEntries.forEach((entry, index) => {
@@ -113,15 +140,16 @@ function clientCheckout(oneTime: Line[], subs: SubLine[], offers: CustomerOffer[
     orders[id] = { authUid: 'customer-auth', customerId: '9876543210', orderType: 'subscription', subscriptionId: entry.subId, subscriptionPlanId: entry.line.plan.id, items: [{ salableProductId: entry.line.product.id, sellingOptionId: entry.line.sellingOptionId, packaging, weightGrams: packaging * q, quantity: q, unitPrice: price, lineTotal: price * q }], subtotal: price * q, deliveryFee: a.deliveryFee, discount: a.allocated, total: a.total, scheduledDeliveryDate: entry.line.first, deliveryAddress: address, status: 'pending_payment', paymentStatus: 'pending' };
     orderIds.push(id);
   });
-  return { orderIds, orders, subscriptionDocs, offerResult, deliveryCharges, plans: Object.fromEntries(subs.map((line) => [line.plan.id, line.plan])) };
+  const total = [...allocation.oneTime, ...allocation.subscriptions].reduce((sum, order) => sum + order.total, 0);
+  return { orderIds, orders, subscriptionDocs, offerResult, deliveryCharges, total, plans: Object.fromEntries(subs.map((line) => [line.plan.id, line.plan])) };
 }
 
 function store(data: { orders: Record<string, any>; subscriptionDocs: Record<string, any>; plans?: Record<string, any>; offers?: CustomerOffer[]; verifications?: Record<string, any> }) {
   const collections: Record<string, Record<string, any>> = {
-    salesProducts: { [broccoli.id]: broccoli, [radish.id]: radish },
+    salesProducts: { [broccoli.id]: broccoli, [radish.id]: radish, [powerCombo.id]: powerCombo },
     subscriptionPlans: { [monthly.id]: monthly, ...(data.plans || {}) },
     subscriptions: data.subscriptionDocs,
-    orderPriceVerifications: { ...(data.verifications || {}) },
+    priceVerifications: { ...(data.verifications || {}) },
   };
   const calls = { catalogueReads: 0, saved: [] as string[], savedEntitlements: [] as string[] };
   const value: CheckoutTotalsStore = {
@@ -129,6 +157,7 @@ function store(data: { orders: Record<string, any>; subscriptionDocs: Record<str
       if (collection === 'salesProducts') calls.catalogueReads += 1;
       return new Map(ids.filter((id) => collections[collection]?.[id]).map((id) => [id, collections[collection][id]]));
     },
+    getPriceVerifications: async (ids) => new Map(ids.filter((id) => collections.priceVerifications[id]).map((id) => [id, collections.priceVerifications[id]])),
     geolocations: async () => [geo],
     offers: async () => data.offers || [],
     saveSubscriptionEntitlements: async (records) => {
@@ -145,7 +174,7 @@ function store(data: { orders: Record<string, any>; subscriptionDocs: Record<str
         calls.savedEntitlements.push(record.subscriptionId);
       }
     },
-    saveVerifications: async (records) => { for (const { orderId, data: record } of records) { collections.orderPriceVerifications[orderId] = record; calls.saved.push(orderId); } },
+    saveVerifications: async (records) => { for (const { orderId, data: record } of records) { collections.priceVerifications[orderId] = record; calls.saved.push(orderId); } },
   };
   return { value, calls, collections };
 }
@@ -257,7 +286,7 @@ test('a 12-delivery plan persists 12 without an offer and 14 with two bonus deli
   const verified = await verify(withOffer, { offers: [subscriptionBonus] });
   assert.deepEqual(await verified.run, { reused: false });
   assert.equal(verified.s.collections.subscriptions['sub-1'].totalDeliveries, 14);
-  assert.equal(verified.s.collections.orderPriceVerifications['ord-sub-1'].verifiedTotalDeliveries, 14);
+  assert.equal(verified.s.collections.priceVerifications['ord-sub-1'].verifiedTotalDeliveries, 14);
 });
 
 test('server rejects a client-manipulated subscription total or bonus metadata', async () => {
@@ -294,7 +323,7 @@ test('verified purchased entitlement survives later plan and offer edits on retr
   const retry = await verify(checkout, {
     offers: [],
     plans: { [plan.id]: { ...plan, deliveriesPerTerm: 9 } },
-    verifications: first.s.collections.orderPriceVerifications,
+    verifications: first.s.collections.priceVerifications,
   });
   assert.deepEqual(await retry.run, { reused: true });
   assert.equal(checkout.subscriptionDocs['sub-1'].totalDeliveries, 14);
@@ -312,7 +341,7 @@ test('delivery charges: one per unique date; subscription dates shared with one-
   assert.equal(charges.total, 160);
 });
 
-test('offer allocation: last one-time group receives the remainder; totals add up', () => {
+test('one-time group Price Offer savings aggregate directly from the eligible item discounts', () => {
   const checkout = mixedCart();
   const oneTimeTotals = checkout.orderIds.filter((id) => !id.includes('sub')).map((id) => checkout.orders[id]);
   const offerSum = oneTimeTotals.reduce((sum, order) => sum + (order.subtotal + order.deliveryFee - order.total), 0);
@@ -336,7 +365,8 @@ test('delivery offer eligibility includes inclusive dates and normalizes Offers 
     pincode: PINCODE,
     geoId: geo.id,
     locationName: geo.data.locationName,
-    oneTimeSubtotal: 0,
+    oneTimeItems: [],
+    subscriptionItems: [],
     deliveryChargeAmounts: [44],
   };
   const result = computeCustomerOffers([offer], input, TODAY);
@@ -364,7 +394,8 @@ test('expired and not-yet-active delivery offers are not applied', () => {
     pincode: PINCODE,
     geoId: geo.id,
     locationName: geo.data.locationName,
-    oneTimeSubtotal: 0,
+    oneTimeItems: [],
+    subscriptionItems: [],
     deliveryChargeAmounts: [44],
   };
   assert.equal(computeCustomerOffers([{ ...offer, startDate: '2026-10-12' }], input, TODAY).deliverySavings, 0);
@@ -373,7 +404,10 @@ test('expired and not-yet-active delivery offers are not applied', () => {
   assert.equal(computeCustomerOffers([{ ...offer, active: undefined }], input, TODAY).deliverySavings, 0);
   assert.equal(computeCustomerOffers([{ ...offer, status: 'paused' }], input, TODAY).deliverySavings, 0);
   assert.equal(computeCustomerOffers([{ ...offer, discountType: 'unknown' }], input, TODAY).deliverySavings, 0);
-  assert.equal(computeCustomerOffers([{ ...tenPercent, active: undefined }], { ...input, oneTimeSubtotal: 240 }, TODAY).priceSavings, 24);
+  assert.equal(computeCustomerOffers([{ ...tenPercent, active: undefined }], {
+    ...input,
+    oneTimeItems: [{ price: 240, quantity: 1 }],
+  }, TODAY).priceSavings, 24);
 });
 
 test('pincode-scoped delivery offers require the matching geolocation or pincode', () => {
@@ -391,7 +425,8 @@ test('pincode-scoped delivery offers require the matching geolocation or pincode
     pincode: PINCODE,
     geoId: geo.id,
     locationName: geo.data.locationName,
-    oneTimeSubtotal: 0,
+    oneTimeItems: [],
+    subscriptionItems: [],
     deliveryChargeAmounts: [44, 44],
   };
   assert.equal(computeCustomerOffers([offer], input, TODAY).deliverySavings, 22);
@@ -405,7 +440,8 @@ test('flat and percentage delivery discounts are evaluated per scheduled deliver
     pincode: PINCODE,
     geoId: geo.id,
     locationName: geo.data.locationName,
-    oneTimeSubtotal: 0,
+    oneTimeItems: [],
+    subscriptionItems: [],
     deliveryChargeAmounts: [44, 44, 44, 44],
   };
   const flat = { ...freeDelivery, discountValue: 15 };
@@ -526,7 +562,7 @@ test('subscription plan and delivery savings combine to ₹140 without changing 
   assert.equal(checkout.orders['ord-sub-1'].total, 516);
 });
 
-test('mixed checkout totals MRP, Price Offer and Delivery Charge savings without changing the payable amount', () => {
+test('mixed checkout applies Price Offers per unit separately from MRP and delivery savings', () => {
   const product = {
     ...broccoli,
     sellingOptions: [{ id: 'b100', weightGrams: 100, price: 130, mrp: 150, active: true }],
@@ -562,15 +598,142 @@ test('mixed checkout totals MRP, Price Offer and Delivery Charge savings without
   });
   assert.deepEqual(savings, {
     mrpSavings: 20,
-    priceOfferSavings: 10,
-    productSavings: 30,
+    priceOfferSavings: 20,
+    productSavings: 40,
     subscriptionPlanSavings: 0,
     deliverySavings: 60,
-    totalSavings: 90,
+    totalSavings: 100,
   });
-  assert.equal(checkout.orders['ord-2026-10-17'].discount, 22.45);
-  assert.equal(checkout.orders['ord-sub-1'].discount, 7.55);
-  assert.equal(Object.values(checkout.orders).reduce((sum, order: any) => sum + Number(order.total || 0), 0), 636);
+  assert.equal(checkout.orders['ord-2026-10-17'].discount, 10);
+  assert.equal(checkout.orders['ord-2026-10-17'].mrpSavings, 20);
+  assert.equal(checkout.orders['ord-sub-1'].discount, 10);
+  assert.equal(checkout.total, 626);
+  assert.equal(checkout.total, Object.values(checkout.orders).reduce((sum, order: any) => sum + Number(order.total || 0), 0));
+});
+
+test('flat price offer reduces a ₹400 one-time combo price to ₹390 while retaining ₹480 MRP', () => {
+  const checkout = clientCheckout(
+    [{ product: powerCombo, packaging: 100, quantity: 1, date: '2026-10-17' }],
+    [],
+    [flatTenPrice],
+  );
+  const order = checkout.orders['ord-2026-10-17'];
+  assert.equal(order.items[0].mrp, 480);
+  assert.equal(order.items[0].unitPrice, 400);
+  assert.equal(order.mrpSavings, 80);
+  assert.equal(order.discount, 10);
+  assert.equal(order.total - order.deliveryFee, 390);
+  assert.equal(checkout.offerResult.oneTimeItemSavings[0], 10);
+});
+
+test('flat and percentage Price Offers use the selected subscription plan selling option', () => {
+  const plan = {
+    ...monthly,
+    sellingOptions: [{ id: 'pm100', weightGrams: 100, planPrice: 400, maximumPlanPrice: 480 }],
+  };
+  const flatCheckout = clientCheckout(
+    [],
+    [{ product: broccoli, plan, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }],
+    [flatTenPrice],
+  );
+  const flatOrder = flatCheckout.orders['ord-sub-1'];
+  assert.equal(flatOrder.items[0].unitPrice, 400);
+  assert.equal(flatOrder.total - flatOrder.deliveryFee, 390);
+  assert.equal(flatOrder.discount, 10);
+  assert.deepEqual(resolveSubscriptionPlanSavings(plan, {
+    sellingOptionId: 'pm100',
+    packaging: 100,
+    planPrice: 400,
+    quantity: 1,
+  }), { maximumPlanPrice: 480, savings: 80 });
+  assert.equal(checkoutSavingsBreakdown({
+    mrpSavings: 0,
+    priceOfferSavings: flatCheckout.offerResult.priceSavings,
+    subscriptionPlanSavings: 80,
+    deliverySavings: 0,
+  }).totalSavings, 90);
+
+  const percentageCheckout = clientCheckout(
+    [],
+    [{ product: broccoli, plan, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }],
+    [tenPercent],
+  );
+  assert.equal(percentageCheckout.orders['ord-sub-1'].total - percentageCheckout.orders['ord-sub-1'].deliveryFee, 360);
+});
+
+test('10% Price Offer reduces a ₹400 one-time selling price to ₹360', () => {
+  const checkout = clientCheckout(
+    [{ product: powerCombo, packaging: 100, quantity: 1, date: '2026-10-17' }],
+    [],
+    [tenPercent],
+  );
+  assert.equal(checkout.orders['ord-2026-10-17'].items[0].unitPrice, 400);
+  assert.equal(checkout.orders['ord-2026-10-17'].total - checkout.orders['ord-2026-10-17'].deliveryFee, 360);
+});
+
+test('flat offers apply per eligible unit in combo and mixed one-time/subscription carts', async () => {
+  const checkout = clientCheckout(
+    [{ product: powerCombo, packaging: 100, quantity: 2, date: '2026-10-17' }],
+    [{ product: broccoli, plan: monthly, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }],
+    [flatTenPrice],
+  );
+  assert.equal(checkout.offerResult.oneTimeItemSavings[0], 20);
+  assert.equal(checkout.offerResult.subscriptionItemSavings[0], 10);
+  assert.equal(checkout.offerResult.priceSavings, 30);
+  assert.equal(checkout.orders['ord-2026-10-17'].total - checkout.orders['ord-2026-10-17'].deliveryFee, 780);
+  assert.equal(checkout.orders['ord-sub-1'].total - checkout.orders['ord-sub-1'].deliveryFee, 390);
+  assert.equal(checkout.total, Object.values(checkout.orders).reduce((sum, order: any) => sum + Number(order.total || 0), 0));
+
+  const { run, s } = await verify(checkout, { offers: [flatTenPrice] });
+  await run;
+  const verifiedAmount = checkout.orderIds.reduce((sum, id) => sum + s.collections.priceVerifications[id].verifiedTotal, 0);
+  assert.equal(verifiedAmount, checkout.total);
+});
+
+test('no, invalid, expired, inactive, or inapplicable Price Offer leaves selling price unchanged', () => {
+  const inputs = {
+    pincode: PINCODE,
+    geoId: geo.id,
+    locationName: geo.data.locationName,
+    oneTimeItems: [{ price: 400, quantity: 1 }],
+    subscriptionItems: [],
+    deliveryChargeAmounts: [],
+  };
+  const invalidOffers: CustomerOffer[][] = [
+    [],
+    [{ ...flatTenPrice, active: false }],
+    [{ ...flatTenPrice, startDate: '2026-10-12' }],
+    [{ ...flatTenPrice, endDate: '2026-10-10' }],
+    [{ ...flatTenPrice, locationType: 'pincode', pincodeIds: ['other'] }],
+    [{ ...flatTenPrice, discountType: 'unsupported' }],
+    [{ ...flatTenPrice, discountValue: -1 }],
+  ];
+  for (const offers of invalidOffers) {
+    assert.equal(computeCustomerOffers(offers, inputs, TODAY).priceSavings, 0);
+  }
+  assert.equal(clientCheckout([{ product: powerCombo, packaging: 100, quantity: 1, date: '2026-10-17' }], [], []).orders['ord-2026-10-17'].total - 40, 400);
+});
+
+test('best eligible price offer is not stacked; per-unit limits and rounding are preserved', () => {
+  const input = {
+    pincode: PINCODE,
+    geoId: geo.id,
+    oneTimeItems: [{ price: 400, quantity: 1 }],
+    subscriptionItems: [],
+    deliveryChargeAmounts: [],
+  };
+  const result = computeCustomerOffers([flatTenPrice, tenPercent], input, TODAY);
+  assert.equal(result.priceOffer?.id, tenPercent.id);
+  assert.equal(result.oneTimeItemSavings[0], 40);
+  assert.equal(result.priceSavings, 40);
+
+  const capped = computeCustomerOffers([{ ...flatTenPrice, discountValue: 500 }], input, TODAY);
+  assert.equal(capped.oneTimeItemSavings[0], 400);
+  const rounded = computeCustomerOffers([tenPercent], {
+    ...input,
+    oneTimeItems: [{ price: 33.33, quantity: 3 }],
+  }, TODAY);
+  assert.equal(rounded.oneTimeItemSavings[0], 9.99);
 });
 
 test('subscription checkout applies one flat delivery discount per scheduled delivery and server verifies it', async () => {
@@ -663,18 +826,25 @@ test('G2: tampered subscription record (weight or deliveries) is rejected', asyn
 test('G2: subscription order priced below the plan is rejected', () => rejects((c) => { const o = c.orders['ord-sub-1']; o.items[0].unitPrice = 1; o.items[0].lineTotal = 1; o.subtotal = 1; o.total = 1; }));
 test('G2: orders for different delivery pincodes are rejected', () => rejects((c) => { c.orders['ord-sub-1'].deliveryAddress = { pincode: '560001' }; }));
 
-test('G2: paying more than the authoritative amount is accepted for an order created before a price offer', async () => {
+test('G2: an old order total above the current authoritative amount is rejected', async () => {
   const checkout = clientCheckout([], [{ product: broccoli, plan: monthly, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }], []);
   // Stored without the 10% offer that is active now.
   const { run } = await verify(checkout, { offers: [tenPercent] });
-  assert.equal((await run).reused, false);
+  await assert.rejects(run, { message: TOTAL_NOT_VERIFIED });
+});
+
+test('G2: an inflated stored order total is rejected even when its line prices are valid', async () => {
+  const checkout = clientCheckout([], [{ product: broccoli, plan: monthly, sellingOptionId: 'pm100', quantity: 1, first: '2026-10-17' }], [tenPercent]);
+  checkout.orders['ord-sub-1'].total += 1;
+  const { run } = await verify(checkout, { offers: [tenPercent] });
+  await assert.rejects(run, { message: TOTAL_NOT_VERIFIED });
 });
 
 test('G2: retry of verified, unchanged orders reuses the record without re-pricing (offer ended meanwhile)', async () => {
   const checkout = mixedCart();
   const first = await verify(checkout, { offers: [tenPercent] });
   await first.run;
-  const records = first.s.collections.orderPriceVerifications;
+  const records = first.s.collections.priceVerifications;
   // Retry one order from Order Details after the offer ended.
   const retry = await verify(checkout, { offers: [], ids: ['ord-2026-10-24'], verifications: records });
   assert.deepEqual(await retry.run, { reused: true });
@@ -686,7 +856,7 @@ test('G2: an existing record does not cover a changed order', async () => {
   const first = await verify(checkout, { offers: [tenPercent] });
   await first.run;
   checkout.orders['ord-2026-10-24'].total = 1;
-  const retry = await verify(checkout, { offers: [tenPercent], verifications: first.s.collections.orderPriceVerifications });
+  const retry = await verify(checkout, { offers: [tenPercent], verifications: first.s.collections.priceVerifications });
   await assert.rejects(retry.run, { message: TOTAL_NOT_VERIFIED });
 });
 

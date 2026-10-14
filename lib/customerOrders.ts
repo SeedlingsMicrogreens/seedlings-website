@@ -1,5 +1,6 @@
 import { addDoc, collection, doc, getDoc, getDocs, query, serverTimestamp, where } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { db } from './firebase';
+import { getCustomerSession } from './clientOnboarding';
 import { checkProductsAvailability, resolveProductDeliveryDate } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges } from './deliveryCharges';
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
@@ -22,9 +23,11 @@ function orderNumber() {
 }
 
 export async function createCustomerOneTimeOrder(input: CreateOneTimeOrderInput) {
-  const authUid = auth.currentUser?.uid;
-  if (!authUid) throw new Error('Your login session expired. Please sign in again.');
+  const session = await getCustomerSession();
+  if (!session.signedIn) throw new Error('Your login session expired. Please sign in again.');
   const mobile = mobileOf(input.mobile);
+  if (mobile !== session.mobile) throw new Error('Your signed-in account does not match this checkout.');
+  const authUid = session.uid;
   const addressId = clean(input.addressId);
   const deliverySlot = clean(input.deliverySlot);
   const requestedItems = Array.isArray(input.items) ? input.items : [];

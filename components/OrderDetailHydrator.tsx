@@ -4,10 +4,12 @@ import { useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
-import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { getCustomerSession } from '@/lib/clientOnboarding';
+import { isCurrentCustomerSession } from '@/lib/customerAuthState';
 import OrderFeedbackModal from '@/components/OrderFeedbackModal';
-import { clearPendingCashfreePayment, completeCashfreePayment, createCashfreeOrder } from '@/lib/cashfreeFunctions';
+import { completeCashfreePayment, createCashfreeOrder, customerPaymentMessage, promptSignInIfNeeded, settleCashfreeOutcome } from '@/lib/cashfreeFunctions';
 import { openCashfreeCheckout } from '@/lib/cashfreeClient';
+import { checkoutRetryOrderIds } from '@/lib/paymentCheckoutState';
 
 type OrderItem = {
   productName?: string;
@@ -29,6 +31,8 @@ type Order = {
   subtotal?: number;
   deliveryFee?: number;
   discount?: number;
+  mrpSavings?: number;
+  offerPriceSavings?: number;
   total?: number;
   currency?: string;
   status?: string;
@@ -36,6 +40,9 @@ type Order = {
   subscriptionId?: string | null;
   paymentStatus?: string;
   cashfreeOrderId?: string;
+  cashfreePaymentId?: string | null;
+  paidAt?: unknown;
+  updatedAt?: unknown;
   paymentMethod?: string;
   deliveryAddress?: Record<string, unknown>;
   scheduledDeliveryDate?: unknown;
@@ -130,6 +137,20 @@ function paymentLabel(value: unknown) {
   return String(value || 'online').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+/**
+ * The verified payment shown in order history: the transaction record when it
+ * can be read, otherwise the order's server-written payment result. Pending or
+ * abandoned attempts are not payment history.
+ */
+function completedPayment(order: Order, transaction?: PaymentTransaction): PaymentTransaction | undefined {
+  if (transaction) return transaction;
+  const paymentStatus = String(order.paymentStatus || '').toLowerCase();
+  const base = { paymentMethod: order.paymentMethod, amount: order.total, currency: order.currency, gatewayTransactionId: order.cashfreePaymentId || '' };
+  if (paymentStatus === 'paid') return { ...base, status: 'success', paidAt: order.paidAt };
+  if (paymentStatus === 'failed' || String(order.status || '').toLowerCase() === 'payment_failed') return { ...base, status: 'failed', createdAt: order.updatedAt };
+  return undefined;
+}
+
 function renderLoading(panel: HTMLElement) {
   panel.innerHTML = `<div class="panel"><div class="order-row"><div style="height:16px;width:70%;background:#eee7da;border-radius:8px"></div></div><div class="order-row"><div style="height:16px;width:60%;background:#eee7da;border-radius:8px"></div></div><div class="order-row"><div style="height:16px;width:65%;background:#eee7da;border-radius:8px"></div></div></div>`;
 }
@@ -153,6 +174,9 @@ function renderOrder(panel: HTMLElement, order: Order, transaction?: PaymentTran
   }, 0);
   const subtotal = Number(order.subtotal ?? items.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0));
   const discount = Number(order.discount ?? Math.max(0, mrpSubtotal - subtotal));
+  const mrpSavings = Number(order.mrpSavings ?? Math.max(0, mrpSubtotal - subtotal));
+  const priceOfferSavings = Number(order.offerPriceSavings ?? Math.max(0, discount - mrpSavings));
+  const hasSeparateSavings = order.mrpSavings !== undefined || order.offerPriceSavings !== undefined;
   const deliveryFee = Number(order.deliveryFee || 0);
   const total = Number(order.total ?? subtotal + deliveryFee);
 
@@ -162,17 +186,17 @@ function renderOrder(panel: HTMLElement, order: Order, transaction?: PaymentTran
     return `<div class="order-row"><div style="display:flex;align-items:center;min-width:0">${image}<div><strong>${esc(item.productName || 'Product')}</strong><div class="order-meta">${esc(details || 'Item')}</div></div></div><strong>${money(item.lineTotal, currency)}</strong><span>${money(item.unitPrice, currency)} each</span></div>`;
   }).join('') : `<p class="muted">No items were recorded for this order.</p>`;
 
-  const transactionStatus = transaction?.status || transaction?.paymentStatus || order.paymentStatus || 'pending';
-  const transactionId = transaction?.gatewayTransactionId || transaction?.transactionId;
-  const paymentAmount = transaction?.amount ?? total;
-  const paymentDate = transaction?.paidAt || transaction?.createdAt;
-  const transactionRows = [
-    `<div class="transaction-row"><span>Status</span><strong>${esc(paymentLabel(transactionStatus))}</strong></div>`,
-    `<div class="transaction-row"><span>Amount</span><strong>${money(paymentAmount, transaction?.currency || currency)}</strong></div>`,
-    `<div class="transaction-row"><span>Payment method</span><strong>${esc(paymentLabel(transaction?.paymentMethod || order.paymentMethod))}</strong></div>`,
+  const payment = completedPayment(order, transaction);
+  const transactionId = payment?.gatewayTransactionId || payment?.transactionId;
+  const paymentAmount = payment?.amount ?? total;
+  const paymentDate = payment?.paidAt || payment?.createdAt;
+  const transactionRows = payment ? [
+    `<div class="transaction-row"><span>Status</span><strong>${esc(paymentLabel(payment.status || payment.paymentStatus || ''))}</strong></div>`,
+    `<div class="transaction-row"><span>Amount</span><strong>${money(paymentAmount, payment.currency || currency)}</strong></div>`,
+    `<div class="transaction-row"><span>Payment method</span><strong>${esc(paymentLabel(payment.paymentMethod || order.paymentMethod))}</strong></div>`,
     transactionId ? `<div class="transaction-row"><span>Transaction ID</span><strong>${esc(transactionId)}</strong></div>` : '',
     paymentDate ? `<div class="transaction-row"><span>Payment date</span><strong>${esc(dateText(paymentDate))}</strong></div>` : '',
-  ].join('');
+  ].join('') : '<p class="muted">No completed payment transaction is recorded yet. Payment status is shown with the order.</p>';
 
   panel.innerHTML = `
     <div class="account-title">
@@ -189,7 +213,9 @@ function renderOrder(panel: HTMLElement, order: Order, transaction?: PaymentTran
       ${itemRows}
       <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:14px">
         <div class="transaction-row"><span>MRP subtotal</span><strong>${money(mrpSubtotal, currency)}</strong></div>
-        ${discount > 0 ? `<div class="transaction-row"><span>Savings</span><strong>${money(discount, currency)}</strong></div>` : ''}
+        ${hasSeparateSavings
+          ? `${mrpSavings > 0 ? `<div class="transaction-row"><span>MRP savings</span><strong>${money(mrpSavings, currency)}</strong></div>` : ''}${priceOfferSavings > 0 ? `<div class="transaction-row"><span>Price Offer savings</span><strong>${money(priceOfferSavings, currency)}</strong></div>` : ''}`
+          : discount > 0 ? `<div class="transaction-row"><span>Savings</span><strong>${money(discount, currency)}</strong></div>` : ''}
         <div class="transaction-row"><span>Subtotal</span><strong>${money(subtotal, currency)}</strong></div>
         <div class="transaction-row"><span>Delivery</span><strong>${deliveryFee > 0 ? money(deliveryFee, currency) : 'Free'}</strong></div>
         <div class="transaction-row"><span>Total</span><strong>${money(total, currency)}</strong></div>
@@ -220,6 +246,16 @@ function renderOrder(panel: HTMLElement, order: Order, transaction?: PaymentTran
   `;
 }
 
+/**
+ * A mixed checkout pays several orders with one Cashfree order. Retrying one of
+ * them retries every still-payable order of that same Cashfree order, so the
+ * checkout stays one payment with its verified total.
+ */
+function retryOrderIds(orderId: string, order: Order, mobile: string) {
+  return checkoutRetryOrderIds(orderId, String(order.cashfreeOrderId || ''), async () =>
+    (await getDocs(query(collection(db, 'orders'), where('customerId', '==', mobile)))).docs.map(item => ({ id: item.id, data: item.data() })));
+}
+
 export default function OrderDetailHydrator({ children }: { children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const [feedbackTarget, setFeedbackTarget] = useState<{ orderId: string; orderNumber: string; customerId: string; subscriptionDeliveryId?: string } | null>(null);
@@ -233,11 +269,10 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
     let alive = true;
     let requestId = 0;
 
-    const load = async (userPresent: boolean) => {
-      const currentRequest = ++requestId;
+    const load = async (currentRequest: number, userPresent: boolean, customerMobile = '', uid = '') => {
       const params = new URLSearchParams(window.location.search);
       const orderId = params.get('order')?.trim() || '';
-      const mobile = getStoredCustomerMobile();
+      const mobile = customerMobile;
 
       if (!userPresent || !mobile) {
         if (alive && currentRequest === requestId) renderState(panel, 'Sign in to view this order', 'Sign in to see your real order details.', '<a class="btn primary" href="/account">Go to Account</a>');
@@ -251,6 +286,7 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
       renderLoading(panel);
       try {
         const orderSnap = await getDoc(doc(db, 'orders', orderId));
+        if (!alive || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
         if (!orderSnap.exists()) {
           if (alive && currentRequest === requestId) renderState(panel, 'Order not found', 'This order could not be found.', '<a class="btn mini" href="/orders">Back to My Orders</a>');
           return;
@@ -269,10 +305,12 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
           getDocs(query(collection(db, 'subscriptionDeliveries'), where('orderId', '==', orderId))),
           getDocs(query(collection(db, 'orderFeedback'), where('orderId', '==', orderId))),
         ]);
+        if (!alive || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
         if (paymentResult.status === 'fulfilled') {
           const matching = paymentResult.value.docs
             .map(item => item.data() as PaymentTransaction & { customerId?: string })
             .filter(item => String(item.customerId || '').replace(/\D/g, '') === mobile)
+            .filter(item => !['pending', 'payment_pending'].includes(String(item.paymentStatus || item.status || '').toLowerCase()))
             .sort((a, b) => (dateObject(b.createdAt)?.getTime() || 0) - (dateObject(a.createdAt)?.getTime() || 0));
           transaction = matching[0];
         }
@@ -283,7 +321,7 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
           feedbackIds = new Set(feedbackResult.value.docs.map(item => String((item.data() as FeedbackRecord).subscriptionDeliveryId || orderId)));
         }
 
-        if (alive && currentRequest === requestId) {
+        if (alive && currentRequest === requestId && await isCurrentCustomerSession(auth, { uid, mobile })) {
           renderOrder(panel, order, transaction, subscriptionDeliveries, feedbackIds);
           panel.querySelectorAll<HTMLButtonElement>('[data-feedback-order]').forEach(button => button.addEventListener('click', () => setFeedbackTarget({ orderId, orderNumber: String(order.orderNumber || order.id), customerId: mobile })));
           panel.querySelectorAll<HTMLButtonElement>('[data-feedback-delivery]').forEach(button => button.addEventListener('click', () => setFeedbackTarget({ orderId, orderNumber: String(order.orderNumber || order.id), customerId: mobile, subscriptionDeliveryId: button.dataset.feedbackDelivery || undefined })));
@@ -293,14 +331,14 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
             button.disabled = true;
             button.textContent = 'Checking…';
             try {
-              const result = await completeCashfreePayment(String(order.cashfreeOrderId || order.id));
-              if (result.status === 'paid') {
-                clearPendingCashfreePayment();
-                window.location.href = `/order-detail?order=${encodeURIComponent(orderId)}`;
-                return;
-              }
-              if (result.status === 'failed') {
-                clearPendingCashfreePayment();
+              const gatewayOrderId = String(order.cashfreeOrderId || order.id);
+              if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
+              const result = await completeCashfreePayment(gatewayOrderId);
+              if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
+              // Applies to this attempt only: its pending record, and the cart
+              // only when it is still the cart of the checkout that was paid.
+              settleCashfreeOutcome({ status: result.status, cashfreeOrderId: gatewayOrderId, orderIds: result.orderIds });
+              if (result.status === 'paid' || result.status === 'failed') {
                 window.location.href = `/order-detail?order=${encodeURIComponent(orderId)}`;
                 return;
               }
@@ -308,9 +346,10 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
               button.textContent = 'Check Payment Status';
               if (message) message.textContent = 'Payment is still pending. You can leave this page and we will continue checking when you return.';
             } catch (error) {
+              if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
               button.disabled = false;
               button.textContent = 'Check Payment Status';
-              if (message) message.textContent = error instanceof Error ? error.message : 'Unable to check payment status.';
+              if (message) message.textContent = customerPaymentMessage(error);
             }
           });
 
@@ -319,22 +358,34 @@ export default function OrderDetailHydrator({ children }: { children: React.Reac
             button.disabled = true;
             button.textContent = 'Preparing Payment…';
             try {
-              const payment = await createCashfreeOrder([orderId], mobile);
+              if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
+              const payment = await createCashfreeOrder(await retryOrderIds(orderId, order, mobile), mobile);
+              if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
               await openCashfreeCheckout(payment.paymentSessionId);
             } catch (error) {
+              if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
               button.disabled = false;
               button.textContent = 'Retry Payment';
-              renderState(panel, 'Unable to retry payment', error instanceof Error ? error.message : 'Unable to start payment again.', '<a class="btn mini" href="/orders">Back to My Orders</a>');
+              renderState(panel, 'Unable to retry payment', customerPaymentMessage(error), '<a class="btn mini" href="/orders">Back to My Orders</a>');
+              promptSignInIfNeeded(error);
             }
           });
         }
       } catch (error) {
-        if (!alive || currentRequest !== requestId) return;
+        if (!alive || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
         renderState(panel, 'Unable to load order', error instanceof Error ? error.message : 'Unable to load this order.');
       }
     };
 
-    const unsubscribe = onAuthStateChanged(auth, user => { void load(Boolean(user)); });
+    const unsubscribe = onAuthStateChanged(auth, () => {
+      const currentRequest = ++requestId;
+      setFeedbackTarget(null);
+      renderLoading(panel);
+      void getCustomerSession().then((session) => {
+        if (currentRequest !== requestId) return;
+        void load(currentRequest, session.signedIn, session.signedIn ? session.mobile : '', session.signedIn ? session.uid : '');
+      });
+    });
     return () => { alive = false; requestId += 1; unsubscribe(); };
   }, []);
 

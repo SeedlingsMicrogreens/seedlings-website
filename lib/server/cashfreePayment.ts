@@ -2,6 +2,9 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/server/firebaseAdmin';
 import { sendCustomerNotificationPush } from '@/lib/server/customerNotifications';
 import { cashfreeRequest } from '@/lib/server/cashfree';
+import { HttpError } from '@/lib/server/httpError';
+import { ATTEMPT_RECORD, PAYMENT_ATTEMPTS, PAYMENT_TRANSACTIONS, type FinalizationState } from '@/lib/server/paymentRecords';
+import { assertRecordsOwned, firestoreOwnershipStore, type PaymentCaller } from '@/lib/server/customerOwnership';
 
 type CashfreeOrder = { order_id?: string; order_amount?: number; order_currency?: string; order_status?: string };
 type CashfreePayment = { cf_payment_id?: string | number; payment_status?: string; payment_amount?: number; payment_currency?: string; payment_time?: string; payment_completion_time?: string; payment_message?: string; error_details?: Record<string, unknown> | null };
@@ -57,22 +60,49 @@ export function normalizeStatus(order: CashfreeOrder, payments: CashfreePayment[
   return 'pending' as const;
 }
 
-export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, expectedAuthUid?: string, deps: FinalizationDeps = defaultDeps): Promise<CashfreePaymentResult> {
+/** Internal orders of a Cashfree attempt: its `paymentAttempts` mapping, else (pre-mapping orders) the orders pointing at it. */
+async function loadAttemptOrders(db: ReturnType<typeof adminDb>, cashfreeOrderId: string) {
+  const attempt = (await db.collection(PAYMENT_ATTEMPTS).doc(cashfreeOrderId).get()).data() || {};
+  const orderIds = Array.isArray(attempt.orderIds) ? attempt.orderIds.map(String).filter(Boolean) : [];
+  if (orderIds.length) {
+    const snapshots = await Promise.all(orderIds.map(id => db.collection('orders').doc(id).get()));
+    return { docs: snapshots.filter(snapshot => snapshot.exists && hasSnapshotData(snapshot)) };
+  }
+  return db.collection('orders').where('cashfreeOrderId', '==', cashfreeOrderId).get();
+}
+
+/**
+ * `caller` is the signed-in customer for browser/Mobile verification (omitted
+ * for the signature-verified webhook). Ownership uses the same rule as session
+ * creation and is checked before any result, cached or fresh, is returned.
+ */
+export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, caller?: string | PaymentCaller, deps: FinalizationDeps = defaultDeps): Promise<CashfreePaymentResult> {
+  const db = deps.db();
+  const linkedOrders = await loadAttemptOrders(db, cashfreeOrderId);
+  if (linkedOrders.docs.length === 0) throw new HttpError(404, 'This payment could not be found.', 'not_payable');
+  if (caller) {
+    await assertRecordsOwned(firestoreOwnershipStore(db), caller, linkedOrders.docs.map(snapshot => getSnapshotData(snapshot)), {
+      uidFields: ['authUid', 'paymentAuthUid'],
+      strictUidFields: ['paymentAuthUid'],
+    });
+  }
+
   const order = await deps.cashfreeRequest<CashfreeOrder>(`/pg/orders/${encodeURIComponent(cashfreeOrderId)}`);
   const payments = await deps.cashfreeRequest<CashfreePayment[]>(`/pg/orders/${encodeURIComponent(cashfreeOrderId)}/payments`);
   const status = normalizeStatus(order, payments);
-  const db = deps.db();
 
   // Serialize finalization for the same Cashfree order. Browser return, webhook,
   // refresh, and repeated verification can all arrive at nearly the same time.
-  // The lock is intentionally short-lived so a crashed request cannot block
-  // recovery forever. The final state is written in the same batch as the order
-  // updates, making a completed finalization idempotent.
-  const finalizationLockRef = db.collection('paymentFinalizationLocks').doc(cashfreeOrderId);
+  // The lock lives on the attempt record (`finalization`) and is intentionally
+  // short-lived so a crashed request cannot block recovery forever. The final
+  // state is written in the same batch as the order updates, making a completed
+  // finalization idempotent. The map is always written whole (mergeFields), so a
+  // cached result can never be partially merged into a newer state.
+  const attemptRef = db.collection(PAYMENT_ATTEMPTS).doc(cashfreeOrderId);
   const nowMs = Date.now();
   const lockResult = await db.runTransaction(async (tx) => {
-    const lockSnapshot = await tx.get(finalizationLockRef);
-    const lock = lockSnapshot.exists ? lockSnapshot.data() || {} : {};
+    const attemptSnapshot = await tx.get(attemptRef);
+    const lock: Record<string, unknown> = ((attemptSnapshot.data() || {}).finalization as FinalizationState | undefined) || {};
     const lockStatus = String(lock.status || '');
     const updatedAtMs = Number(lock.updatedAtMs || 0);
 
@@ -91,12 +121,12 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
     const processingFresh = lockStatus === 'processing' && updatedAtMs > 0 && (nowMs - updatedAtMs) < 2 * 60 * 1000;
     if (processingFresh) return { action: 'processing' as const };
 
-    tx.set(finalizationLockRef, {
-      status: 'processing',
+    tx.set(attemptRef, {
       gatewayOrderId: cashfreeOrderId,
-      updatedAtMs: nowMs,
+      recordType: ATTEMPT_RECORD,
+      finalization: { status: 'processing', updatedAtMs: nowMs, result: null },
       updatedAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
+    }, { mergeFields: ['gatewayOrderId', 'recordType', 'finalization', 'updatedAt'] });
     return { action: 'acquired' as const };
   });
 
@@ -124,23 +154,10 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
     };
   }
 
-  // paymentAttempts preserves the relationship between every Cashfree attempt and
-  // the internal orders. This is required when a failed payment is retried.
-  const attemptSnapshot = await db.collection('paymentAttempts').doc(cashfreeOrderId).get();
-  let internalSnapshot;
-  if (attemptSnapshot.exists) {
-    const attempt = attemptSnapshot.data() || {};
-    const orderIds = Array.isArray(attempt.orderIds) ? attempt.orderIds.map(String).filter(Boolean) : [];
-    const snapshots = await Promise.all(orderIds.map(id => db.collection('orders').doc(id).get()));
-    internalSnapshot = { docs: snapshots.filter(snapshot => snapshot.exists && hasSnapshotData(snapshot)) };
-  } else {
-    internalSnapshot = await db.collection('orders').where('cashfreeOrderId', '==', cashfreeOrderId).get();
-  }
-  if (internalSnapshot.docs.length === 0) throw new Error('Seedlings order linked to this Cashfree payment was not found.');
-
-  if (expectedAuthUid && internalSnapshot.docs.some(snapshot => String(getSnapshotData(snapshot).paymentAuthUid || '') !== expectedAuthUid)) {
-    throw new Error('This payment does not belong to the signed-in customer session.');
-  }
+  // Re-read under the lock: paymentAttempts preserves the relationship between
+  // every Cashfree attempt and its internal orders (required for retries).
+  const internalSnapshot = await loadAttemptOrders(db, cashfreeOrderId);
+  if (internalSnapshot.docs.length === 0) throw new HttpError(404, 'This payment could not be found.', 'not_payable');
 
   const primarySnapshot = internalSnapshot.docs[0];
   if (!primarySnapshot) throw new Error('Seedlings order linked to this Cashfree payment was not found.');
@@ -159,13 +176,24 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
 
   const orderAlreadyPaidByAnotherAttempt = status === 'paid' && internalSnapshot.docs.some(snapshot => {
     const data = getSnapshotData(snapshot);
-    return String(data.paymentStatus || '').toLowerCase() === 'paid' && String(data.cashfreeOrderId || '') !== cashfreeOrderId;
+    // The attempt that actually paid (orders paid before this field existed fall back to cashfreeOrderId).
+    return String(data.paymentStatus || '').toLowerCase() === 'paid' && String(data.paidCashfreeOrderId || data.cashfreeOrderId || '') !== cashfreeOrderId;
   });
 
   // Orders of a checkout replaced by a changed cart are cancelled and must never be
   // activated, even if a payment arrives for them (recorded for refund instead).
   const isSuperseded = (data: OrderData) => String(data.status || '').toLowerCase() === 'cancelled' && Boolean(data.supersededAt);
   const allSuperseded = internalSnapshot.docs.every(snapshot => isSuperseded(getSnapshotData(snapshot)));
+  // A retry moves the order to a newer Cashfree order. A pending/failed result of
+  // the replaced attempt (late webhook, old browser tab) must not overwrite the
+  // current attempt's state or notify the customer; a success is still applied.
+  const isReplacedAttempt = (data: OrderData) => status !== 'paid'
+    && Boolean(String(data.cashfreeOrderId || '')) && String(data.cashfreeOrderId) !== cashfreeOrderId;
+  const replacedSubscriptionIds = new Set(internalSnapshot.docs
+    .map(snapshot => getSnapshotData(snapshot))
+    .filter(isReplacedAttempt)
+    .map(data => String(data.subscriptionId || ''))
+    .filter(Boolean));
   const subscriptionIds = internalSnapshot.docs.map(snapshot => String(getSnapshotData(snapshot).subscriptionId || '')).filter(Boolean);
   const subscriptionSnapshots = await Promise.all(subscriptionIds.map(id => db.collection('subscriptions').doc(id).get()));
   const batch = db.batch();
@@ -177,6 +205,7 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
     const isSubscriptionOrder = String(orderData.orderType || '').toLowerCase() === 'subscription';
     const alreadyPaid = String(orderData.paymentStatus || '').toLowerCase() === 'paid';
     const superseded = isSuperseded(orderData);
+    const replacedAttempt = isReplacedAttempt(orderData);
 
     // A successful payment is terminal. A delayed failed/pending result from an
     // older attempt must never downgrade an already-paid order.
@@ -188,15 +217,22 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
       cashfreePaymentId: paymentId || null,
       updatedAt: now,
     };
-    if (effectiveStatus === 'paid' && !alreadyPaid) orderUpdate.paidAt = payment?.payment_completion_time || payment?.payment_time || now;
+    if (effectiveStatus === 'paid' && !alreadyPaid) {
+      orderUpdate.paidAt = payment?.payment_completion_time || payment?.payment_time || now;
+      // Record the attempt that paid: a later success on any other attempt of
+      // this order (e.g. a superseded one applied late) is then a duplicate.
+      orderUpdate.paidCashfreeOrderId = cashfreeOrderId;
+      orderUpdate.cashfreeOrderId = cashfreeOrderId;
+    }
     if (effectiveStatus === 'failed') orderUpdate.paymentFailureMessage = payment?.payment_message || payment?.error_details || 'Payment failed.';
-    if (!superseded && (!orderAlreadyPaidByAnotherAttempt || effectiveStatus !== 'paid')) batch.update(orderSnapshot.ref, orderUpdate);
+    if (!superseded && !replacedAttempt && (!orderAlreadyPaidByAnotherAttempt || effectiveStatus !== 'paid')) batch.update(orderSnapshot.ref, orderUpdate);
 
     // The successful payment finalization is the authoritative "order placed"
     // event. Create the customer notification in the same atomic batch so browser
     // return/webhook races cannot create duplicate notifications.
-    if (superseded) {
-      // No customer notification or activation for a replaced checkout.
+    if (superseded || replacedAttempt) {
+      // No customer notification or activation for a replaced checkout, and no
+      // failure notice for an attempt the customer has already moved past.
     } else if (status === 'paid' && !alreadyPaid && !orderAlreadyPaidByAnotherAttempt) {
       const notificationEvent = isSubscriptionOrder ? 'subscription_activated' : 'order_placed';
       const notificationRef = db.collection('notifications').doc(`${orderSnapshot.id}_${notificationEvent}`);
@@ -242,31 +278,33 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
       notificationIdsToPush.push(notificationRef.id);
     }
 
-    const transactionId = `${cashfreeOrderId}_${paymentId || 'no-payment'}_${orderSnapshot.id}`;
-    batch.set(db.collection('paymentTransactions').doc(transactionId), {
-      orderId: orderSnapshot.id,
-      orderNumber: orderData.orderNumber || orderSnapshot.id,
-      customerId: orderData.customerId || '',
-      paymentStatus: status === 'paid' ? 'paid' : status === 'failed' ? 'failed' : 'pending',
-      status: superseded && status === 'paid' ? 'superseded_payment_received' : orderAlreadyPaidByAnotherAttempt && status === 'paid' ? 'duplicate_success' : status === 'paid' ? 'success' : status,
-      paymentMethod: orderData.paymentMethod || 'online',
-      amount: Number(orderData.total ?? 0),
-      currency: payment?.payment_currency || orderData.currency || 'INR',
-      transactionId: paymentId || '',
-      gatewayTransactionId: paymentId || '',
-      gatewayOrderId: cashfreeOrderId,
-      paymentMessage: payment?.payment_message || '',
-      errorDetails: payment?.error_details || null,
-      paidAt: status === 'paid' ? (payment?.payment_completion_time || payment?.payment_time || now) : null,
-      createdAt: now,
-      updatedAt: now,
-    }, { merge: true });
+    if (status !== 'pending') {
+      const transactionId = `${cashfreeOrderId}_${paymentId || 'no-payment'}_${orderSnapshot.id}`;
+      batch.set(db.collection(PAYMENT_TRANSACTIONS).doc(transactionId), {
+        orderId: orderSnapshot.id,
+        orderNumber: orderData.orderNumber || orderSnapshot.id,
+        customerId: orderData.customerId || '',
+        paymentStatus: status === 'paid' ? 'paid' : 'failed',
+        status: superseded && status === 'paid' ? 'superseded_payment_received' : orderAlreadyPaidByAnotherAttempt && status === 'paid' ? 'duplicate_success' : status === 'paid' ? 'success' : status,
+        paymentMethod: orderData.paymentMethod || 'online',
+        amount: Number(orderData.total ?? 0),
+        currency: payment?.payment_currency || orderData.currency || 'INR',
+        transactionId: paymentId || '',
+        gatewayTransactionId: paymentId || '',
+        gatewayOrderId: cashfreeOrderId,
+        paymentMessage: payment?.payment_message || '',
+        errorDetails: payment?.error_details || null,
+        paidAt: status === 'paid' ? (payment?.payment_completion_time || payment?.payment_time || now) : null,
+        createdAt: now,
+        updatedAt: now,
+      }, { merge: true });
+    }
   }
 
   for (const subscriptionSnapshot of subscriptionSnapshots) {
     if (!subscriptionSnapshot.exists) continue;
     const current = subscriptionSnapshot.data() || {};
-    if (isSuperseded(current)) continue;
+    if (isSuperseded(current) || replacedSubscriptionIds.has(subscriptionSnapshot.id)) continue;
     const alreadyPaid = String(current.paymentStatus || '').toLowerCase() === 'paid';
     const effectiveStatus = alreadyPaid && status !== 'paid' ? 'paid' : status;
     if (!orderAlreadyPaidByAnotherAttempt || effectiveStatus !== 'paid') {
@@ -279,12 +317,6 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
     }
   }
 
-  batch.set(db.collection('paymentAttempts').doc(cashfreeOrderId), {
-    gatewayOrderId: cashfreeOrderId,
-    status: status === 'paid' ? (allSuperseded ? 'superseded_paid' : orderAlreadyPaidByAnotherAttempt ? 'duplicate_success' : 'paid') : status,
-    paymentId: paymentId || null,
-    updatedAt: now,
-  }, { merge: true });
 
   // A paid checkout completes the customer's pending-checkout claim.
   if (status === 'paid' && !allSuperseded) {
@@ -321,13 +353,16 @@ export async function verifyAndFinalizeCashfreePayment(cashfreeOrderId: string, 
   // therefore safely return the exact same result without re-finalizing.
   const undefinedField = findUndefinedField(result, 'result');
   if (undefinedField) throw new Error(`Payment finalization result is incomplete (${undefinedField}).`);
-  batch.set(finalizationLockRef, {
-    status: status === 'pending' ? 'pending' : 'completed',
+  // The attempt's terminal status and the finalization state are written in the
+  // same atomic batch as every order/subscription/history write.
+  batch.set(attemptRef, {
     gatewayOrderId: cashfreeOrderId,
-    result,
-    updatedAtMs: Date.now(),
+    recordType: ATTEMPT_RECORD,
+    status: status === 'paid' ? (allSuperseded ? 'superseded_paid' : orderAlreadyPaidByAnotherAttempt ? 'duplicate_success' : 'paid') : status,
+    paymentId: paymentId || null,
+    finalization: { status: status === 'pending' ? 'pending' : 'completed', updatedAtMs: Date.now(), result },
     updatedAt: now,
-  }, { merge: true });
+  }, { mergeFields: ['gatewayOrderId', 'recordType', 'status', 'paymentId', 'finalization', 'updatedAt'] });
 
   await batch.commit();
 

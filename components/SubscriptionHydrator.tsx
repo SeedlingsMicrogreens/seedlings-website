@@ -1,25 +1,28 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { onAuthStateChanged } from "firebase/auth";
 import { collection, doc, getDoc, getDocsFromServer, query, where } from "firebase/firestore";
-import { db } from "@/lib/firebase";
-import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
+import { auth, db } from "@/lib/firebase";
+import { getCustomerSession } from "@/lib/clientOnboarding";
+import { isCurrentCustomerSession } from "@/lib/customerAuthState";
 import { getCustomerAccount, type CustomerAddress } from "@/lib/customerAccount";
 import { getActiveSalesProducts } from "@/lib/salesProducts";
 import { createCustomerSubscription, updateCustomerSubscriptionStatus } from "@/lib/customerSubscriptions";
 import { PACKAGING_OPTIONS, packagingLabel } from "@/lib/packaging";
-import { createCashfreeOrder } from "@/lib/cashfreeFunctions";
+import { createCashfreeOrder, customerPaymentMessage, promptSignInIfNeeded } from "@/lib/cashfreeFunctions";
 import { openCashfreeCheckout } from "@/lib/cashfreeClient";
 import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate } from "@/lib/customerOrderAvailability";
 import { confirmHarvestShortage, showCustomerSuccess } from "@/lib/customerAlerts";
 import { removeSubscriptionFromCart } from "@/lib/cart";
 import { updateSubscriptionDelivery } from "@/lib/customerSubscriptionDeliveryActions";
-import { calculateCustomerSubscriptionEntitlement } from "@/lib/offers";
-import { subscriptionDeliveriesPerTerm } from "@/lib/checkoutPricing";
+import { calculateCustomerOffers, calculateCustomerSubscriptionEntitlement } from "@/lib/offers";
+import { checkoutDeliveryChargeAmounts, subscriptionDeliveriesPerTerm } from "@/lib/checkoutPricing";
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from "@/lib/deliveryCharges";
 
 const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const money = (v: unknown) => `₹${Number(v || 0).toLocaleString("en-IN")}`;
+const moneyPrecise = (v: number) => `₹${Number(v || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const isPlaceholderRichText = (value: string) => ["dsds", "dssd", "test", "test description"].includes(value.trim().toLowerCase());
 
 /** Render Admin rich-text safely instead of displaying the HTML source as text. */
@@ -105,6 +108,7 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
     if (!root) return;
     const host = root;
     let dead = false;
+    let requestId = 0;
     const main = () => host.querySelector(".account-main") as HTMLElement | null;
 
     const renderSignedOut = () => {
@@ -117,9 +121,11 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
       if (m) m.innerHTML = `<div class="account-title"><div><div class="eyebrow">Subscriptions</div><h1>My Subscriptions</h1><p class="muted">Unable to load your subscription.</p></div></div><div class="panel"><p class="muted">${esc(text)}</p></div>`;
     };
 
-    async function load() {
-      const mobile = getStoredCustomerMobile();
-      if (!mobile) { renderSignedOut(); return; }
+    async function load(currentRequest: number) {
+      const session = await getCustomerSession();
+      if (dead || currentRequest !== requestId) return;
+      if (!session.signedIn) { renderSignedOut(); return; }
+      const { mobile, uid } = session;
 
       try {
         const [subsSnapshot, account, salesProducts] = await Promise.all([
@@ -127,7 +133,7 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
           getCustomerAccount(mobile),
           getActiveSalesProducts(),
         ]);
-        if (dead) return;
+        if (dead || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
 
         const subs = subsSnapshot.docs
           .map((doc) => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) }))
@@ -184,6 +190,7 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
 
           latestDeliveryAction = rescheduledDelivery || skippedDelivery || null;
         }
+        if (dead || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
         const m = main();
         if (!m) return;
 
@@ -259,6 +266,7 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
         const startHtml = selectedProduct ? `<div class="panel"><h3>Start subscription</h3><p class="muted">Product: <strong>${esc(selectedProduct.name || selectedProduct.productName)}</strong></p>
           ${addresses.length ? `<label>Delivery address<select data-address>${addresses.map((a: any) => `<option value="${esc(a.id || "")}">${esc(a.label || "Address")} — ${esc(addressText(a))}</option>`).join("")}</select></label>` : `<p class="muted">Add a delivery address before creating a subscription.</p>`}
           <p class="muted" data-subscription-offer style="font-size:13px;margin-top:10px"></p>
+          <p class="muted" data-subscription-price-offer style="font-size:13px;margin-top:6px"></p>
           <label style="margin-top:12px">Packaging<select data-packaging>${PACKAGING_OPTIONS.map((grams) => `<option value="${grams}">${packagingLabel(grams)}</option>`).join("")}</select></label>
           <label style="margin-top:12px">Packs per delivery<input data-quantity type="number" min="1" step="1" value="${Math.max(1, Number(selectedProduct.quantity || 1))}"></label>
           <label style="margin-top:12px">Start date<input data-start type="date" value="${new Date().toISOString().slice(0,10)}"></label>
@@ -269,8 +277,11 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
         m.innerHTML = `<div class="account-title subscription-page-title"><div><div class="eyebrow">Subscriptions</div><h1>My Subscriptions</h1><p class="muted">Your recurring microgreens plan and delivery schedule.</p></div><span class="status ${active?.status === "active" ? "delivered" : ""}">${active ? String(active.status || "active").toUpperCase() : "NO ACTIVE PLAN"}</span></div><p data-message class="subscription-page-message"></p>${currentHtml}${startHtml}`;
 
         const showMessage = (text: string, error = false) => { const el = host.querySelector("[data-message]") as HTMLElement | null; if (el) { el.textContent = text; el.style.color = error ? "crimson" : ""; } };
+        let subscriptionPreviewRequest = 0;
         const refreshSubscriptionOffer = async () => {
+          const request = ++subscriptionPreviewRequest;
           const preview = host.querySelector("[data-subscription-offer]") as HTMLElement | null;
+          const pricePreview = host.querySelector("[data-subscription-price-offer]") as HTMLElement | null;
           const addressId = (host.querySelector("[data-address]") as HTMLSelectElement | null)?.value || "";
           const address = addresses.find((item: CustomerAddress) => item.id === addressId);
           if (!preview || !selectedPlan || !address) return;
@@ -286,22 +297,55 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
                 deliveryDates: getWeeklyDeliveryDates(nextWeekSaturday(), regularDeliveries),
               }],
             });
+            const selectedPackaging = Number((host.querySelector("[data-packaging]") as HTMLSelectElement | null)?.value || 100);
+            const quantity = Math.max(1, Math.floor(Number((host.querySelector("[data-quantity]") as HTMLInputElement | null)?.value || 1)));
+            const product = salesProductById.get(String(selectedProduct?.productId));
+            const sellingOptions = Array.isArray(selectedPlan.sellingOptions) ? selectedPlan.sellingOptions as Array<Record<string, unknown>> : [];
+            const selectedSellingOption = sellingOptions.find((option) =>
+              Number(option.weightGrams) === selectedPackaging && Number(option.planPrice) >= 0
+            );
+            const unitPrice = Number(selectedSellingOption?.planPrice ?? selectedPlan.price ?? product?.sellingPrice ?? 0);
+            const geo = delivery.subscriptions[0];
+            const priceOffer = geo?.sourceId && product && Number.isFinite(unitPrice) && unitPrice >= 0
+              ? await calculateCustomerOffers({
+                pincode,
+                geoId: geo.sourceId,
+                locationName: geo.sourceName || "",
+                oneTimeItems: [],
+                subscriptionItems: [{ price: unitPrice, quantity }],
+                deliveryChargeAmounts: checkoutDeliveryChargeAmounts(delivery),
+              })
+              : null;
+            if (request !== subscriptionPreviewRequest) return;
             const result = await calculateCustomerSubscriptionEntitlement({
               frequency: String(selectedPlan.frequency || "").toLowerCase(),
               regularDeliveries,
               pincode,
-              geoId: delivery.subscriptions[0]?.sourceId || "",
-              locationName: delivery.subscriptions[0]?.sourceName || "",
+              geoId: geo?.sourceId || "",
+              locationName: geo?.sourceName || "",
             });
+            if (request !== subscriptionPreviewRequest) return;
             preview.textContent = result.bonusDeliveries > 0
               ? `${result.offer?.name || "Subscription offer"}: ${result.bonusDeliveries} bonus deliveries — ${result.totalDeliveries} deliveries total. No extra delivery charge for bonus deliveries.`
               : `${result.regularDeliveries} deliveries total.`;
+            const subtotal = unitPrice * quantity;
+            const priceSavings = Math.min(subtotal, Number(priceOffer?.subscriptionItemSavings[0] || 0));
+            if (pricePreview) {
+              pricePreview.textContent = priceSavings > 0
+                ? `${priceOffer?.priceOffer?.name || "Price Offer"}: save ${moneyPrecise(priceSavings)} (${moneyPrecise(subtotal)} → ${moneyPrecise(Math.max(0, subtotal - priceSavings))} per term).`
+                : `Subscription product total: ${moneyPrecise(subtotal)} per term.`;
+            }
           } catch (error) {
+            if (request !== subscriptionPreviewRequest) return;
             preview.textContent = "";
+            if (pricePreview) pricePreview.textContent = "";
             showMessage(error instanceof Error ? error.message : "Unable to check subscription offers.", true);
           }
         };
         host.querySelector("[data-address]")?.addEventListener("change", () => void refreshSubscriptionOffer());
+        host.querySelector("[data-packaging]")?.addEventListener("change", () => void refreshSubscriptionOffer());
+        host.querySelector("[data-quantity]")?.addEventListener("input", () => void refreshSubscriptionOffer());
+        host.querySelector("[data-start]")?.addEventListener("change", () => void refreshSubscriptionOffer());
         void refreshSubscriptionOffer();
         host.querySelectorAll("[data-delivery-action]").forEach((button) => button.addEventListener("click", async () => {
           const el = button as HTMLButtonElement;
@@ -330,7 +374,7 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
             try {
               await updateSubscriptionDelivery({ subscriptionId, action: "skip" });
               await showCustomerSuccess("Delivery skipped", `Your ${active.productName || "subscription"} delivery has been skipped successfully.`);
-              await load();
+              await load(++requestId);
             } catch (e) {
               showMessage(e instanceof Error ? e.message : "Unable to skip delivery.", true);
               el.disabled = false;
@@ -375,22 +419,101 @@ export default function SubscriptionHydrator({ children }: { children: React.Rea
           try {
             await updateSubscriptionDelivery({ subscriptionId, action: "reschedule", newDate: result.value });
             await showCustomerSuccess("Delivery rescheduled", `Your delivery has been rescheduled to ${formatDeliveryDate(result.value)}.`);
-            await load();
+            await load(++requestId);
           } catch (e) {
             showMessage(e instanceof Error ? e.message : "Unable to reschedule delivery.", true);
             el.disabled = false;
           }
         }));
-        host.querySelectorAll("[data-status]").forEach((b) => b.addEventListener("click", async () => { const el = b as HTMLButtonElement; const nextStatus = el.dataset.status as "active" | "paused" | "cancelled"; el.disabled = true; try { await updateCustomerSubscriptionStatus(mobile, el.dataset.id || "", nextStatus); await load(); } catch (e) { showMessage(e instanceof Error ? e.message : "Unable to update subscription.", true); el.disabled = false; } }));
+        host.querySelectorAll("[data-status]").forEach((b) => b.addEventListener("click", async () => { const el = b as HTMLButtonElement; const nextStatus = el.dataset.status as "active" | "paused" | "cancelled"; el.disabled = true; try { await updateCustomerSubscriptionStatus(mobile, el.dataset.id || "", nextStatus); await load(++requestId); } catch (e) { showMessage(e instanceof Error ? e.message : "Unable to update subscription.", true); el.disabled = false; } }));
         const create = host.querySelector("[data-create]") as HTMLButtonElement | null;
-        create?.addEventListener("click", async () => { const addressId = (host.querySelector("[data-address]") as HTMLSelectElement | null)?.value || ""; const quantity = Number((host.querySelector("[data-quantity]") as HTMLInputElement | null)?.value || 1); const packaging = Number((host.querySelector("[data-packaging]") as HTMLSelectElement | null)?.value || 100); const startDate = (host.querySelector("[data-start]") as HTMLInputElement | null)?.value || ""; if (!selectedProduct || !selectedPlanId || !addressId) { showMessage("Choose a subscription plan and delivery address before continuing.", true); return; } create.disabled = true; try { const product = salesProductById.get(String(selectedProduct.productId)); if (!product) throw new Error("The selected product is no longer available."); const targetDate = startDate || nextWeekSaturday(); const resolution = await resolveProductDeliveryDate({ product, quantity, packagingGrams: packaging, requestedDate: targetDate, kind: 'subscription', maxWeeks: 12 }); if (!resolution.deliveryDate || !resolution.availability) throw new Error('The complete requested subscription quantity is not currently available.'); const requestedAvailability = resolution.deliveryDate === targetDate ? resolution.availability : await checkProductAvailability({ product, quantity, packagingGrams: packaging, deliveryDate: targetDate }); let shortageDecision: 'continue' | 'contact' | undefined; if (requestedAvailability.hasShortage) { shortageDecision = await confirmHarvestShortage({ mode: 'subscription', availableGrams: requestedAvailability.availableGrams, requestedGrams: requestedAvailability.requestedGrams, shortageGrams: requestedAvailability.shortageGrams, deliveryDate: targetDate, alternativeDeliveryDate: resolution.deliveryDate }); } const data = await createCustomerSubscription({ mobile, product, planId: selectedPlanId, addressId, quantity, packaging, startDate, shortageDecision }); if (data.contactRequired) { removeSubscriptionFromCart(String(selectedProduct.productId), selectedPlanId, startDate); await showCustomerSuccess('We’ll contact you', 'Your enquiry has been saved. Our team will contact you regarding the available quantity.'); create.disabled = false; return; } sessionStorage.removeItem("seedlings_subscription_product"); sessionStorage.removeItem("seedlings_subscription_plan"); if (!data.paymentOrderIds?.length) throw new Error('Unable to prepare the subscription payment.'); sessionStorage.removeItem("seedlings_subscription_product"); sessionStorage.removeItem("seedlings_subscription_plan"); const payment = await createCashfreeOrder(data.paymentOrderIds, mobile); sessionStorage.setItem('seedlings_last_order', JSON.stringify({ orderId: data.orderId, orderNumber: data.orderNumber, paymentStatus: 'pending', paymentOrderIds: data.paymentOrderIds, mobile, cashfreeOrderId: payment.cashfreeOrderId, total: payment.amount })); await openCashfreeCheckout(payment.paymentSessionId); } catch (e) { showMessage(e instanceof Error ? e.message : "Unable to create subscription.", true); create.disabled = false; } });
+        create?.addEventListener("click", async () => {
+          const addressId = (host.querySelector("[data-address]") as HTMLSelectElement | null)?.value || "";
+          const quantity = Number((host.querySelector("[data-quantity]") as HTMLInputElement | null)?.value || 1);
+          const packaging = Number((host.querySelector("[data-packaging]") as HTMLSelectElement | null)?.value || 100);
+          const startDate = (host.querySelector("[data-start]") as HTMLInputElement | null)?.value || "";
+          if (!selectedProduct || !selectedPlanId || !addressId) {
+            showMessage("Choose a subscription plan and delivery address before continuing.", true);
+            return;
+          }
+          create.disabled = true;
+          try {
+            const product = salesProductById.get(String(selectedProduct.productId));
+            if (!product) throw new Error("The selected product is no longer available.");
+            const targetDate = startDate || nextWeekSaturday();
+            const resolution = await resolveProductDeliveryDate({ product, quantity, packagingGrams: packaging, requestedDate: targetDate, kind: 'subscription', maxWeeks: 12 });
+            if (!resolution.deliveryDate || !resolution.availability) throw new Error('The complete requested subscription quantity is not currently available.');
+            const requestedAvailability = resolution.deliveryDate === targetDate
+              ? resolution.availability
+              : await checkProductAvailability({ product, quantity, packagingGrams: packaging, deliveryDate: targetDate });
+            let shortageDecision: 'continue' | 'contact' | undefined;
+            if (requestedAvailability.hasShortage) {
+              shortageDecision = await confirmHarvestShortage({
+                mode: 'subscription',
+                availableGrams: requestedAvailability.availableGrams,
+                requestedGrams: requestedAvailability.requestedGrams,
+                shortageGrams: requestedAvailability.shortageGrams,
+                deliveryDate: targetDate,
+                alternativeDeliveryDate: resolution.deliveryDate,
+              });
+            }
+            const planOptions = Array.isArray(selectedPlan?.sellingOptions)
+              ? selectedPlan.sellingOptions as Array<Record<string, unknown>>
+              : [];
+            const selectedOption = planOptions.find((option) =>
+              Number(option.weightGrams) === packaging && Number(option.planPrice) >= 0
+            );
+            const data = await createCustomerSubscription({
+              mobile,
+              product,
+              planId: selectedPlanId,
+              addressId,
+              quantity,
+              packaging,
+              sellingOptionId: selectedOption?.id ? String(selectedOption.id) : undefined,
+              startDate,
+              shortageDecision,
+            });
+            if (data.contactRequired) {
+              removeSubscriptionFromCart(String(selectedProduct.productId), selectedPlanId, startDate);
+              await showCustomerSuccess('We’ll contact you', 'Your enquiry has been saved. Our team will contact you regarding the available quantity.');
+              create.disabled = false;
+              return;
+            }
+            sessionStorage.removeItem("seedlings_subscription_product");
+            sessionStorage.removeItem("seedlings_subscription_plan");
+            if (!data.paymentOrderIds?.length) throw new Error('Unable to prepare the subscription payment.');
+            const payment = await createCashfreeOrder(data.paymentOrderIds, mobile);
+            showMessage(`Verified payment total: ${moneyPrecise(Number(payment.amount))}.`);
+            sessionStorage.setItem('seedlings_last_order', JSON.stringify({
+              orderId: data.orderId,
+              orderNumber: data.orderNumber,
+              paymentStatus: 'pending',
+              paymentOrderIds: data.paymentOrderIds,
+              mobile,
+              cashfreeOrderId: payment.cashfreeOrderId,
+              total: payment.amount,
+            }));
+            await openCashfreeCheckout(payment.paymentSessionId);
+          } catch (e) {
+            showMessage(customerPaymentMessage(e), true);
+            promptSignInIfNeeded(e);
+            create.disabled = false;
+          }
+        });
       } catch (e) {
-        if (!dead) renderError(e instanceof Error ? e.message : "Unable to load your subscription.");
+        if (!dead && currentRequest === requestId && await isCurrentCustomerSession(auth, { uid, mobile })) {
+          renderError(e instanceof Error ? e.message : "Unable to load your subscription.");
+        }
       }
     }
 
-    void load();
-    return () => { dead = true; };
+    const unsubscribe = onAuthStateChanged(auth, () => {
+      const currentRequest = ++requestId;
+      main()?.replaceChildren();
+      void load(currentRequest);
+    });
+    return () => { dead = true; requestId += 1; unsubscribe(); };
   }, []);
 
   return <div ref={ref}>{children}</div>;

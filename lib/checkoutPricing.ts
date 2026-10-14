@@ -290,13 +290,23 @@ export type CheckoutOfferResult = {
   priceSavings: number;
   oneTimePriceSavings: number;
   subscriptionPriceSavings: number;
+  oneTimeItemSavings: number[];
+  subscriptionItemSavings: number[];
   deliverySavings: number;
   totalSavings: number;
   priceOffer?: CustomerOffer;
   deliveryOffer?: CustomerOffer;
 };
 
-export const NO_OFFERS: CheckoutOfferResult = { priceSavings: 0, oneTimePriceSavings: 0, subscriptionPriceSavings: 0, deliverySavings: 0, totalSavings: 0 };
+export const NO_OFFERS: CheckoutOfferResult = {
+  priceSavings: 0,
+  oneTimePriceSavings: 0,
+  subscriptionPriceSavings: 0,
+  oneTimeItemSavings: [],
+  subscriptionItemSavings: [],
+  deliverySavings: 0,
+  totalSavings: 0,
+};
 
 export type SubscriptionDeliveryEntitlement = {
   regularDeliveries: number;
@@ -480,6 +490,15 @@ function savingFor(offer: CustomerOffer, base: number) {
   return Math.min(base, value);
 }
 
+function priceItemSavings(offer: CustomerOffer, items: Array<{ price: number; quantity: number }>) {
+  return items.map(({ price: priceInput, quantity: quantityInput }) => {
+    const price = amount(priceInput);
+    const quantity = amount(quantityInput);
+    const perUnit = Math.round(savingFor(offer, price) * 100) / 100;
+    return Math.min(price, perUnit) * quantity;
+  });
+}
+
 export function checkoutDeliveryChargeAmounts(deliveryCharges: CheckoutDeliveryCharges) {
   return [
     ...deliveryCharges.oneTime.chargedDeliveryDates.map(() => deliveryCharges.oneTime.perDeliveryCharge),
@@ -493,8 +512,8 @@ export function computeCustomerOffers(offers: CustomerOffer[], input: {
   pincode: string;
   geoId: string;
   locationName?: string;
-  oneTimeSubtotal: number;
-  subscriptionSubtotal?: number;
+  oneTimeItems: Array<{ price: number; quantity: number }>;
+  subscriptionItems: Array<{ price: number; quantity: number }>;
   deliveryChargeAmounts: number[];
 }, today: string): CheckoutOfferResult {
   const matching = activeOffers(offers, input.geoId, input.pincode, text(input.locationName), today);
@@ -503,32 +522,26 @@ export function computeCustomerOffers(offers: CustomerOffer[], input: {
   const best = (candidates: CustomerOffer[], saving: (offer: CustomerOffer) => number) => candidates
     .map((offer) => ({ offer, saving: saving(offer) }))
     .sort((a, b) => b.saving - a.saving)[0];
-  const oneTimeSubtotal = amount(input.oneTimeSubtotal);
-  const subscriptionSubtotal = amount(input.subscriptionSubtotal);
-  const combinedProductSubtotal = oneTimeSubtotal + subscriptionSubtotal;
-  const price = best(priceCandidates, (offer) => savingFor(offer, combinedProductSubtotal));
+  const oneTimeItems = Array.isArray(input.oneTimeItems) ? input.oneTimeItems : [];
+  const subscriptionItems = Array.isArray(input.subscriptionItems) ? input.subscriptionItems : [];
+  const price = best(priceCandidates, (offer) =>
+    [...priceItemSavings(offer, oneTimeItems), ...priceItemSavings(offer, subscriptionItems)]
+      .reduce((sum, saving) => sum + saving, 0));
   const delivery = best(deliveryCandidates, (offer) =>
     input.deliveryChargeAmounts.reduce((sum, charge) => sum + savingFor(offer, amount(charge)), 0));
 
-  let oneTimePriceSavings = 0;
-  let subscriptionPriceSavings = 0;
-  if (price?.offer && combinedProductSubtotal > 0) {
-    if (discountType(price.offer) === 'percentage') {
-      oneTimePriceSavings = savingFor(price.offer, oneTimeSubtotal);
-      subscriptionPriceSavings = savingFor(price.offer, subscriptionSubtotal);
-    } else {
-      const totalPriceSaving = Math.min(combinedProductSubtotal, amount(price.offer.discountValue));
-      oneTimePriceSavings = Math.min(oneTimeSubtotal, Math.round((totalPriceSaving * oneTimeSubtotal / combinedProductSubtotal) * 100) / 100);
-      subscriptionPriceSavings = Math.min(subscriptionSubtotal, Math.round((totalPriceSaving - oneTimePriceSavings) * 100) / 100);
-    }
-  }
-
-  const priceSavings = Math.min(combinedProductSubtotal, oneTimePriceSavings + subscriptionPriceSavings);
+  const oneTimeItemSavings = price?.offer ? priceItemSavings(price.offer, oneTimeItems) : oneTimeItems.map(() => 0);
+  const subscriptionItemSavings = price?.offer ? priceItemSavings(price.offer, subscriptionItems) : subscriptionItems.map(() => 0);
+  const oneTimePriceSavings = oneTimeItemSavings.reduce((sum, saving) => sum + saving, 0);
+  const subscriptionPriceSavings = subscriptionItemSavings.reduce((sum, saving) => sum + saving, 0);
+  const priceSavings = oneTimePriceSavings + subscriptionPriceSavings;
   const deliverySavings = delivery?.saving || 0;
   return {
     priceSavings,
     oneTimePriceSavings,
     subscriptionPriceSavings,
+    oneTimeItemSavings,
+    subscriptionItemSavings,
     deliverySavings,
     totalSavings: priceSavings + deliverySavings,
     priceOffer: price?.offer,
@@ -540,7 +553,7 @@ export function computeCustomerOffers(offers: CustomerOffer[], input: {
 // Allocation of offers and delivery charges to the checkout's orders
 // ---------------------------------------------------------------------------
 
-export type OneTimeGroupInput = { date: string; subtotal: number; mrpSubtotal: number };
+export type OneTimeGroupInput = { date: string; subtotal: number; mrpSubtotal: number; priceOfferSavings: number };
 
 /**
  * Per-order amounts for one checkout: one-time orders (one per delivery date,
@@ -550,7 +563,7 @@ export type OneTimeGroupInput = { date: string; subtotal: number; mrpSubtotal: n
 export function allocateCheckoutTotals(input: {
   oneTimeGroups: OneTimeGroupInput[];
   /** Subscription orders in cart order, each with its delivery fee for the term. */
-  subscriptions: Array<{ subtotal: number; deliveryFee: number }>;
+  subscriptions: Array<{ subtotal: number; deliveryFee: number; priceOfferSavings: number }>;
   deliveryCharges: CheckoutDeliveryCharges;
   offers: CheckoutOfferResult;
 }) {
@@ -563,15 +576,8 @@ export function allocateCheckoutTotals(input: {
     remainingDeliveryOfferSavings = Math.max(0, Math.round((remainingDeliveryOfferSavings - saving) * 100) / 100);
     return saving;
   };
-  const oneSubtotal = input.oneTimeGroups.reduce((sum, group) => sum + group.subtotal, 0);
-  const totalOneTimeSubtotal = Math.max(1, oneSubtotal);
-
-  let remainingOneTimeOfferSavings = Number(input.offers.oneTimePriceSavings || 0);
-  const oneTime = input.oneTimeGroups.map((group, index, groups) => {
-    const allocatedOffer = index === groups.length - 1
-      ? remainingOneTimeOfferSavings
-      : Math.min(group.subtotal, Math.round((Number(input.offers.oneTimePriceSavings || 0) * (group.subtotal / totalOneTimeSubtotal)) * 100) / 100);
-    remainingOneTimeOfferSavings = Math.max(0, Math.round((remainingOneTimeOfferSavings - allocatedOffer) * 100) / 100);
+  const oneTime = input.oneTimeGroups.map((group, index) => {
+    const allocatedOffer = Math.min(group.subtotal, Math.max(0, Number(group.priceOfferSavings || 0)));
     const originalDeliveryFee = index < input.deliveryCharges.oneTime.chargedDeliveryDates.length
       ? Number(input.deliveryCharges.oneTime.perDeliveryCharge || 0)
       : 0;
@@ -586,18 +592,13 @@ export function allocateCheckoutTotals(input: {
       deliveryOfferSaving,
       offerTotalSaving: allocatedOffer + deliveryOfferSaving,
       mrpSaving,
-      discount: mrpSaving + allocatedOffer,
+      discount: allocatedOffer,
       total: Math.max(0, group.subtotal - allocatedOffer) + deliveryFee,
     };
   });
 
-  const subscriptionSubtotalSum = Math.max(1, input.subscriptions.reduce((sum, entry) => sum + entry.subtotal, 0));
-  let remainingSubscriptionOfferSavings = Number(input.offers.subscriptionPriceSavings || 0);
-  const subscriptions = input.subscriptions.map(({ subtotal, deliveryFee }, index, all) => {
-    const allocated = index === all.length - 1
-      ? remainingSubscriptionOfferSavings
-      : Math.min(subtotal, Math.round((Number(input.offers.subscriptionPriceSavings || 0) * (subtotal / subscriptionSubtotalSum)) * 100) / 100);
-    remainingSubscriptionOfferSavings = Math.max(0, Math.round((remainingSubscriptionOfferSavings - allocated) * 100) / 100);
+  const subscriptions = input.subscriptions.map(({ subtotal, deliveryFee, priceOfferSavings }) => {
+    const allocated = Math.min(subtotal, Math.max(0, Number(priceOfferSavings || 0)));
     const deliveryOfferSaving = allocateDeliverySaving(deliveryFee);
     const discountedDeliveryFee = Math.max(0, deliveryFee - deliveryOfferSaving);
     return {

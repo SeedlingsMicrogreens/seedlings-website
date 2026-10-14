@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import CartBadgeHydrator from '@/components/CartBadgeHydrator';
 import CurrentRouteHighlight from '@/components/CurrentRouteHighlight';
 import CustomerLoginModal from '@/components/CustomerLoginModal';
+import CustomerSessionGuard from '@/components/CustomerSessionGuard';
 import PaymentRecoveryHydrator from '@/components/PaymentRecoveryHydrator';
 
 export const metadata: Metadata = {
@@ -11,5 +12,5 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body><CartBadgeHydrator /><CurrentRouteHighlight /><CustomerLoginModal /><PaymentRecoveryHydrator />{children}</body></html>;
+  return <html lang="en"><body><CartBadgeHydrator /><CurrentRouteHighlight /><CustomerLoginModal /><CustomerSessionGuard /><PaymentRecoveryHydrator />{children}</body></html>;
 }

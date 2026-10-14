@@ -52,6 +52,10 @@ function readCustomerCache(mobile: string): CustomerAccount | null | undefined {
       localStorage.removeItem(cacheKey(mobile));
       return undefined;
     }
+    if (!entry.account) {
+      localStorage.removeItem(cacheKey(mobile));
+      return undefined;
+    }
     return entry.account;
   } catch {
     return undefined;
@@ -61,6 +65,10 @@ function readCustomerCache(mobile: string): CustomerAccount | null | undefined {
 function writeCustomerCache(mobile: string, account: CustomerAccount | null) {
   if (typeof window === 'undefined') return;
   try {
+    if (!account) {
+      localStorage.removeItem(cacheKey(mobile));
+      return;
+    }
     localStorage.setItem(cacheKey(mobile), JSON.stringify({ savedAt: Date.now(), account }));
   } catch {
     // Cache is an optimization; Firestore remains the source of truth.

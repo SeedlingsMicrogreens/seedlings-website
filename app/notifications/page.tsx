@@ -11,7 +11,7 @@ import {
 } from '@/lib/customerNotifications';
 import { auth } from '@/lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { getCustomerSession } from '@/lib/clientOnboarding';
 
 function timeLabel(value: CustomerNotification['createdAt']) {
   if (!value) return '—';
@@ -52,21 +52,40 @@ function sanitizeHtml(html: string) {
 export default function NotificationsPage() {
   const [items, setItems] = useState<CustomerNotification[]>([]);
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
-  const [authUid, setAuthUid] = useState('');
+  const [customerSession, setCustomerSession] = useState<{ uid: string; mobile: string } | null>(null);
   const [error, setError] = useState('');
 
-  useEffect(() => onAuthStateChanged(auth, (user) => setAuthUid(user?.uid || '')), []);
+  useEffect(() => {
+    let requestId = 0;
+    const unsubscribe = onAuthStateChanged(auth, () => {
+      const currentRequest = ++requestId;
+      setItems([]);
+      setCustomerSession(null);
+      setError('');
+      void getCustomerSession().then((session) => {
+        if (currentRequest === requestId) {
+          setCustomerSession(session.signedIn ? { uid: session.uid, mobile: session.mobile } : null);
+        }
+      }).catch((err) => {
+        if (currentRequest === requestId) {
+          console.error('Unable to resolve the signed-in customer for notifications.', err);
+          setError('Unable to load notifications.');
+        }
+      });
+    });
+    return () => { requestId += 1; unsubscribe(); };
+  }, []);
 
   useEffect(() => {
-    if (!authUid || !getStoredCustomerMobile()) {
+    if (!customerSession) {
       setItems([]);
       return;
     }
-    return subscribeToCustomerNotifications(authUid, getStoredCustomerMobile(), setItems, (err) => {
+    return subscribeToCustomerNotifications(customerSession.uid, customerSession.mobile, setItems, (err) => {
       console.error(err);
       setError('Unable to load notifications.');
     });
-  }, [authUid]);
+  }, [customerSession]);
 
   const visible = useMemo(() => filter === 'unread' ? items.filter((item) => !item.read) : items, [filter, items]);
   const unreadCount = items.filter((item) => !item.read).length;
@@ -108,7 +127,7 @@ export default function NotificationsPage() {
             {error && <div className="notification-page-message error">{error}</div>}
 
             <div className="notification-list">
-              {!authUid || !getStoredCustomerMobile() ? (
+              {!customerSession ? (
                 <div className="notification-page-empty">
                   <h3>Sign in to view notifications</h3>
                   <p>Your order and customer notifications will appear here after you sign in.</p>

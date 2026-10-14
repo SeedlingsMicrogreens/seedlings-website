@@ -247,9 +247,9 @@ export default function CataloguePage() {
             <img
               src={heroBannerImage.src}
               alt="Fresh microgreens with the message Small Greens, Big Benefits"
-              className="block h-auto min-h-[235px] w-full object-cover object-center"
+              className="block h-auto w-full object-contain"
             />
-            <nav aria-label="Breadcrumb" className="absolute inset-x-0 top-0 z-10 mx-auto w-full max-w-[1180px] px-4 pt-4 text-sm text-[var(--soft)] sm:px-0">
+            <nav aria-label="Breadcrumb" className="relative mx-auto w-full max-w-[1180px] px-4 py-3 text-sm text-[var(--soft)] sm:px-0">
               <ol className="m-0 flex list-none flex-wrap items-center gap-2 p-0">
                 <li><a href="/" className="font-medium transition hover:text-[var(--green-dark)]">Home</a></li>
                 <li aria-hidden="true">›</li>

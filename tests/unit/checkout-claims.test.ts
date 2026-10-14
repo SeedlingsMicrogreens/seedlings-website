@@ -16,6 +16,7 @@ const clone = <T>(value: T): T => (value === undefined ? value : structuredClone
 class MemoryStore implements ClaimStore {
   docs = new Map<string, Data>();
   versions = new Map<string, number>();
+  closeAttempts?: ClaimStore['closeAttempts'];
   constructor() { this.docs.set(`customers/${CUSTOMER}`, { authUid: UID, authUids: [UID] }); }
   private write(path: string, data: Data) { this.docs.set(path, clone(data)); this.versions.set(path, (this.versions.get(path) || 0) + 1); }
   runTransaction = async <T>(fn: (tx: any) => Promise<T>): Promise<T> => {
@@ -153,7 +154,7 @@ for (const [name, cart] of [['one-time', oneTimeCart], ['subscription-only', sub
   });
 }
 
-test('2. retry after a failed payment reuses the same records; an ACTIVE Cashfree order is reused, expired ones get a new attempt', async () => {
+test('2. retry after a failed payment reuses the same records but creates a fresh Cashfree attempt', async () => {
   const env = setup();
   const first = await checkout(env, mixedCart);
   startPayment(env, first.orderIds, 'cf-1');
@@ -162,9 +163,21 @@ test('2. retry after a failed payment reuses the same records; an ACTIVE Cashfre
   assert.equal(second.action, 'resume');
   assert.deepEqual(second.orderIds, first.orderIds);
   const orders = first.orderIds.map((id) => env.store.get(`orders/${id}`)!);
-  const gateway = (status: string) => ({ status: async () => status, terminate: async () => 'TERMINATED', finalize: async () => ({}), sleep: async () => {} });
-  assert.deepEqual(await preparePreviousGatewayOrders(orders, gateway('ACTIVE')), { reuse: { cashfreeOrderId: 'cf-1', paymentSessionId: 'session-cf-1' } });
-  assert.deepEqual(await preparePreviousGatewayOrders(orders, gateway('EXPIRED')), {});
+  const gateway = (status: string, paymentStatus = '') => ({
+    status: async () => status,
+    payments: async () => paymentStatus ? [{ payment_status: paymentStatus }] : [],
+    terminate: async () => 'TERMINATED',
+    finalize: async () => ({ status: paymentStatus === 'USER_DROPPED' ? 'failed' : 'pending' }),
+    sleep: async () => {},
+  });
+  assert.deepEqual(
+    await preparePreviousGatewayOrders(orders, gateway('ACTIVE', 'USER_DROPPED')),
+    { closedGatewayOrderIds: ['cf-1'] },
+  );
+  assert.deepEqual(
+    await preparePreviousGatewayOrders(orders, gateway('EXPIRED')),
+    { closedGatewayOrderIds: ['cf-1'] },
+  );
   const finalized: string[] = [];
   await assert.rejects(preparePreviousGatewayOrders(orders, { ...gateway('PAID'), finalize: async (id) => { finalized.push(id); } }), /already been received/);
   assert.deepEqual(finalized, ['cf-1']);
@@ -173,9 +186,75 @@ test('2. retry after a failed payment reuses the same records; an ACTIVE Cashfre
 test('payment session: an ACTIVE earlier attempt without a reusable session is terminated before a new attempt (fails closed)', async () => {
   const orders = [{ cashfreeOrderId: 'cf-a' }, { cashfreeOrderId: 'cf-b' }];
   const terminated: string[] = [];
-  assert.deepEqual(await preparePreviousGatewayOrders(orders, { status: async () => 'ACTIVE', terminate: async (id) => { terminated.push(id); return 'TERMINATED'; }, finalize: async () => ({}), sleep: async () => {} }), {});
+  assert.deepEqual(await preparePreviousGatewayOrders(orders, { status: async () => 'ACTIVE', terminate: async (id) => { terminated.push(id); return 'TERMINATED'; }, finalize: async () => ({}), sleep: async () => {} }), {
+    closedGatewayOrderIds: ['cf-a', 'cf-b'],
+  });
   assert.deepEqual(terminated, ['cf-a', 'cf-b']);
   await assert.rejects(preparePreviousGatewayOrders(orders, { status: async () => 'ACTIVE', terminate: async () => { throw new Error('down'); }, finalize: async () => ({}), sleep: async () => {} }), /still open/);
+});
+
+test('payment session: an ACTIVE order with a processing Cashfree payment blocks a new charge', async () => {
+  let terminateCalls = 0;
+  await assert.rejects(
+    preparePreviousGatewayOrders([{ cashfreeOrderId: 'cf-processing', cashfreePaymentSessionId: 'session' }], {
+      status: async () => 'ACTIVE',
+      payments: async () => [{ payment_status: 'PENDING' }],
+      terminate: async () => { terminateCalls += 1; return 'TERMINATED'; },
+      finalize: async () => ({ status: 'pending' }),
+      sleep: async () => {},
+    }),
+    /still being reconciled/,
+  );
+  assert.equal(terminateCalls, 0);
+});
+
+test('payment session: abandoned active session is terminated before creating a fresh attempt', async () => {
+  let terminateCalls = 0;
+  const result = await preparePreviousGatewayOrders(
+    [{ cashfreeOrderId: 'cf-abandoned', cashfreePaymentSessionId: 'session' }],
+    {
+      status: async () => 'ACTIVE',
+      payments: async () => [],
+      terminate: async () => { terminateCalls += 1; return 'TERMINATED'; },
+      finalize: async () => ({ status: 'pending' }),
+      sleep: async () => {},
+    },
+    { freshAttempt: true },
+  );
+  assert.deepEqual(result, {
+    closedGatewayOrderIds: ['cf-abandoned'],
+  });
+  assert.equal(terminateCalls, 1);
+});
+
+test('payment session: confirmed failed payment is finalized and closed before retry', async () => {
+  let terminateCalls = 0;
+  let finalizeCalls = 0;
+  const result = await preparePreviousGatewayOrders([{ cashfreeOrderId: 'cf-failed', cashfreePaymentSessionId: 'session' }], {
+    status: async () => 'ACTIVE',
+    payments: async () => [{ payment_status: 'USER_DROPPED' }],
+    terminate: async () => { terminateCalls += 1; return 'TERMINATED'; },
+    finalize: async () => { finalizeCalls += 1; return { status: 'failed' }; },
+    sleep: async () => {},
+  });
+  assert.deepEqual(result, { closedGatewayOrderIds: ['cf-failed'] });
+  assert.equal(finalizeCalls, 1);
+  assert.equal(terminateCalls, 1);
+});
+
+test('payment session: an unknown Cashfree payment result blocks retry without cleanup', async () => {
+  let terminateCalls = 0;
+  await assert.rejects(
+    preparePreviousGatewayOrders([{ cashfreeOrderId: 'cf-unknown' }], {
+      status: async () => 'ACTIVE',
+      payments: async () => [{ payment_status: 'MYSTERY' }],
+      terminate: async () => { terminateCalls += 1; return 'TERMINATED'; },
+      finalize: async () => ({ status: 'pending' }),
+      sleep: async () => {},
+    }),
+    /still being reconciled/,
+  );
+  assert.equal(terminateCalls, 0);
 });
 
 test('3. double-click: two simultaneous begins create exactly one checkout; the second resumes it', async () => {
@@ -262,6 +341,30 @@ test('5c. cart changed but the old checkout was already paid at Cashfree: finali
   assert.equal(env.store.get(`checkoutClaims/${CUSTOMER}`)!.status, 'completed');
 });
 
+test('5d. cart changed while the old Cashfree order has a payment in progress: nothing is terminated or cancelled', async () => {
+  const env = setup();
+  env.deps.cashfree.getPayments = async () => [{ payment_status: 'FAILED' }, { payment_status: 'PENDING' }];
+  const first = await checkout(env, oneTimeCart);
+  startPayment(env, first.orderIds, 'cf-1');
+  await assert.rejects(checkout(env, subscriptionCart), /still being processed/);
+  assert.deepEqual(env.calls.terminated, []);
+  assert.deepEqual(env.calls.finalized, ['cf-1']);
+  assert.equal(env.store.get(`orders/${first.orderIds[0]}`)!.status, 'pending_payment');
+  assert.equal(env.store.get(`checkoutClaims/${CUSTOMER}`)!.status, 'pending');
+});
+
+test('5e. cart changed: only the confirmed-unpayable old Cashfree orders are closed', async () => {
+  const env = setup();
+  const closed: string[][] = [];
+  env.deps.cashfree.getPayments = async () => [{ payment_status: 'USER_DROPPED' }];
+  env.store.closeAttempts = async (gatewayOrderIds) => { closed.push(gatewayOrderIds); };
+  const first = await checkout(env, oneTimeCart);
+  startPayment(env, first.orderIds, 'cf-1');
+  const second = await checkout(env, subscriptionCart);
+  assert.equal(second.action, 'create');
+  assert.deepEqual(closed, [['cf-1']]);
+});
+
 test('8. after a paid checkout the claim is completed and the next checkout is a new purchase', async () => {
   const env = setup();
   const first = await checkout(env, oneTimeCart);
@@ -293,7 +396,8 @@ test('register rejects records that do not belong to the token or the customer',
   const foreign = buildOrders(oneTimeCart, 'other-token');
   for (const o of foreign.orders) env.store.docs.set(`orders/${o.id}`, o.data);
   await assert.rejects(registerCheckout({ customerId: CUSTOMER, uid: UID, token: begin.token, orderIds: foreign.orders.map((o) => o.id), subscriptionIds: [] }, env.deps), /could not be confirmed/);
-  await assert.rejects(beginCheckout({ customerId: CUSTOMER, uid: 'someone-else', summary: summaryOf(oneTimeCart) }, env.deps), /does not belong/);
+  // A UID that no customer record lists cannot act on this customer's checkout (asked to sign in again).
+  await assert.rejects(beginCheckout({ customerId: CUSTOMER, uid: 'someone-else', summary: summaryOf(oneTimeCart) }, env.deps), (error: any) => error.status === 401 && error.code === 'unauthenticated');
 });
 
 test('6. fingerprint: line order does not matter; quantity, date, plan, option and address do', () => {
@@ -425,7 +529,9 @@ test('D-1: an old Cashfree order already reading TERMINATION_REQUESTED is not tr
 test('D-1: payment session — an earlier order reading TERMINATION_REQUESTED must be confirmed before a new attempt', async () => {
   let terminateCalls = 0;
   const confirmed = ['TERMINATION_REQUESTED', 'TERMINATED'];
-  assert.deepEqual(await preparePreviousGatewayOrders([{ cashfreeOrderId: 'cf-x' }], { status: async () => confirmed.length > 1 ? confirmed.shift()! : confirmed[0], terminate: async () => { terminateCalls += 1; throw new Error('order termination already requested'); }, finalize: async () => ({}), sleep: async () => {} }), {});
+  assert.deepEqual(await preparePreviousGatewayOrders([{ cashfreeOrderId: 'cf-x' }], { status: async () => confirmed.length > 1 ? confirmed.shift()! : confirmed[0], terminate: async () => { terminateCalls += 1; throw new Error('order termination already requested'); }, finalize: async () => ({}), sleep: async () => {} }), {
+    closedGatewayOrderIds: ['cf-x'],
+  });
   assert.equal(terminateCalls, 1);
   await assert.rejects(preparePreviousGatewayOrders([{ cashfreeOrderId: 'cf-y', cashfreePaymentSessionId: 's' }], { status: async () => 'TERMINATION_REQUESTED', terminate: async () => { throw new Error('order termination already requested'); }, finalize: async () => ({}), sleep: async () => {} }), /still open/);
 });
@@ -455,11 +561,12 @@ test('D-1: payment session — earlier ACTIVE order terminated asynchronously; p
   const orders = [{ cashfreeOrderId: 'cf-a' }, { cashfreeOrderId: 'cf-b' }];
   const statuses: Record<string, string[]> = { 'cf-a': ['ACTIVE', 'TERMINATION_REQUESTED', 'TERMINATED'], 'cf-b': ['ACTIVE', 'TERMINATED'] };
   const next = (id: string) => statuses[id].length > 1 ? statuses[id].shift()! : statuses[id][0];
-  assert.deepEqual(await preparePreviousGatewayOrders(orders, { status: async (id) => next(id), terminate: async () => 'TERMINATION_REQUESTED', finalize: async () => ({}), sleep: async () => {} }), {});
+  assert.deepEqual(await preparePreviousGatewayOrders(orders, { status: async (id) => next(id), terminate: async () => 'TERMINATION_REQUESTED', finalize: async () => ({}), sleep: async () => {} }), {
+    closedGatewayOrderIds: ['cf-a', 'cf-b'],
+  });
   const finalized: string[] = [];
   const paidStatuses = ['ACTIVE', 'PAID'];
   await assert.rejects(preparePreviousGatewayOrders([{ cashfreeOrderId: 'cf-c' }, { cashfreeOrderId: 'cf-d' }], { status: async () => paidStatuses.length > 1 ? paidStatuses.shift()! : paidStatuses[0], terminate: async () => 'TERMINATION_REQUESTED', finalize: async (id) => { finalized.push(id); }, sleep: async () => {} }), /already been received/);
   assert.deepEqual(finalized, ['cf-c']);
   await assert.rejects(preparePreviousGatewayOrders(orders, { status: async () => 'ACTIVE', terminate: async () => 'TERMINATION_REQUESTED', finalize: async () => ({}), sleep: async () => {} }), /still open/);
 });
-

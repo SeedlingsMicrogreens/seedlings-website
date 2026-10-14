@@ -11,6 +11,7 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "test:e2e:report": "playwright show-report playwright-report",
+    "test:unit": "node --test --experimental-transform-types --import ./scripts/unit-test-loader.mjs tests/unit/*.ts tests/unit/*.mjs lib/*.test.mjs",
     "test:payment:static": "node scripts/payment-lifecycle-static-check.mjs"
   },
   "dependencies": {

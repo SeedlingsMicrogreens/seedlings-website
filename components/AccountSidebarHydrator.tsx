@@ -3,8 +3,9 @@
 import { useEffect } from "react";
 import { signOut } from "firebase/auth";
 import { auth } from "@/lib/firebase";
-import { clearStoredCustomerMobile, getStoredCustomerMobile } from "@/lib/clientOnboarding";
+import { clearCustomerBrowserSessionState, getCustomerSession } from "@/lib/clientOnboarding";
 import { getCustomerAccount } from "@/lib/customerAccount";
+import { isCurrentCustomerSession } from "@/lib/customerAuthState";
 
 /**
  * Keeps the logged-in Account navigation and shared welcome header consistent
@@ -13,6 +14,7 @@ import { getCustomerAccount } from "@/lib/customerAccount";
 export default function AccountSidebarHydrator() {
   useEffect(() => {
     let alive = true;
+    let requestId = 0;
 
     const addWelcomeHeader = (shell: HTMLElement) => {
       const container = shell.parentElement;
@@ -50,13 +52,8 @@ export default function AccountSidebarHydrator() {
         logout.disabled = true;
         logout.textContent = "Logging out…";
         try {
-          clearStoredCustomerMobile();
-          // Do not make logout feel blocked by a slow auth persistence round-trip.
-          // Sign out locally and navigate immediately; Firebase completes the local state change.
-          await Promise.race([
-            signOut(auth),
-            new Promise<void>((resolve) => window.setTimeout(resolve, 800)),
-          ]);
+          clearCustomerBrowserSessionState();
+          await signOut(auth);
           window.location.assign("/account");
         } catch (error) {
           console.error("Customer logout failed", error);
@@ -77,13 +74,14 @@ export default function AccountSidebarHydrator() {
       });
     };
 
-    const updateCustomerName = async () => {
-      const mobile = getStoredCustomerMobile();
-      if (!mobile || !auth.currentUser) return;
+    const updateCustomerName = async (currentRequest: number) => {
+      const session = await getCustomerSession();
+      if (!session.signedIn || currentRequest !== requestId) return;
+      const mobile = session.mobile;
 
       try {
         const account = await getCustomerAccount(mobile);
-        if (!alive) return;
+        if (!alive || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid: session.uid, mobile }))) return;
         const name = account?.name?.trim() || "Customer";
         document.querySelectorAll<HTMLElement>(".account-welcome h1").forEach((heading) => {
           const nextText = `Welcome back, ${name}`;
@@ -95,12 +93,15 @@ export default function AccountSidebarHydrator() {
     };
 
     wire();
-    void updateCustomerName();
+    void updateCustomerName(++requestId);
 
     // Auth state can hydrate after the static Account HTML is rendered.
     // Re-run the shared welcome-name hydration when Firebase finishes restoring the session.
     const unsubscribeAuth = auth.onAuthStateChanged(() => {
-      if (alive) void updateCustomerName();
+      if (!alive) return;
+      const currentRequest = ++requestId;
+      document.querySelectorAll<HTMLElement>(".account-welcome h1").forEach((heading) => { heading.textContent = "Welcome back"; });
+      void updateCustomerName(currentRequest);
     });
 
     // Observe only for newly rendered Account sidebars. Do not run the name
@@ -113,6 +114,7 @@ export default function AccountSidebarHydrator() {
 
     return () => {
       alive = false;
+      requestId += 1;
       observer.disconnect();
       unsubscribeAuth();
     };

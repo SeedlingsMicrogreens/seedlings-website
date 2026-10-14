@@ -4,13 +4,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import Swal from 'sweetalert2';
-import {
-  clearStoredCustomerMobile,
-  ensureClientOnboarding,
-  requestCustomerOtp,
-  getStoredCustomerMobile,
-  normalizeIndianMobile,
-} from '@/lib/clientOnboarding';
+import { clearCustomerBrowserSessionState, ensureClientOnboarding, requestCustomerOtp, getStoredCustomerMobile, normalizeIndianMobile, getCustomerSession } from '@/lib/clientOnboarding';
 
 const OTP_VALIDITY_SECONDS = 120;
 
@@ -61,7 +55,12 @@ export default function AuthHydrator({ children }: { children: ReactNode }) {
       root.querySelector('.otp-row')?.remove();
     };
 
+    // What the panel currently shows; the action button acts on this, never on a
+    // session that is still restoring or not yet reflected in the panel.
+    let signedInShown = false;
+
     const renderSignedIn = (mobile: string) => {
+      signedInShown = true;
       currentMobile = mobile || getStoredCustomerMobile();
       setText(root, '.auth-card h1', 'You are signed in');
       setText(root, '.auth-card > p', `Mobile: +91 ${currentMobile}`);
@@ -75,6 +74,7 @@ export default function AuthHydrator({ children }: { children: ReactNode }) {
     };
 
     const renderSignedOut = () => {
+      signedInShown = false;
       setText(root, '.auth-card h1', 'Welcome back');
       setText(root, '.auth-card > p', 'Sign in with your mobile number to view orders, addresses and subscriptions.');
       action.textContent = 'Send OTP';
@@ -145,9 +145,11 @@ export default function AuthHydrator({ children }: { children: ReactNode }) {
       event.preventDefault();
       setError(root, '');
 
-      if (auth.currentUser) {
+      // "Sign out" only when the panel shows the customer as signed in. A "Send OTP"
+      // click always sends an OTP — it never signs out a session that is restoring.
+      if (signedInShown) {
+        clearCustomerBrowserSessionState();
         await signOut(auth);
-        clearStoredCustomerMobile();
         currentMobile = '';
         renderSignedOut();
         return;
@@ -181,12 +183,13 @@ export default function AuthHydrator({ children }: { children: ReactNode }) {
     action.style.cursor = 'pointer';
     action.addEventListener('click', onSend);
 
-    unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user && getStoredCustomerMobile()) renderSignedIn(getStoredCustomerMobile());
-      else if (!user) renderSignedOut();
-    });
-
-    if (currentMobile && auth.currentUser) renderSignedIn(currentMobile);
+    // The resolved session (restored, non-anonymous, verified mobile) decides what the panel shows.
+    const reflectSession = async () => {
+      const session = await getCustomerSession();
+      if (session.signedIn) renderSignedIn(session.mobile);
+      else renderSignedOut();
+    };
+    unsubscribe = onAuthStateChanged(auth, () => { void reflectSession(); });
 
     return () => {
       action.removeEventListener('click', onSend);

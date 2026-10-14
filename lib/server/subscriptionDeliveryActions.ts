@@ -1,6 +1,7 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/server/firebaseAdmin';
 import { HttpError } from '@/lib/server/httpError';
+import { firestoreOwnershipStore, isRecordOwned, resolveCustomerIdentity } from '@/lib/server/customerOwnership';
 
 function clean(value: unknown) { return typeof value === 'string' ? value.trim() : ''; }
 function dateOnly(value: unknown) {
@@ -51,13 +52,21 @@ export async function applySubscriptionDeliveryAction(args: {
   if (!subscriptionId) throw new HttpError(400, 'Subscription is required.');
 
   const db = adminDb();
+  const ownershipStore = firestoreOwnershipStore(db);
+  const identity = await resolveCustomerIdentity(ownershipStore, args.authUid);
+  if (!identity) throw new HttpError(403, 'You are not allowed to manage this subscription.');
   const subscriptionRef = db.collection('subscriptions').doc(subscriptionId);
   return db.runTransaction(async transaction => {
     const subscriptionSnap = await transaction.get(subscriptionRef);
     if (!subscriptionSnap.exists) throw new HttpError(404, 'Subscription not found.');
 
     const subscription = subscriptionSnap.data() || {};
-    if (clean(subscription.authUid) !== args.authUid) throw new HttpError(403, 'You are not allowed to manage this subscription.');
+    if (!(await isRecordOwned(ownershipStore, identity, { uid: args.authUid }, subscription, {
+      uidFields: ['authUid'],
+      strictUidFields: ['authUid'],
+    }))) {
+      throw new HttpError(403, 'You are not allowed to manage this subscription.');
+    }
     if (clean(subscription.status).toLowerCase() !== 'active' || clean(subscription.paymentStatus).toLowerCase() !== 'paid') {
       throw new HttpError(409, 'Only an active, paid subscription can be changed.');
     }

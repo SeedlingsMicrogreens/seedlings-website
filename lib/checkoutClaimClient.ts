@@ -1,19 +1,20 @@
 import { auth } from './firebase';
+import { PaymentRequestError } from './paymentErrorMessages';
+import { fetchWithCustomerToken } from './customerAuthState';
 import type { CheckoutSummary } from './checkoutFingerprint';
 import { beginCheckoutWithWait, type BeginResponse } from './checkoutClaimFlow';
 
 async function claimRequest<T>(body: Record<string, unknown>): Promise<T> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Your login session expired. Please sign in again.');
-  const idToken = await user.getIdToken();
-  const response = await fetch('/api/customer/checkout-claim', {
+  // Waits for session restoration; refuses guest/absent sessions; one forced token refresh on 401.
+  const response = await fetchWithCustomerToken(auth, (idToken) => fetch('/api/customer/checkout-claim', {
     method: 'POST',
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
     body: JSON.stringify(body),
-  });
-  const data = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(data.error || 'Unable to prepare checkout. Please try again.');
+  }));
+  const data = await response.json().catch(() => ({})) as T & { error?: string; code?: string };
+  // `{ error, code }`: the code drives the customer-facing outcome (customerPaymentMessage).
+  if (!response.ok) throw new PaymentRequestError(data.error || 'Unable to prepare checkout. Please try again.', response.status, data.code || (response.status >= 500 ? 'payment_unavailable' : ''));
   return data;
 }
 

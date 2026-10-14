@@ -1,4 +1,0 @@
-lib/
-node_modules/
-.secret.local
-firebase-debug.log

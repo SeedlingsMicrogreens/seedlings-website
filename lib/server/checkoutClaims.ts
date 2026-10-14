@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { checkoutFingerprint, isSubscriptionOrder, summaryFromOrders, type CheckoutSummary } from '../checkoutFingerprint';
 import { HttpError } from './httpError';
-import { isUnpayableCashfreeStatus, terminateCashfreeOrder } from './cashfreeTermination';
+import { isUnpayableCashfreeStatus, isUnresolvedPaymentStatus, terminateCashfreeOrder } from './cashfreeTermination';
+import { assertCallerIsCustomer, isRecordOwned, resolveCustomerIdentity, type OwnershipStore } from './customerOwnership';
 
 /**
  * One pending checkout per customer. `checkoutClaims/{customerId}` records the
@@ -32,11 +33,17 @@ export type ClaimStore = {
   attemptsForOrder: (orderId: string) => Promise<string[]>;
   /** Merge-updates applied together. */
   update: (writes: Array<{ path: string; data: Data }>) => Promise<void>;
+  /** Marks never-paid attempts of confirmed-unpayable Cashfree orders `abandoned`. */
+  closeAttempts?: (gatewayOrderIds: string[]) => Promise<void>;
+  /** Customers whose `authUid`/`authUids` contain the UID (shared ownership rule). */
+  customersWithUid?: (uid: string) => Promise<Array<{ id: string; data: Data }>>;
 };
 
 export type ClaimCashfree = {
   getOrderStatus: (gatewayOrderId: string) => Promise<string>;
   terminateOrder: (gatewayOrderId: string) => Promise<string>;
+  /** Cashfree payments of an order; when provided, an in-flight payment blocks replacement. */
+  getPayments?: (gatewayOrderId: string) => Promise<Array<Record<string, unknown>>>;
   /** Server finalization (verifyAndFinalizeCashfreePayment). */
   finalize: (gatewayOrderId: string) => Promise<unknown>;
 };
@@ -58,11 +65,20 @@ export type BeginResult =
 const claimPath = (customerId: string) => `checkoutClaims/${customerId}`;
 const text = (value: unknown) => String(value ?? '').trim();
 
-async function assertOwnsCustomer(store: ClaimStore, customerId: string, uid: string) {
-  const customers = await store.getDocs('customers', [customerId]);
-  const customer = customers.get(customerId);
-  const uids = Array.isArray(customer?.authUids) ? customer!.authUids.map(String) : [];
-  if (!customer || (text(customer.authUid) !== uid && !uids.includes(uid))) throw new HttpError(403, 'This checkout does not belong to the signed-in customer.');
+function claimOwnershipStore(store: ClaimStore): OwnershipStore {
+  return {
+    getCustomer: async (customerId) => (await store.getDocs('customers', [customerId])).get(customerId),
+    customersWithUid: async (uid) => (store.customersWithUid ? store.customersWithUid(uid) : []),
+  };
+}
+
+/**
+ * Shared ownership rule (lib/server/customerOwnership.ts): the caller is
+ * resolved from its UID and verified token claim (the request's mobile is only a
+ * lookup key) and must be the checkout's customer.
+ */
+function assertOwnsCustomer(store: ClaimStore, customerId: string, uid: string, verifiedCustomerId?: string) {
+  return assertCallerIsCustomer(claimOwnershipStore(store), { uid, customerId: verifiedCustomerId }, customerId);
 }
 
 function resumeInfo(orderIds: string[], orders: Map<string, Data>, subscriptions: Map<string, Data>, subscriptionIds: string[]): ResumeInfo {
@@ -107,6 +123,17 @@ async function reconcileOldCheckout(orderIds: string[], subscriptionIds: string[
       await deps.cashfree.finalize(gatewayId);
       return 'paid';
     }
+    if (deps.cashfree.getPayments) {
+      const paymentStatuses = (await deps.cashfree.getPayments(gatewayId)).map((payment) => text(payment.payment_status).toUpperCase());
+      if (paymentStatuses.some(isUnresolvedPaymentStatus)) {
+        // SUCCESS or a payment still being processed: never cancel records it may pay for.
+        await deps.cashfree.finalize(gatewayId);
+        if (paymentStatuses.includes('SUCCESS')) return 'paid';
+        throw new HttpError(409, 'Your previous payment is still being processed. Please check My Orders before changing your cart.', 'payment_processing');
+      }
+      // Confirmed failures are recorded as failed history before the attempt is closed.
+      if (paymentStatuses.some((paymentStatus) => paymentStatus && paymentStatus !== 'NOT_ATTEMPTED')) await deps.cashfree.finalize(gatewayId);
+    }
     if (!isUnpayableCashfreeStatus(status)) {
       // ACTIVE, TERMINATION_REQUESTED or unknown: terminate and confirm asynchronously;
       // throws (nothing replaced) when it cannot be confirmed.
@@ -124,18 +151,27 @@ async function reconcileOldCheckout(orderIds: string[], subscriptionIds: string[
     ...cancelWrites('orders', [...orders.entries()].map(([id, data]) => ({ id, data })), 'cart_changed', deps),
     ...cancelWrites('subscriptions', [...subscriptions.entries()].map(([id, data]) => ({ id, data })), 'cart_changed', deps),
   ]);
+  // Every gateway order above is now confirmed unpayable.
+  if (deps.store.closeAttempts) await deps.store.closeAttempts([...gatewayIds]);
   return 'replaced';
 }
 
 /** Registers records written for `token` (also used to adopt records whose register call was lost). */
-async function attachRecords(customerId: string, uid: string, token: string, orderIds: string[], subscriptionIds: string[], deps: ClaimDeps) {
+async function attachRecords(customerId: string, uid: string, token: string, orderIds: string[], subscriptionIds: string[], deps: ClaimDeps, verifiedCustomerId?: string) {
   const orders = await deps.store.getDocs('orders', orderIds);
   const subscriptions = await deps.store.getDocs('subscriptions', subscriptionIds);
   const linkedSubscriptionIds = new Set(orderIds.map((id) => text(orders.get(id)?.subscriptionId)).filter(Boolean));
+  // Records may carry another verified UID of the same customer (e.g. written before a re-login).
+  const ownershipStore = claimOwnershipStore(deps.store);
+  const identity = await resolveCustomerIdentity(ownershipStore, { uid, customerId: verifiedCustomerId }, customerId);
+  const owned = await Promise.all(orderIds.map(async (id) => {
+    const order = orders.get(id);
+    return Boolean(order) && await isRecordOwned(ownershipStore, identity, { uid }, order!, { mobileHint: customerId, uidFields: ['authUid'], strictUidFields: ['authUid'] });
+  }));
   const valid = orderIds.length > 0
-    && orderIds.every((id) => {
+    && orderIds.every((id, index) => {
       const order = orders.get(id);
-      return order && text(order.checkoutClaimToken) === token && text(order.customerId) === customerId && text(order.authUid) === uid && PAYABLE_STATUSES.has(text(order.status));
+      return order && owned[index] && text(order.checkoutClaimToken) === token && text(order.customerId) === customerId && PAYABLE_STATUSES.has(text(order.status));
     })
     && subscriptionIds.length === linkedSubscriptionIds.size
     && subscriptionIds.every((id) => linkedSubscriptionIds.has(id) && text(subscriptions.get(id)?.checkoutClaimToken) === token);
@@ -150,9 +186,10 @@ async function cancelTokenRecords(token: string, reason: string, deps: ClaimDeps
   if (writes.length) await deps.store.update(writes);
 }
 
-export async function beginCheckout(input: { customerId: string; uid: string; summary: CheckoutSummary }, deps: ClaimDeps, depth = 0): Promise<BeginResult> {
+/** `verifiedCustomerId` is the caller's ID-token `customerId` claim (never a request field). */
+export async function beginCheckout(input: { customerId: string; uid: string; verifiedCustomerId?: string; summary: CheckoutSummary }, deps: ClaimDeps, depth = 0): Promise<BeginResult> {
   const { customerId, uid } = input;
-  if (depth === 0) await assertOwnsCustomer(deps.store, customerId, uid);
+  if (depth === 0) await assertOwnsCustomer(deps.store, customerId, uid, input.verifiedCustomerId);
   if (depth > 2) return { action: 'wait' };
   const fingerprint = checkoutFingerprint(input.summary);
   const path = claimPath(customerId);
@@ -193,7 +230,7 @@ export async function beginCheckout(input: { customerId: string; uid: string; su
     const orderIds = orders.map((order) => order.id);
     const subscriptionIds = [...new Set(orders.map((order) => text(order.data.subscriptionId)).filter(Boolean))];
     try {
-      await registerCheckout({ customerId, uid, token, orderIds, subscriptionIds }, deps, false);
+      await registerCheckout({ customerId, uid, verifiedCustomerId: input.verifiedCustomerId, token, orderIds, subscriptionIds }, deps, false);
     } catch {
       return { action: 'wait' };
     }
@@ -246,7 +283,7 @@ export async function beginCheckout(input: { customerId: string; uid: string; su
       const latest = await tx.get(path);
       tx.set(path, { ...latest, status: 'completed', updatedAtMs: deps.now() });
     });
-    throw new HttpError(409, 'Your previous payment was received. Please check My Orders before placing another order.');
+    throw new HttpError(409, 'Your previous payment was received. Please check My Orders before placing another order.', 'already_paid');
   }
   const token = newToken();
   await deps.store.runTransaction(async (tx) => {
@@ -255,12 +292,12 @@ export async function beginCheckout(input: { customerId: string; uid: string; su
   return { action: 'create', token };
 }
 
-export async function registerCheckout(input: { customerId: string; uid: string; token: string; orderIds: string[]; subscriptionIds: string[] }, deps: ClaimDeps, checkOwner = true) {
+export async function registerCheckout(input: { customerId: string; uid: string; verifiedCustomerId?: string; token: string; orderIds: string[]; subscriptionIds: string[] }, deps: ClaimDeps, checkOwner = true) {
   const { customerId, uid, token } = input;
-  if (checkOwner) await assertOwnsCustomer(deps.store, customerId, uid);
+  if (checkOwner) await assertOwnsCustomer(deps.store, customerId, uid, input.verifiedCustomerId);
   const orderIds = [...new Set(input.orderIds.map(text).filter(Boolean))];
   const subscriptionIds = [...new Set(input.subscriptionIds.map(text).filter(Boolean))];
-  const attached = await attachRecords(customerId, uid, token, orderIds, subscriptionIds, deps);
+  const attached = await attachRecords(customerId, uid, token, orderIds, subscriptionIds, deps, input.verifiedCustomerId);
   const path = claimPath(customerId);
   const registered = await deps.store.runTransaction(async (tx) => {
     const claim = await tx.get(path);

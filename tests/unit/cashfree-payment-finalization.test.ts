@@ -2,92 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { findUndefinedField, normalizeStatus, verifyAndFinalizeCashfreePayment } from '../../lib/server/cashfreePayment';
+import { FakeFirestore } from './support/fakeFirestore';
 
-// ---------------------------------------------------------------------------
-// In-memory Firestore with the Admin SDK behaviours that matter here:
-// - set/update reject `undefined` values when the write is queued;
-// - batch writes are applied only on commit, all together (atomic).
-// ---------------------------------------------------------------------------
+// Shared in-memory Firestore with Admin SDK merge/mergeFields/update semantics.
 type Data = Record<string, unknown>;
-
-function isPlainObject(value: unknown): value is Data {
-  return Boolean(value) && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype;
-}
-
-function assertNoUndefined(value: unknown, path: string) {
-  if (value === undefined) throw new Error(`Cannot use "undefined" as a Firestore value (found in field "${path}").`);
-  if (Array.isArray(value)) value.forEach((item, index) => assertNoUndefined(item, `${path}.${index}`));
-  else if (isPlainObject(value)) for (const [key, item] of Object.entries(value)) assertNoUndefined(item, path ? `${path}.${key}` : key);
-}
-
-class FakeFirestore {
-  docs = new Map<string, Data>();
-  commits = 0;
-  failNextCommit = false;
-
-  constructor(seed: Record<string, Data>) {
-    for (const [path, data] of Object.entries(seed)) this.docs.set(path, structuredClone(data));
-  }
-
-  private snapshot(path: string, id: string) {
-    const data = this.docs.get(path);
-    return { id, exists: Boolean(data), ref: this.ref(path, id), data: () => (data ? { ...data } : undefined) };
-  }
-
-  private ref(path: string, id: string) {
-    return { id, path, get: async () => this.snapshot(path, id) };
-  }
-
-  collection(name: string) {
-    return {
-      doc: (id: string) => this.ref(`${name}/${id}`, id),
-      where: (field: string, _op: string, value: unknown) => ({
-        get: async () => ({
-          docs: [...this.docs.entries()]
-            .filter(([path, data]) => path.startsWith(`${name}/`) && data[field] === value)
-            .map(([path]) => this.snapshot(path, path.slice(name.length + 1))),
-        }),
-      }),
-    };
-  }
-
-  private apply(path: string, data: Data, merge: boolean) {
-    this.docs.set(path, merge ? { ...(this.docs.get(path) || {}), ...data } : { ...data });
-  }
-
-  async runTransaction<T>(fn: (tx: unknown) => Promise<T>) {
-    const tx = {
-      get: (ref: { get: () => Promise<unknown> }) => ref.get(),
-      set: (ref: { path: string }, data: Data, options?: { merge?: boolean }) => { assertNoUndefined(data, ''); this.apply(ref.path, data, Boolean(options?.merge)); },
-    };
-    return fn(tx);
-  }
-
-  batch() {
-    const ops: Array<() => void> = [];
-    return {
-      set: (ref: { path: string }, data: Data, options?: { merge?: boolean }) => {
-        assertNoUndefined(data, '');
-        ops.push(() => this.apply(ref.path, data, Boolean(options?.merge)));
-      },
-      update: (ref: { path: string }, data: Data) => {
-        assertNoUndefined(data, '');
-        ops.push(() => {
-          if (!this.docs.has(ref.path)) throw new Error(`No document to update: ${ref.path}`);
-          this.apply(ref.path, data, true);
-        });
-      },
-      commit: async () => {
-        if (this.failNextCommit) { this.failNextCommit = false; throw new Error('commit failed'); }
-        ops.forEach((op) => op());
-        this.commits += 1;
-      },
-    };
-  }
-
-  get(path: string) { return this.docs.get(path); }
-  pathsUnder(prefix: string) { return [...this.docs.keys()].filter((path) => path.startsWith(prefix)); }
-}
 
 type Gateway = Record<string, { order: Data; payments: Data[] }>;
 
@@ -127,10 +45,22 @@ test('missing paymentId (no payment attempt yet): pending result is stored witho
   assert.equal(result.status, 'pending');
   assert.equal('paymentId' in result, false);
   assert.equal(db.commits, 1);
-  assert.equal(db.get('paymentFinalizationLocks/cf-1')?.status, 'pending');
+  assert.equal((db.get('paymentAttempts/cf-1')?.finalization as Data)?.status, 'pending');
   assert.equal(db.get('orders/ord-1')?.paymentStatus, 'pending');
   assert.equal(db.get('orders/ord-1')?.cashfreePaymentId, null);
   assert.equal(db.get('paymentAttempts/cf-1')?.paymentId, null);
+  assert.equal(db.pathsUnder('paymentTransactions/').length, 0);
+});
+
+test('repeated pending verifications write no history; the later success writes exactly one row', async () => {
+  const { db, deps, gateway } = setup({ gateway: { 'cf-1': { order: activeOrder, payments: [] } } });
+  for (let poll = 0; poll < 3; poll += 1) assert.equal((await verifyAndFinalizeCashfreePayment('cf-1', 'uid-1', deps)).status, 'pending');
+  gateway['cf-1'] = { order: activeOrder, payments: [{ cf_payment_id: 900, payment_status: 'PENDING', payment_amount: 200 }] };
+  assert.equal((await verifyAndFinalizeCashfreePayment('cf-1', 'uid-1', deps)).status, 'pending');
+  assert.equal(db.pathsUnder('paymentTransactions/').length, 0);
+  gateway['cf-1'] = { order: paidOrder, payments: [success(901)] };
+  assert.equal((await verifyAndFinalizeCashfreePayment('cf-1', 'uid-1', deps)).status, 'paid');
+  assert.deepEqual(db.pathsUnder('paymentTransactions/'), ['paymentTransactions/cf-1_901_ord-1']);
 });
 
 test('PAID order whose payment has no cf_payment_id is finalized with null IDs; no ID is invented', async () => {
@@ -150,7 +80,7 @@ test('valid successful payment confirms the order once, with the Cashfree paymen
   assert.equal(result.paymentId, '5114915');
   assert.deepEqual([db.get('orders/ord-1')?.paymentStatus, db.get('orders/ord-1')?.status], ['paid', 'confirmed']);
   assert.ok(db.get('paymentTransactions/cf-1_5114915_ord-1'));
-  assert.equal((db.get('paymentFinalizationLocks/cf-1')?.result as Data).paymentId, '5114915');
+  assert.equal(((db.get('paymentAttempts/cf-1')?.finalization as Data).result as Data).paymentId, '5114915');
   assert.ok(db.get('notifications/ord-1_order_placed'));
   assert.deepEqual(pushes, ['ord-1_order_placed']);
 });
@@ -181,6 +111,40 @@ test('repeated verification returns the cached result without finalizing again',
   assert.equal(db.pathsUnder('notifications/').length, 1);
 });
 
+test('mixed one-time and subscription payment finalizes both records once across webhook/return ordering', async () => {
+  const { db, deps } = setup({
+    gateway: {
+      'cf-1': {
+        order: { ...paidOrder, order_amount: 400 },
+        payments: [{ ...success(902), payment_amount: 400 }],
+      },
+    },
+    attempts: { 'cf-1': ['ord-1', 'ord-sub-1'] },
+  });
+  db.docs.set('orders/ord-sub-1', {
+    orderNumber: 'ORD-SUB-1',
+    total: 200,
+    currency: 'INR',
+    paymentStatus: 'pending',
+    status: 'pending_payment',
+    cashfreeOrderId: 'cf-1',
+    paymentAuthUid: 'uid-1',
+    customerId: '9876543210',
+    orderType: 'subscription',
+    subscriptionId: 'sub-1',
+  });
+  db.docs.set('subscriptions/sub-1', { status: 'pending_payment', paymentStatus: 'pending' });
+  const webhookFirst = await verifyAndFinalizeCashfreePayment('cf-1', 'uid-1', deps);
+  const browserReturnAfter = await verifyAndFinalizeCashfreePayment('cf-1', 'uid-1', deps);
+  assert.deepEqual(browserReturnAfter, webhookFirst);
+  assert.equal(db.get('orders/ord-1')?.paymentStatus, 'paid');
+  assert.equal(db.get('orders/ord-sub-1')?.paymentStatus, 'paid');
+  assert.deepEqual([db.get('subscriptions/sub-1')?.status, db.get('subscriptions/sub-1')?.paymentStatus], ['active', 'paid']);
+  assert.equal(db.pathsUnder('paymentTransactions/').length, 2);
+  assert.equal(db.pathsUnder('notifications/').length, 2);
+  assert.equal(db.commits, 1);
+});
+
 test('pending (no paymentId) then success on the same Cashfree order is reprocessed and paid', async () => {
   const { db, deps, gateway } = setup({ gateway: { 'cf-1': { order: activeOrder, payments: [] } } });
   assert.equal((await verifyAndFinalizeCashfreePayment('cf-1', 'uid-1', deps)).status, 'pending');
@@ -201,6 +165,7 @@ test('failed attempt, then retry with a new Cashfree order pays; the late failed
   });
   assert.equal((await verifyAndFinalizeCashfreePayment('cf-1', 'uid-1', deps)).status, 'failed');
   assert.equal(db.get('orders/ord-1')?.status, 'payment_failed');
+  assert.equal(db.get('paymentTransactions/cf-1_11_ord-1')?.paymentStatus, 'failed');
   assert.equal((await verifyAndFinalizeCashfreePayment('cf-2', 'uid-1', deps)).status, 'paid');
   const late = await verifyAndFinalizeCashfreePayment('cf-1', 'uid-1', deps);
   assert.equal(late.status, 'failed');
@@ -227,7 +192,7 @@ test('incomplete/invalid gateway data (amount mismatch) writes no finalization',
   assert.equal(db.commits, 0);
   assert.equal(db.get('orders/ord-1')?.paymentStatus, 'pending');
   assert.equal(db.pathsUnder('paymentTransactions/').length, 0);
-  assert.notEqual(db.get('paymentFinalizationLocks/cf-1')?.status, 'completed');
+  assert.notEqual((db.get('paymentAttempts/cf-1')?.finalization as Data)?.status, 'completed');
 });
 
 test('a failed commit leaves no partial finalization, and a later retry finalizes exactly once', async () => {
@@ -239,7 +204,8 @@ test('a failed commit leaves no partial finalization, and a later retry finalize
   // Within the short lock window a retry reports pending instead of racing.
   assert.equal((await verifyAndFinalizeCashfreePayment('cf-1', 'uid-1', deps)).status, 'pending');
   // After the lock expires, the retry finalizes once.
-  db.docs.set('paymentFinalizationLocks/cf-1', { ...db.get('paymentFinalizationLocks/cf-1'), updatedAtMs: Date.now() - 3 * 60 * 1000 });
+  const stale = db.get('paymentAttempts/cf-1')!;
+  db.docs.set('paymentAttempts/cf-1', { ...stale, finalization: { ...(stale.finalization as Data), updatedAtMs: Date.now() - 3 * 60 * 1000 } });
   assert.equal((await verifyAndFinalizeCashfreePayment('cf-1', 'uid-1', deps)).status, 'paid');
   assert.equal(db.pathsUnder('notifications/').length, 1);
   assert.equal(db.commits, 1);
@@ -247,7 +213,7 @@ test('a failed commit leaves no partial finalization, and a later retry finalize
 
 test('payment belonging to another customer session is rejected before any write', async () => {
   const { db, deps } = setup({ gateway: { 'cf-1': { order: paidOrder, payments: [success(55)] } } });
-  await assert.rejects(verifyAndFinalizeCashfreePayment('cf-1', 'someone-else', deps), /does not belong/);
+  await assert.rejects(verifyAndFinalizeCashfreePayment('cf-1', 'someone-else', deps), /not available for your account/);
   assert.equal(db.commits, 0);
   assert.equal(db.get('orders/ord-1')?.paymentStatus, 'pending');
 });
@@ -281,4 +247,3 @@ test('8. a payment arriving for a replaced (cancelled) checkout activates nothin
   assert.equal(db.pathsUnder('notifications/').length, 0);
   assert.deepEqual(pushes, []);
 });
-

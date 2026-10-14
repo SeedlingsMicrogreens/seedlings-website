@@ -5,7 +5,9 @@ import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { collection, getCountFromServer, getDocsFromServer, query, where } from "firebase/firestore";
 import { getCustomerAccount } from "@/lib/customerAccount";
-import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
+import { getCustomerSession } from "@/lib/clientOnboarding";
+import { isCurrentCustomerSession } from "@/lib/customerAuthState";
+import { requestLogin } from "@/lib/loginPrompt";
 
 function formatDate(value: string) {
   if (!value) return "—";
@@ -29,7 +31,13 @@ function packLabel(weightGrams: number, quantity: number, packaging?: number) {
 }
 
 function renderLogin(root: HTMLElement) {
-  window.dispatchEvent(new CustomEvent("seedlings-open-login", { detail: { redirectTo: "/microgreens" } }));
+  const heading = root.querySelector(".account-title h1");
+  if (heading) heading.textContent = "Sign in to view your account";
+  root.querySelectorAll(".kpi strong").forEach((value) => { value.textContent = "—"; });
+  root.querySelectorAll(".account-main .panel").forEach((panel) => {
+    panel.textContent = "Sign in to view your customer account details.";
+  });
+  requestLogin("account", "session_absent", "/microgreens");
 }
 
 
@@ -40,14 +48,18 @@ export default function AccountHydrator({ children }: { children: ReactNode }) {
     const root = ref.current;
     if (!root) return;
     let alive = true;
+    let requestId = 0;
 
     const hydrate = async () => {
-      const mobile = getStoredCustomerMobile();
-      const user = auth.currentUser;
-      if (!mobile || !user) {
+      const currentRequest = ++requestId;
+      // The resolved Firebase session (restored, non-anonymous) decides; not the remembered mobile.
+      const session = await getCustomerSession();
+      if (!alive || currentRequest !== requestId) return;
+      if (!session.signedIn) {
         renderLogin(root);
         return;
       }
+      const { mobile, uid } = session;
       try {
         const [account, activeSubscriptionsSnapshot, orderCountSnapshot] = await Promise.all([
           getCustomerAccount(mobile, { bypassCache: true }),
@@ -59,7 +71,7 @@ export default function AccountHydrator({ children }: { children: ReactNode }) {
           getCountFromServer(query(collection(db, "orders"), where("customerId", "==", mobile))),
         ]);
         if (!account) throw new Error("Customer account not found.");
-        if (!alive) return;
+        if (!alive || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
 
         const activeSubscriptions: Array<Record<string, any> & { id: string }> = activeSubscriptionsSnapshot.docs.map((item) => ({ id: item.id, ...(item.data() as Record<string, any>) }));
         const pastOrderCount = Number(orderCountSnapshot.data().count || 0);
@@ -130,13 +142,16 @@ export default function AccountHydrator({ children }: { children: ReactNode }) {
           }
         }
       } catch (error) {
-        console.error("Customer account dashboard hydration failed", error);
+        if (alive && currentRequest === requestId && await isCurrentCustomerSession(auth, { uid, mobile })) {
+          console.error("Customer account dashboard hydration failed", error);
+        }
       }
     };
 
     const unsubscribe = onAuthStateChanged(auth, () => void hydrate());
     return () => {
       alive = false;
+      requestId += 1;
       unsubscribe();
     };
   }, []);

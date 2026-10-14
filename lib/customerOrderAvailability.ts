@@ -1,5 +1,6 @@
 import { collection, documentId, getDocs, query, where, type QuerySnapshot, type DocumentData } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { auth, authPersistenceReady, db } from './firebase';
+import { customerIdToken } from './customerAuthState';
 import type { SalesProduct } from './salesProducts';
 import { requestCommittedDemand } from './committedDemandClient';
 import {
@@ -59,11 +60,10 @@ async function fetchByIds(collectionName: string, ids: string[]) {
 let productionThresholdPromise: Promise<number> | null = null;
 
 async function getProductionThresholdGrams() {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Your login session expired. Please sign in again.');
+  await authPersistenceReady;
 
   if (!productionThresholdPromise) {
-    productionThresholdPromise = user.getIdToken().then((idToken) =>
+    productionThresholdPromise = customerIdToken(auth).then((idToken) =>
       fetch('/api/customer/production-threshold', {
         cache: 'no-store',
         headers: { Authorization: `Bearer ${idToken}` },
@@ -82,9 +82,8 @@ async function getProductionThresholdGrams() {
 
 async function getCommittedDemand(deliveryDate: string, productIds: string[]) {
   if (!productIds.length) return { subscriptionCommitted: {}, oneTimeCommitted: {}, committedDemandGrams: 0 };
-  const user = auth.currentUser;
-  if (!user) throw new Error('Your login session expired. Please sign in again.');
-  return requestCommittedDemand({ fetchImpl: fetch, idToken: await user.getIdToken(), deliveryDate, productIds });
+  await authPersistenceReady;
+  return requestCommittedDemand({ fetchImpl: fetch, idToken: await customerIdToken(auth), deliveryDate, productIds });
 }
 
 async function loadAvailabilityContext(deliveryDate: string, requestedProductIds: string[], preloadedBatches?: QuerySnapshot<DocumentData>): Promise<AvailabilityContext> {

@@ -41,6 +41,8 @@ export type CheckoutTotalsStore = {
     subscriptionOfferId: string;
     subscriptionOfferName: string;
   }>) => Promise<void>;
+  /** Stored price verifications by order ID (paymentAttempts per-order records). */
+  getPriceVerifications: (orderIds: string[]) => Promise<Map<string, Data>>;
   saveVerifications: (records: Array<{ orderId: string; data: Data }>) => Promise<void>;
 };
 
@@ -70,7 +72,7 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
   const { orderIds, orders, store } = input;
 
   // Previously verified, unchanged orders (e.g. a payment retry) need no re-pricing.
-  const verifications = await store.getDocs('orderPriceVerifications', orderIds);
+  const verifications = await store.getPriceVerifications(orderIds);
   const allVerified = orderIds.every((id, index) => {
     const record = verifications.get(id);
     return record && record.fingerprint === orderFingerprint(orders[index]) && close(Number(record.verifiedTotal), money(orders[index].total));
@@ -80,7 +82,7 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
     if (subscriptionOrders.length) {
       const subscriptionIds = subscriptionOrders.map((order) => String(order.subscriptionId || '')).filter(Boolean);
       const verifiedSubscriptions = await store.getDocs('subscriptions', subscriptionIds);
-      const verificationRecords = await store.getDocs('orderPriceVerifications', orderIds);
+      const verificationRecords = await store.getPriceVerifications(orderIds);
       for (const [index, order] of orders.entries()) {
         if (!isSubscriptionOrder(order)) continue;
         const record = verificationRecords.get(orderIds[index]);
@@ -121,6 +123,7 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
     if (!items.length) fail(`order ${id} has no items`);
     let subtotal = 0;
     let mrpSubtotal = 0;
+    const priceItems: Array<{ price: number; quantity: number }> = [];
     for (const item of items) {
       const product = products.get(String(item.salableProductId || ''));
       if (!product) fail(`product ${item.salableProductId} not found`);
@@ -134,8 +137,9 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
       if (Number(item.weightGrams) > priced!.packaging * quantity) fail(`weight exceeds pack size x quantity in order ${id}`);
       subtotal += priced!.price * quantity;
       mrpSubtotal += Number(priced!.mrp || priced!.price) * quantity;
+      priceItems.push({ price: priced!.price, quantity });
     }
-    return { id, order, date: String(order.scheduledDeliveryDate || ''), subtotal, mrpSubtotal };
+    return { id, order, date: String(order.scheduledDeliveryDate || ''), subtotal, mrpSubtotal, priceItems };
   }).sort((a, b) => a.date.localeCompare(b.date));
 
   // Subscription orders: single line, matching linked subscription record, plan price.
@@ -175,6 +179,7 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
       planId: String(order.subscriptionPlanId || ''),
       planName: String(plan!.name || ''),
       subtotal: price * quantity,
+      priceItem: { price, quantity },
       deliveryDates: getWeeklyDeliveryDates(first, deliveries),
     };
   });
@@ -209,30 +214,40 @@ export async function verifyCheckoutTotals(input: { orderIds: string[]; orders: 
     }
     return { ...entry, entitlement: entitlement! };
   });
-  const oneSubtotal = oneTimeGroups.reduce((sum, group) => sum + group.subtotal, 0);
   const offers = geoId
     ? computeCustomerOffers(checkoutOffers, {
       pincode, geoId, locationName: geoName,
-      oneTimeSubtotal: oneSubtotal,
-      subscriptionSubtotal: subscriptionEntries.reduce((sum, entry) => sum + entry.subtotal, 0),
+      oneTimeItems: oneTimeGroups.flatMap((group) => group.priceItems),
+      subscriptionItems: subscriptionEntries.map((entry) => entry.priceItem),
       deliveryChargeAmounts: checkoutDeliveryChargeAmounts(deliveryCharges!),
     }, input.today)
     : NO_OFFERS;
 
+  let oneTimeSavingsIndex = 0;
   const allocation = allocateCheckoutTotals({
-    oneTimeGroups,
-    subscriptions: verifiedSubscriptionEntries.map((entry, index) => ({ subtotal: entry.subtotal, deliveryFee: Number(deliveryCharges!.subscriptions[index]?.termCharge || 0) })),
+    oneTimeGroups: oneTimeGroups.map((group) => {
+      const priceOfferSavings = group.priceItems.reduce((sum) => {
+        const saving = Number(offers.oneTimeItemSavings[oneTimeSavingsIndex++] || 0);
+        return sum + saving;
+      }, 0);
+      return { ...group, priceOfferSavings };
+    }),
+    subscriptions: verifiedSubscriptionEntries.map((entry, index) => ({
+      subtotal: entry.subtotal,
+      deliveryFee: Number(deliveryCharges!.subscriptions[index]?.termCharge || 0),
+      priceOfferSavings: Number(offers.subscriptionItemSavings[index] || 0),
+    })),
     deliveryCharges: deliveryCharges!,
     offers,
   });
 
-  // Stored totals may exceed the authoritative amount (e.g. a flow without
-  // offers) but must never be lower.
+  // The displayed checkout amount, stored order totals, and payment amount must
+  // all match the same server-authoritative calculation.
   oneTimeGroups.forEach((group, index) => {
-    if (money(group.order.total) < money(allocation.oneTime[index].total) - TOLERANCE) fail(`order ${group.id} total below authoritative amount`);
+    if (!close(money(group.order.total), money(allocation.oneTime[index].total))) fail(`order ${group.id} total does not match authoritative amount`);
   });
   verifiedSubscriptionEntries.forEach((entry, index) => {
-    if (money(entry.order.total) < money(allocation.subscriptions[index].total) - TOLERANCE) fail(`order ${entry.id} total below authoritative amount`);
+    if (!close(money(entry.order.total), money(allocation.subscriptions[index].total))) fail(`order ${entry.id} total does not match authoritative amount`);
   });
 
   if (verifiedSubscriptionEntries.length) {

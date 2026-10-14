@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
+import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase";
-import { getStoredCustomerMobile } from "@/lib/clientOnboarding";
+import { getCustomerSession } from "@/lib/clientOnboarding";
+import { isCurrentCustomerSession } from "@/lib/customerAuthState";
 import { getCachedCustomerAccount, getCustomerAccount, updateCustomerProfile, updateCustomerProfilePhoto } from "@/lib/customerAccount";
 import { deleteFromCloudinary, uploadToCloudinary } from "@/lib/cloudinary";
 
@@ -23,15 +25,19 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
     const root = ref.current;
     if (!root) return;
     let alive = true;
+    let requestId = 0;
+    const initialMarkup = root.innerHTML;
 
     const hydrate = async () => {
-      // The mobile number saved at login is the customer identity for the website.
-      // Do not wait for Firebase Auth restoration before rendering the profile.
-      const mobile = getStoredCustomerMobile();
-      if (!mobile) {
+      const currentRequest = ++requestId;
+      const session = await getCustomerSession();
+      if (!alive || currentRequest !== requestId) return;
+      if (!session.signedIn) {
         renderLogin(root);
         return;
       }
+      const { mobile, uid } = session;
+      if (!root.querySelector(".account-main .form")) root.innerHTML = initialMarkup;
 
       const form = root.querySelector(".account-main .form") as HTMLElement | null;
       if (!form) return;
@@ -72,7 +78,7 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
       };
 
       const applyCustomer = (customer: Awaited<ReturnType<typeof getCustomerAccount>> | null) => {
-        if (!alive) return;
+        if (!alive || currentRequest !== requestId) return;
         nameInput.value = customer?.name?.trim() || "";
         nameInput.placeholder = PLACEHOLDER;
         emailInput.value = customer?.email?.trim() || "";
@@ -107,6 +113,7 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
         photoInput.addEventListener("change", async () => {
           const file = photoInput.files?.[0];
           if (!file) return;
+          if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
           photoMessage.textContent = "";
           if (!file.type.startsWith("image/")) { photoMessage.textContent = "Please select an image file."; photoInput.value = ""; return; }
           if (file.size > 5 * 1024 * 1024) { photoMessage.textContent = "Profile photo must be 5 MB or smaller."; photoInput.value = ""; return; }
@@ -133,6 +140,7 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
             }
 
             customerPhotoUrl = url;
+            if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
             renderPhoto(url);
             photoMessage.textContent = "Profile photo updated successfully.";
             window.dispatchEvent(new CustomEvent("seedlings-customer-authenticated", { detail: { mobile } }));
@@ -147,6 +155,7 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
           }
         });
         photoRemove.addEventListener("click", async () => {
+          if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
           photoMessage.textContent = "";
           photoChoose.disabled = true;
           photoRemove.disabled = true;
@@ -168,6 +177,7 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
               await updateCustomerProfilePhoto(mobile, "");
             }
             customerPhotoUrl = "";
+            if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
             renderPhoto("");
             photoMessage.textContent = "Profile photo removed.";
             window.dispatchEvent(new CustomEvent("seedlings-customer-authenticated", { detail: { mobile } }));
@@ -202,9 +212,10 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
           saveButton.disabled = true;
           saveButton.textContent = "Saving…";
           try {
+            if (!(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
             await updateCustomerProfile(mobile, name, email, FIXED_DELIVERY_DAY);
             const updated = await getCustomerAccount(mobile, { bypassCache: true });
-            if (!alive) return;
+            if (!alive || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
             applyCustomer(updated);
             setMessage("Profile updated successfully.");
           } catch (error) {
@@ -224,20 +235,22 @@ export default function ProfileHydrator({ children }: { children: ReactNode }) {
       // the cache is empty or stale.
       try {
         const customer = await getCustomerAccount(mobile, { bypassCache: true });
-        if (!alive) return;
+        if (!alive || currentRequest !== requestId || !(await isCurrentCustomerSession(auth, { uid, mobile }))) return;
         applyCustomer(customer);
       } catch (error) {
         console.error("Customer profile load failed", error);
-        if (alive && cached === undefined) {
+        if (alive && currentRequest === requestId && cached === undefined && await isCurrentCustomerSession(auth, { uid, mobile })) {
           setMessage("Profile details could not be loaded right now.", true);
         }
       }
     };
 
-    void hydrate();
+    const unsubscribe = onAuthStateChanged(auth, () => { void hydrate(); });
 
     return () => {
       alive = false;
+      requestId += 1;
+      unsubscribe();
     };
   }, []);
 

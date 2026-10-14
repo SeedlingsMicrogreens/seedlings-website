@@ -11,7 +11,7 @@ import {
   subscribeToCustomerNotifications,
   type CustomerNotification,
 } from '@/lib/customerNotifications';
-import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { getCustomerSession } from '@/lib/clientOnboarding';
 import { enableCustomerWebPush } from '@/lib/customerPushNotifications';
 
 function timeLabel(value: CustomerNotification['createdAt']) {
@@ -35,28 +35,45 @@ function targetFor(item: CustomerNotification) {
 export default function NotificationBell() {
   const [items, setItems] = useState<CustomerNotification[]>([]);
   const [open, setOpen] = useState(false);
-  const [authUid, setAuthUid] = useState('');
+  const [customerSession, setCustomerSession] = useState<{ uid: string; mobile: string } | null>(null);
   const [error, setError] = useState('');
 
-  useEffect(() => onAuthStateChanged(auth, (user) => {
-    setAuthUid(user?.uid || '');
-  }), []);
+  useEffect(() => {
+    let requestId = 0;
+    const unsubscribe = onAuthStateChanged(auth, () => {
+      const currentRequest = ++requestId;
+      setItems([]);
+      setCustomerSession(null);
+      setError('');
+      void getCustomerSession().then((session) => {
+        if (currentRequest === requestId) {
+          setCustomerSession(session.signedIn ? { uid: session.uid, mobile: session.mobile } : null);
+        }
+      }).catch((error) => {
+        if (currentRequest === requestId) {
+          console.error('Unable to resolve the signed-in customer for notifications.', error);
+          setError('Unable to load notifications.');
+        }
+      });
+    });
+    return () => { requestId += 1; unsubscribe(); };
+  }, []);
 
   useEffect(() => {
-    if (!authUid || !getStoredCustomerMobile()) {
+    if (!customerSession) {
       setItems([]);
       return;
     }
-    return subscribeToCustomerNotifications(authUid, getStoredCustomerMobile(), setItems, (err) => {
+    return subscribeToCustomerNotifications(customerSession.uid, customerSession.mobile, setItems, (err) => {
       console.error('Customer notifications listener failed', err);
       setError('Unable to load notifications.');
     });
-  }, [authUid]);
+  }, [customerSession]);
 
   useEffect(() => {
-    if (!authUid) return;
+    if (!customerSession) return;
 
-    const customerId = getStoredCustomerMobile();
+    const customerId = customerSession.mobile;
     if (customerId && typeof window !== 'undefined' && 'Notification' in window) {
       // Register automatically for an already-signed-in customer. If the
       // browser requires a user gesture for permission, the request is
@@ -82,7 +99,7 @@ export default function NotificationBell() {
       active = false;
       unsubscribe();
     };
-  }, [authUid]);
+  }, [customerSession]);
 
   const unread = useMemo(() => items.filter((item) => !item.read), [items]);
   const preview = items.slice(0, 5);

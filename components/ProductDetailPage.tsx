@@ -1135,10 +1135,8 @@ export default function ProductDetailPage({ slug }: { slug: string }) {
 
             {product ? (
               <>
-                <section className="mt-12 grid overflow-hidden rounded-3xl border border-[#e7dfd0] bg-white sm:grid-cols-2 lg:grid-cols-4" aria-label="Product benefits">
+                <section className="mt-12 grid overflow-hidden rounded-3xl border border-[#e7dfd0] bg-white sm:grid-cols-2" aria-label="Product benefits">
                   {[
-                    ["◉", "Locally Grown", "Freshly grown with care"],
-                    ["✦", "Premium Quality", "Handpicked and packed"],
                     ["❄", "Freshly Harvested", "Prepared before delivery"],
                     ["♡", "Great Taste", "Freshness you can taste"],
                   ].map(([icon, title, text], index) => (

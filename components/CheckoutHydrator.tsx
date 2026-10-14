@@ -6,9 +6,9 @@ import { doc, getDoc } from 'firebase/firestore';
 import CheckoutAddressManager from '@/components/checkout/CheckoutAddressManager';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth, db } from '@/lib/firebase';
-import { waitForCustomerAuthReady } from '@/lib/authFlow';
 import { getCustomerAccount, updateCustomerAddresses, updateCustomerName, type CustomerAccount, type CustomerAddress } from '@/lib/customerAccount';
-import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { getCustomerSession } from '@/lib/clientOnboarding';
+import { requestLogin } from '@/lib/loginPrompt';
 import { getUnifiedCart, clearCart } from '@/lib/cart';
 import { createCustomerMixedCheckout } from '@/lib/customerMixedCheckout';
 import { nextWeekSaturday } from '@/lib/customerOrderAvailability';
@@ -16,10 +16,10 @@ import { normalizeCustomerMobile } from '@/lib/customerIdentity';
 import { confirmHighDemandEnquiry, confirmPincodeUnavailable, showCustomerSuccess } from '@/lib/customerAlerts';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates, type CheckoutDeliveryCharges } from '@/lib/deliveryCharges';
 import { calculateCustomerOffers, calculateCustomerSubscriptionEntitlements, type CheckoutOfferResult } from '@/lib/offers';
-import { checkoutDeliveryChargeAmounts, checkoutSavingsBreakdown, resolveSubscriptionPlanSavings, subscriptionDeliveriesPerTerm } from '@/lib/checkoutPricing';
+import { checkoutDeliveryChargeAmounts, checkoutSavingsBreakdown, NO_OFFERS, resolveSubscriptionPlanSavings, subscriptionDeliveriesPerTerm } from '@/lib/checkoutPricing';
 import { resolvePriceDisplay, scalePriceDisplay } from '@/lib/priceDisplay';
 import { openCashfreeCheckout } from '@/lib/cashfreeClient';
-import { createCashfreeOrder } from '@/lib/cashfreeFunctions';
+import { createCashfreeOrder, customerPaymentMessage, PaymentRequestError, promptSignInIfNeeded, recordCheckoutCartForOrders } from '@/lib/cashfreeFunctions';
 
 const KEY = 'seedlings_checkout_details';
 const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -43,8 +43,13 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
       const x = root.querySelector('.checkout-message') as HTMLElement | null;
       if (x) { x.textContent = t; x.style.color = e ? 'crimson' : ''; }
     };
+    // No customer session: replace the checkout (never leave a stale, clickable
+    // checkout behind) and offer sign-in; the cart is untouched.
+    const openLogin = () => window.dispatchEvent(new CustomEvent('seedlings-open-login', { detail: { redirectTo: null } }));
     const renderSignedOut = () => {
-      window.dispatchEvent(new CustomEvent('seedlings-open-login', { detail: { redirectTo: null } }));
+      root.innerHTML = `<section class="auth-wrap"><div class="auth-card"><span class="eyebrow">Checkout</span><h1>Sign in to continue</h1><p>Sign in with your mobile number to review your cart and pay. Your cart has been kept.</p><button type="button" class="btn primary" style="width:100%" data-checkout-sign-in>Sign in</button></div></section>`;
+      root.querySelector('[data-checkout-sign-in]')?.addEventListener('click', openLogin);
+      requestLogin('checkout', 'session_absent');
     };
     const renderEmpty = () => root.innerHTML = `<section class="auth-wrap"><div class="auth-card"><span class="eyebrow">Checkout</span><h1>Your cart is empty</h1><p>Add fresh microgreens from the catalogue before checkout.</p><a class="btn primary" style="width:100%;text-align:center" href="/microgreens">Browse Microgreens</a></div></section>`;
 
@@ -64,8 +69,13 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
       root.innerHTML = `<section class="section checkout-page"><div class="container checkout-grid"><div class="form"><span class="eyebrow">Unified checkout</span><h2 style="margin-top:6px;margin-bottom:12px">Confirm your delivery</h2><div data-address-section></div><p class="checkout-message" style="font-size:13px;min-height:18px;margin-top:10px"></p><button class="btn primary" style="width:100%" type="button" data-place>Proceed to Pay</button></div><aside class="summary"><h3>Order summary</h3>${subs.length ? `<h4 style="margin:14px 0 6px">Subscriptions</h4>${subs.map((i, index) => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">${esc(i.planName)} · Delivery: ${esc(dateLabel(i.deliveryDate || i.startDate))}</small><small class="muted" style="display:block" data-subscription-entitlement="${index}">Checking delivery entitlement…</small></span><strong data-subscription-item-price="${index}">${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}${one.length ? `<h4 style="margin:18px 0 6px">One-time purchases</h4>${one.map((i, index) => `<div class="summary-row"><span>${esc(i.name)} × ${i.quantity}<small class="muted" style="display:block">Delivery: ${esc(dateLabel(i.deliveryDate || nextWeekSaturday()))}</small></span><strong data-one-time-item-price="${index}">${esc(money(i.price * i.quantity, i.currency))}</strong></div>`).join('')}` : ''}<div data-delivery-summary><div class="summary-row"><span>Delivery charge</span><strong>Enter a valid delivery pincode</strong></div></div><div class="summary-row summary-total"><span>Total</span><span data-grand-total>${esc(money(subtotal, currency))}</span></div></aside></div></section>`;
       const deliverySummary = root.querySelector('[data-delivery-summary]') as HTMLElement | null;
       const grandTotal = root.querySelector('[data-grand-total]') as HTMLElement | null;
+      let displayedTotal = subtotal;
+      const setDisplayedTotal = (value: number) => {
+        displayedTotal = value;
+        if (grandTotal) grandTotal.textContent = money(value, currency);
+      };
       let delivery: CheckoutDeliveryCharges | null = null;
-      let offers: CheckoutOfferResult = { priceSavings: 0, oneTimePriceSavings: 0, subscriptionPriceSavings: 0, deliverySavings: 0, totalSavings: 0 };
+      let offers: CheckoutOfferResult = NO_OFFERS;
       let deliveryRequest = 0;
 
       const selectedAddress = () => addresses.find(a => a.id === selectedId);
@@ -179,21 +189,12 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
         const applyItemOfferPrices = (
           selector: string,
           items: ReadonlyArray<{ price: number; quantity: number; mrp?: number; maximumPlanPrice?: number }>,
-          totalSaving: number,
+          itemSavings: ReadonlyArray<number>,
           showMrp = false,
-          referenceLabel = '',
         ) => {
-          const saving = Math.max(0, Number(totalSaving || 0));
-          const total = items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
-          let allocated = 0;
           items.forEach((item, index) => {
             const itemTotal = Number(item.price || 0) * Number(item.quantity || 0);
-            const itemSaving = saving <= 0 || total <= 0
-              ? 0
-              : index === items.length - 1
-                ? Math.max(0, Math.round((saving - allocated) * 100) / 100)
-                : Math.min(itemTotal, Math.round((saving * (itemTotal / total)) * 100) / 100);
-            allocated += itemSaving;
+            const itemSaving = Math.min(itemTotal, Math.max(0, Number(itemSavings[index] || 0)));
             const finalPrice = Math.max(0, itemTotal - itemSaving);
             const node = root.querySelector(`${selector}[data-${selector.includes('subscription') ? 'subscription' : 'one-time'}-item-price="${index}"]`) as HTMLElement | null;
             if (!node) return;
@@ -225,8 +226,8 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           return { ...item, maximumPlanPrice: planDisplay.maximumPlanPrice, planSavings: planDisplay.savings };
         });
         const subscriptionPlanSaving = subscriptionPlanDisplays.reduce((sum, item) => sum + item.planSavings, 0);
-        applyItemOfferPrices('[data-subscription-item-price]', subscriptionPlanDisplays, offerResult.subscriptionPriceSavings);
-        applyItemOfferPrices('[data-one-time-item-price]', one, offerResult.oneTimePriceSavings, true);
+        applyItemOfferPrices('[data-subscription-item-price]', subscriptionPlanDisplays, offerResult.subscriptionItemSavings);
+        applyItemOfferPrices('[data-one-time-item-price]', one, offerResult.oneTimeItemSavings, true);
 
         const mrpSavings = one.reduce((sum, item) =>
           sum + (scalePriceDisplay(resolvePriceDisplay(item.price, item.mrp), item.quantity).savings || 0), 0);
@@ -263,19 +264,19 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
         }
 
         if (deliverySummary) deliverySummary.innerHTML = rows.join('');
-        if (grandTotal) grandTotal.textContent = money(grandTotalValue, currency);
+        setDisplayedTotal(grandTotalValue);
       };
 
       const refreshDelivery = async () => {
         const pincode = getPincode().replace(/\D/g, '');
         if (pincode.length !== 6) {
-          delivery = null; offers = { priceSavings: 0, oneTimePriceSavings: 0, subscriptionPriceSavings: 0, deliverySavings: 0, totalSavings: 0 };
+          delivery = null; offers = NO_OFFERS;
           const subscriptionOfferSummary = root.querySelector('[data-subscription-offer-summary]') as HTMLElement | null;
           const oneTimeOfferSummary = root.querySelector('[data-one-time-offer-summary]') as HTMLElement | null;
           if (subscriptionOfferSummary) subscriptionOfferSummary.innerHTML = '';
           if (oneTimeOfferSummary) oneTimeOfferSummary.innerHTML = '';
           if (deliverySummary) deliverySummary.innerHTML = '<div class="summary-row"><span>Delivery charge</span><strong>Enter a valid delivery pincode</strong></div>';
-          if (grandTotal) grandTotal.textContent = money(subtotal, currency);
+          setDisplayedTotal(subtotal);
           return;
         }
         const request = ++deliveryRequest;
@@ -299,11 +300,11 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
               pincode,
               geoId,
               locationName,
-              oneTimeSubtotal: oneTotal,
-              subscriptionSubtotal: subTotal,
+              oneTimeItems: one.map((item) => ({ price: item.price, quantity: item.quantity })),
+              subscriptionItems: subs.map((item) => ({ price: item.price, quantity: item.quantity })),
               deliveryChargeAmounts: checkoutDeliveryChargeAmounts(result),
             })
-            : { priceSavings: 0, oneTimePriceSavings: 0, subscriptionPriceSavings: 0, deliverySavings: 0, totalSavings: 0 };
+            : NO_OFFERS;
           const subscriptionEntitlements = await calculateCustomerSubscriptionEntitlements(subs.map((item) => {
             const plan = subscriptionPlans.get(item.planId) || {};
             return {
@@ -319,7 +320,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           renderDelivery(result, offerResult);
         } catch (e) {
           if (dead || request !== deliveryRequest) return;
-          delivery = null; offers = { priceSavings: 0, oneTimePriceSavings: 0, subscriptionPriceSavings: 0, deliverySavings: 0, totalSavings: 0 };
+          delivery = null; offers = NO_OFFERS;
           const subscriptionOfferSummary = root.querySelector('[data-subscription-offer-summary]') as HTMLElement | null;
           const oneTimeOfferSummary = root.querySelector('[data-one-time-offer-summary]') as HTMLElement | null;
           if (subscriptionOfferSummary) subscriptionOfferSummary.innerHTML = '';
@@ -327,7 +328,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           const message = e instanceof Error ? e.message : '';
           if (message.includes('We are currently not available in this area')) {
             if (deliverySummary) deliverySummary.innerHTML = '<div class="summary-row"><span>Delivery</span><strong>Not available for this pincode</strong></div>';
-            if (grandTotal) grandTotal.textContent = money(subtotal, currency);
+            setDisplayedTotal(subtotal);
             const selected = selectedAddress();
             const cartContext = {
               oneTimeItems: one.map(item => ({
@@ -368,7 +369,7 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
             return;
           }
           if (deliverySummary) deliverySummary.innerHTML = `<div class="summary-row"><span>Delivery charge</span><strong>${esc(message || 'Unable to calculate delivery charges.')}</strong></div>`;
-          if (grandTotal) grandTotal.textContent = money(subtotal, currency);
+          setDisplayedTotal(subtotal);
         }
       };
 
@@ -392,7 +393,15 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           if (!delivery) throw new Error('Delivery charges could not be calculated. Please verify the delivery address before proceeding.');
           if (button) button.textContent = 'Preparing Payment…';
           const result = await createCustomerMixedCheckout({ mobile, addressId, deliverySlot, paymentMethod, oneTimeItems: cartNow.oneTimeItems, subscriptionItems: cartNow.subscriptionItems });
+          if (Math.round(Number(result.total) * 100) !== Math.round(displayedTotal * 100)) {
+            throw new Error('The verified order total differs from the checkout preview. Please refresh checkout and try again.');
+          }
+          // This cart belongs to these orders; only a confirmed payment for them may clear it.
+          recordCheckoutCartForOrders(result.paymentOrderIds);
           const paymentData = await createCashfreeOrder(result.paymentOrderIds, mobile);
+          if (Math.round(Number(paymentData.amount) * 100) !== Math.round(Number(result.total) * 100)) {
+            throw new Error('The payment amount could not be verified against your order. Please contact support before retrying.');
+          }
           sessionStorage.setItem('seedlings_last_checkout', JSON.stringify({ ...result, mobile, cashfreeOrderId: paymentData.cashfreeOrderId }));
           sessionStorage.setItem('seedlings_last_order', JSON.stringify({ orderId: result.primaryOrderId, orderNumber: result.primaryOrderNumber, paymentOrderIds: result.paymentOrderIds, mobile, total: result.total, paymentStatus: 'pending', cashfreeOrderId: paymentData.cashfreeOrderId }));
           if (button) button.textContent = 'Opening Payment…';
@@ -440,32 +449,45 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
             window.location.href = '/cart';
             return;
           }
-          msg(e instanceof Error ? e.message : 'Unable to start checkout.', true);
+          if (e instanceof PaymentRequestError && e.code === 'already_paid') {
+            // Server-confirmed: no new charge was started; this checkout's cart was settled.
+            await showCustomerSuccess('Payment already completed', 'Your order is confirmed. No new charge was started.');
+            window.location.href = '/orders';
+            return;
+          }
+          msg(customerPaymentMessage(e), true);
+          promptSignInIfNeeded(e);
           if (button) { button.disabled = false; button.textContent = 'Proceed to Pay'; }
         }
       });
     };
 
-    const start = async (present: boolean, mobileOverride?: string) => {
+    const start = async (mobileOverride?: string) => {
       const requestId = ++latestStartRequest;
-      const mobile = normalizeCustomerMobile(mobileOverride || getStoredCustomerMobile() || auth.currentUser?.phoneNumber || '');
-      const authenticated = await waitForCustomerAuthReady(auth);
-      if (requestId !== latestStartRequest || dead) return;
-      if (!present && !authenticated) {
-        return renderSignedOut();
+      // One source of truth: the restored, non-anonymous Firebase session and its verified mobile.
+      let session: Awaited<ReturnType<typeof getCustomerSession>>;
+      try {
+        session = await getCustomerSession();
+      } catch {
+        if (requestId !== latestStartRequest || dead) return;
+        console.error('Checkout could not restore the Firebase customer session.');
+        msg('We could not verify your sign-in session right now. Please refresh the page and try again.', true);
+        return;
       }
-      if (!mobile || !authenticated) return renderSignedOut();
+      if (requestId !== latestStartRequest || dead) return;
+      if (!session.signedIn) return renderSignedOut();
+      const mobile = normalizeCustomerMobile(session.mobile || mobileOverride || '');
+      if (!mobile) return renderSignedOut();
       const c = getUnifiedCart();
       if (!c.oneTimeItems.length && !c.subscriptionItems.length) return renderEmpty();
       try {
-        const account = await getCustomerAccount(mobile);
-        if (requestId !== latestStartRequest || dead) return;
-        if (!account) {
-          console.warn('Checkout customer account lookup failed after login.', { hasMobile: Boolean(mobile), hasAuthUser: Boolean(auth.currentUser), hasPhoneNumber: Boolean(auth.currentUser?.phoneNumber) });
-          msg('We could not find your customer profile. Please sign in again to continue to checkout.', true);
-          window.dispatchEvent(new CustomEvent('seedlings-open-login', { detail: { redirectTo: null } }));
-          return;
-        }
+        const account = await getCustomerAccount(mobile, { bypassCache: true });
+          if (requestId !== latestStartRequest || dead) return;
+          if (!account) {
+            console.warn('Checkout customer account lookup failed after login.', { hasMobile: Boolean(mobile), hasAuthUser: Boolean(auth.currentUser), hasPhoneNumber: Boolean(auth.currentUser?.phoneNumber) });
+            msg('Your signed-in customer profile could not be found. Please refresh the page or contact support.', true);
+            return;
+          }
         const planIds = [...new Set(c.subscriptionItems.map((item) => item.planId).filter(Boolean))];
         const planEntries = await Promise.all(planIds.map(async (planId) => {
           try {
@@ -486,15 +508,14 @@ export default function CheckoutHydrator({ children }: { children: React.ReactNo
           msg('We could not load your customer account right now. Please try again in a moment.', true);
           return;
         }
-        msg('We could not find your customer profile. Please sign in again to continue to checkout.', true);
-        window.dispatchEvent(new CustomEvent('seedlings-open-login', { detail: { redirectTo: null } }));
+        msg('We could not load your customer profile. Please refresh the page and try again.', true);
       }
     };
 
-    const unsub = onAuthStateChanged(auth, u => void start(Boolean(u)));
+    const unsub = onAuthStateChanged(auth, () => void start());
     const onCustomerAuthenticated = (event: Event) => {
       const detail = (event as CustomEvent<{ mobile?: string }>).detail || {};
-      void start(true, detail.mobile);
+      void start(detail.mobile);
     };
     window.addEventListener('seedlings-customer-authenticated', onCustomerAuthenticated);
 

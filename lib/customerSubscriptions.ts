@@ -1,10 +1,11 @@
 import { collection, doc, getDoc, getDocs, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
-import { db, auth } from './firebase';
+import { db } from './firebase';
+import { getCustomerSession } from './clientOnboarding';
 import { type SalesProduct } from './salesProducts';
 import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from './deliveryCharges';
 import { calculateCustomerOffers, calculateCustomerSubscriptionEntitlement } from './offers';
-import { checkoutDeliveryChargeAmounts, subscriptionDeliveriesPerTerm, subscriptionEndDate } from './checkoutPricing';
+import { allocateCheckoutTotals, checkoutDeliveryChargeAmounts, NO_OFFERS, subscriptionDeliveriesPerTerm, subscriptionEndDate } from './checkoutPricing';
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
 import { PACKAGING_OPTIONS } from './packaging';
 import { summaryFromOrders } from './checkoutFingerprint';
@@ -52,9 +53,11 @@ export async function createCustomerSubscription(input: {
   startDate?: string;
   shortageDecision?: 'continue' | 'contact';
 }) {
-  const authUid = auth.currentUser?.uid;
-  if (!authUid) throw new Error('Your login session expired. Please sign in again.');
+  const session = await getCustomerSession();
+  if (!session.signedIn) throw new Error('Your login session expired. Please sign in again.');
   const mobile = mobileOf(input.mobile);
+  if (mobile !== session.mobile) throw new Error('Your signed-in account does not match this subscription.');
+  const authUid = session.uid;
   if (mobile.length !== 10) throw new Error('Invalid customer mobile number.');
   if (input.product.active !== true) throw new Error('This product is not currently available for subscription.');
   if (!input.planId) throw new Error('Choose a subscription plan.');
@@ -245,17 +248,31 @@ export async function createCustomerSubscription(input: {
   const roundMoney = (value: number) => Number(Number(value || 0).toFixed(2));
   const deliveryFeePerDelivery = roundMoney(delivery?.perDeliveryCharge || 0);
   const subtotal = roundMoney(unitPrice * input.quantity);
-  const offerResult = await calculateCustomerOffers({
-    pincode: String((address as Record<string, unknown>).pincode || ''),
-    geoId: delivery?.sourceId || '',
-    locationName: delivery?.sourceName || '',
-    oneTimeSubtotal: 0,
-    subscriptionSubtotal: subtotal,
-    deliveryChargeAmounts: checkoutDeliveryChargeAmounts(deliveryCharges),
-  });
+  const offerResult = delivery?.sourceId
+    ? await calculateCustomerOffers({
+      pincode: String((address as Record<string, unknown>).pincode || ''),
+      geoId: delivery.sourceId,
+      locationName: delivery.sourceName || '',
+      oneTimeItems: [],
+      subscriptionItems: [{ price: unitPrice, quantity: input.quantity }],
+      deliveryChargeAmounts: checkoutDeliveryChargeAmounts(deliveryCharges),
+    })
+    : NO_OFFERS;
   const originalDeliveryFee = roundMoney(delivery?.termCharge || 0);
-  const deliveryFee = roundMoney(Math.max(0, originalDeliveryFee - offerResult.deliverySavings));
-  const total = roundMoney(subtotal + deliveryFee);
+  const allocation = allocateCheckoutTotals({
+    oneTimeGroups: [],
+    subscriptions: [{
+      subtotal,
+      deliveryFee: originalDeliveryFee,
+      priceOfferSavings: offerResult.subscriptionItemSavings[0] || 0,
+    }],
+    deliveryCharges,
+    offers: offerResult,
+  }).subscriptions[0];
+  const priceOfferSaving = allocation.allocated;
+  const deliveryFee = roundMoney(allocation.deliveryFee);
+  const deliveryOfferSaving = allocation.deliveryOfferSaving;
+  const total = roundMoney(allocation.total);
   subscription.deliveryFeePerDelivery = deliveryFeePerDelivery;
   subscription.deliveryChargeDetails = delivery?.snapshot || {};
 
@@ -281,7 +298,7 @@ export async function createCustomerSubscription(input: {
     }],
     subtotal,
     deliveryFee,
-    discount: 0,
+    discount: priceOfferSaving,
     total,
     currency: 'INR',
     paymentStatus: 'pending',
@@ -303,14 +320,14 @@ export async function createCustomerSubscription(input: {
     deliveryChargeOriginal: originalDeliveryFee,
     deliveryChargePerDelivery: deliveryFeePerDelivery,
     deliveryChargeTerm: delivery?.termCharge || 0,
-    deliveryChargeTermSavings: offerResult.deliverySavings,
+    deliveryChargeTermSavings: deliveryOfferSaving,
     deliveryChargeDetails: delivery?.snapshot || {},
-    offerDiscount: offerResult.deliverySavings,
-    offerPriceSavings: 0,
-    offerDeliverySavings: offerResult.deliverySavings,
-    offerPriceName: '',
+    offerDiscount: priceOfferSaving + deliveryOfferSaving,
+    offerPriceSavings: priceOfferSaving,
+    offerDeliverySavings: deliveryOfferSaving,
+    offerPriceName: offerResult.priceOffer?.name || '',
     offerDeliveryName: offerResult.deliveryOffer?.name || '',
-    offerTotalSavings: offerResult.deliverySavings,
+    offerTotalSavings: priceOfferSaving + deliveryOfferSaving,
     packingStatus: 'pending',
     requiresCustomerContact: input.shortageDecision === 'contact',
     availabilityRequestedGrams: availability.requestedGrams,

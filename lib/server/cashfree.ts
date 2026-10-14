@@ -27,7 +27,26 @@ function baseUrl(environment: CashfreeConfig['environment']) {
   return environment === 'production' ? 'https://api.cashfree.com' : 'https://sandbox.cashfree.com';
 }
 
-export async function cashfreeRequest<T>(path: string, init: RequestInit = {}, idempotencyKey = randomUUID()): Promise<T> {
+/** A Cashfree HTTP error response (the request reached Cashfree and was answered). */
+export class CashfreeApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'CashfreeApiError';
+    this.status = status;
+  }
+}
+
+/**
+ * True only when Cashfree definitively refused to create the order, so no
+ * provider order exists. 409 (duplicate order/idempotency conflict) and 429 are
+ * not definitive; network errors and 5xx are ambiguous.
+ */
+export function isDefinitiveCashfreeRejection(error: unknown) {
+  return error instanceof CashfreeApiError && error.status >= 400 && error.status < 500 && error.status !== 409 && error.status !== 429;
+}
+
+export async function cashfreeRequest<T>(path: string, init: RequestInit = {}, idempotencyKey: string = randomUUID()): Promise<T> {
   const config = getConfig();
   const response = await fetch(`${baseUrl(config.environment)}${path}`, {
     ...init,
@@ -46,7 +65,7 @@ export async function cashfreeRequest<T>(path: string, init: RequestInit = {}, i
   try { data = text ? JSON.parse(text) : null; } catch { data = { message: text }; }
   if (!response.ok) {
     const message = data && typeof data === 'object' && 'message' in data ? String((data as {message?: unknown}).message || '') : '';
-    throw new Error(message || `Cashfree API request failed with HTTP ${response.status}.`);
+    throw new CashfreeApiError(message || `Cashfree API request failed with HTTP ${response.status}.`, response.status);
   }
   return data as T;
 }

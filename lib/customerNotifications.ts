@@ -87,29 +87,31 @@ export function subscribeToCustomerNotifications(
 
   let uidItems: CustomerNotification[] = [];
   let customerItems: CustomerNotification[] = [];
-  let uidReady = false;
-  let customerReady = false;
+  let active = true;
 
   const publish = () => {
+    if (!active) return;
     const map = new Map<string, CustomerNotification>();
     [...uidItems, ...customerItems].forEach((item) => map.set(item.id, item));
     onChange([...map.values()].sort((a, b) => notificationTime(b) - notificationTime(a)));
   };
 
   const unsubscribeUid = onSnapshot(byUid, (snapshot) => {
-    uidReady = true;
+    if (!active) return;
     uidItems = snapshot.docs.map((doc) => toNotification(doc.id, doc.data()));
     publish();
-  }, (error) => onError?.(error));
+  }, (error) => { if (active) onError?.(error); });
 
   const unsubscribeCustomer = onSnapshot(byCustomer, (snapshot) => {
-    customerReady = true;
+    if (!active) return;
     customerItems = snapshot.docs.map((doc) => toNotification(doc.id, doc.data()));
     publish();
-  }, (error) => onError?.(error));
+  }, (error) => { if (active) onError?.(error); });
 
   return () => {
-    if (uidReady || customerReady) publish();
+    active = false;
+    uidItems = [];
+    customerItems = [];
     unsubscribeUid();
     unsubscribeCustomer();
   };

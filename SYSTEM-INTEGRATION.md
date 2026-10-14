@@ -44,9 +44,8 @@ data it consumes without needing the Admin repository open.
 | `seedlingsFeedback` | Creates/edits Seedlings feedback content | Reads published feedback for the Journey page | Admin |
 | `fulfilments` | Packing/fulfilment | No direct customer fulfilment management | Admin |
 | `inventoryAdjustments` / `growingBatches` | Production/inventory | Website checks availability through its customer availability logic | Admin |
-| `paymentAttempts` | Not a normal Admin master | Payment-attempt/finalization support | Website/server payment flow |
-| `paymentTransactions` | Payment transaction/history where present | Payment finalization support | Website/server payment flow |
-| `paymentFinalizationLocks` | Not an Admin master | Idempotent payment finalization | Website/server payment flow |
+| `paymentAttempts` | Not an Admin master | Payment attempts, creation/finalization locks, price verifications (§13) | Website/server payment flow |
+| `paymentTransactions` | Terminal payment history | Payment outcome history (§13) | Website/server payment flow |
 
 The exact fields in each collection are determined by the current source code. Do not infer a shared schema from similarly named TypeScript interfaces.
 
@@ -170,6 +169,19 @@ Website reads the `offers` collection and independently evaluates:
 4. offer type.
 
 Website currently applies price and delivery-charge savings in its customer checkout/product pricing flow.
+
+For a Price Offer, Website selects the best eligible offer using those existing
+rules and calculates the discount per purchased unit from the applicable
+selling price: the selected one-time selling option's `price`, or the selected
+subscription plan selling option's `planPrice` (using the current fallback when
+no plan option is selected). A flat discount is capped at that unit's selling
+price; a percentage discount is calculated from that selling price and capped
+at 100%. The flat value applies to each eligible unit, including quantity, and
+is not prorated across purchase types. Product MRP and subscription
+`maximumPlanPrice` are reference prices only and are not discount bases.
+Standalone subscriptions and one-time, subscription, combo, and mixed-cart
+orders use the same rule. Server checkout verification recomputes the same
+amount before Cashfree payment-session creation.
 
 ### Subscription bonus deliveries — Website implementation
 
@@ -373,23 +385,262 @@ Customer actions are server validated.
 Cashfree is the payment gateway.
 
 The Website currently contains:
-- Next.js Cashfree Route Handlers under `app/api/cashfree/*`
-- server-side Cashfree helpers under `lib/server/*`
-- a `functions/` Firebase Functions project with Cashfree-related functions.
+- Next.js Cashfree Route Handlers under `app/api/cashfree/*` — the **only active payment path**;
+- server-side Cashfree helpers under `lib/server/*`.
 
-The active deployment path must be verified before removing either implementation.
+There is one payment lifecycle, used by Website and Mobile through
+`/api/cashfree/create-payment-session`, `/api/cashfree/verify-payment` and the
+Cashfree webhook `/api/cashfree/webhook`. The former Firebase Functions project
+(`functions/`) and the unused alias routes `/api/cashfree/create-order` and
+`/api/cashfree/complete` have been removed (no client used them). Removing source
+does not undeploy anything: any previously deployed Cloud Functions
+(`createCashfreeOrderFunction`, `completeCashfreePayment`, `cashfreeWebhook`)
+must be deleted from the Firebase project separately.
 
-Payment-related data includes:
-- `cashfreeOrderId` on internal order/payment state
-- `paymentStatus`
-- `paymentMethod`
-- `paymentAttempts`
-- payment transaction/finalization records where used
-- `paymentFinalizationLocks`.
+### Payment storage — two payment-specific collections
 
-The browser must never receive Cashfree secret credentials.
+Payment state lives in exactly two payment-specific Firestore collections, both
+server-only (default-deny rules; written only through the Admin SDK):
 
-Payment success is authoritative only after server-side verification/finalization. Browser return alone is not sufficient.
+**`paymentAttempts` — operational source of truth.** One record per distinct
+Cashfree order, keyed by its gateway order ID:
+
+| Document | `recordType` | Holds (formerly in) |
+|---|---|---|
+| `paymentAttempts/{cashfreeOrderId}` | `attempt` | one distinct Cashfree attempt: `gatewayOrderId`, `orderIds`, `subscriptionIds`, `primaryOrderId`, `customerId`, `checkoutClaimToken`, verified `amount`/`currency`, lifecycle `status` (`creating`, `pending`, `abandoned`, `creation_failed`, `failed`, `paid`, `duplicate_success`, `superseded_paid`), `idempotencyKey`, `supersededBy`, `paymentId`, timestamps, `creationLock` (provider-creation status/lease and intent), `priceVerification` (per-order verified total, fingerprint, checkout order IDs and subscription entitlement), and `finalization` = `{ status: processing\|pending\|completed, updatedAtMs, result }` (exactly-once finalization lock and cached result). Creation lock, price-verification and finalization metadata are fields on this same real attempt document, not separate documents. |
+
+Each existing business `orders/{orderId}` document carries only a temporary
+`paymentCreationLock` lease while a request reconciles older attempts and
+prepares a provider attempt. This lease is acquired/released transactionally
+across the requested orders, so overlapping order sets still serialize without
+creating a payment-metadata document. The persistent provider intent and its
+idempotency key are written to `paymentAttempts/{cashfreeOrderId}` before the
+Cashfree create call. Once the session is resolved, the temporary order lease
+is cleared; a crashed lease expires and any `creating`/`unknown` provider
+intent is recovered from its attempt record. Customer Firestore updates are
+explicitly barred from creating or changing `paymentCreationLock`; only the
+server Admin SDK controls this lease. The current attempt mapping remains on
+each business order's existing `cashfreeOrderId` field.
+
+`priceVerification` is staged during authoritative total validation, then
+written as a whole map keyed by internal order ID on the attempt record that
+will represent (or reuse) the Cashfree session. A retry reads matching
+verification data from prior `paymentAttempts` records (`orderIds
+array-contains`), and the existing order fingerprint/checkout-set checks decide
+whether it can be reused. This preserves the verified checkout snapshot across
+abandonment/retry without an extra metadata document. Nested attempt state maps
+(`finalization`, `creationLock`, `priceVerification`) are replaced whole; stale
+intent, lock or verification fields cannot leak into a later state.
+
+The former metadata-only path `paymentAttempts/order__{orderId}` (which held
+`creationLock`, `currentGatewayOrderId` and `priceVerification`) is no longer
+created or read by the active flow. The active source and in-memory Firestore
+regressions confirm that each Cashfree gateway order has one attempt document,
+price-verification metadata is stored on that attempt, and no order-keyed
+payment metadata document is created. Existing documents at the retired path
+are not deleted or migrated by this change.
+
+**`paymentTransactions` — durable payment history.** One row per internal order
+per terminal Cashfree outcome (`{cashfreeOrderId}_{paymentId|no-payment}_{orderId}`):
+`success`, `failed`, `duplicate_success`, `superseded_payment_received`
+(refund-needed). Never written for pending/unknown polls. History across
+attempts is kept (each attempt has its own rows).
+
+**No other payment-specific collections.** `paymentCreationLocks`,
+`paymentFinalizationLocks` and `orderPriceVerifications` are not used by any
+code (this is new development: no legacy records are read or migrated). Their
+responsibilities live in `paymentAttempts` as shown above. Existing
+deployed collections with those names, if any, are not deleted by the
+application and can be removed separately.
+
+### Customer ownership (all payment endpoints and checkout claims)
+
+One server-side rule (`lib/server/customerOwnership.ts`) is used by checkout
+claims, payment-session creation, verification/finalization and order-detail
+retry:
+
+1. **Identity.** The signed-in UID is resolved to a customer through trusted
+   server data: the `customerId` claim the server puts in the OTP custom token,
+   or a mobile supplied by the client used *only as a lookup key*, is accepted
+   only if `customers/{mobile}` lists the UID as `authUid` or in `authUids`
+   (OTP sign-in keeps earlier UIDs there as verified aliases). Without a hint,
+   `customers` is searched by the UID; an ambiguous result is not trusted.
+2. **Order/subscription ownership.** A record belongs to the caller when its
+   `customerId` equals the resolved customer **and** its `authUid` (and
+   `paymentAuthUid` when present) is empty (historical records), one of the
+   customer's verified UIDs, or an outdated UID not verified for any *other*
+   customer.
+3. **No resolvable identity** (no customer record lists the UID): the strict
+   rule applies — the record's UID (`authUid` for session creation,
+   `paymentAuthUid` for verification) must equal the caller's UID and
+   `customerId` must match the submitted mobile.
+4. Outcomes are distinct and never reveal another customer's data:
+   - the caller is not a customer session (anonymous Firebase user, or no
+     customer record lists the UID and no strict match) → HTTP 401
+     `unauthenticated` — the customer is asked to sign in again;
+   - the caller is a different verified customer than the checkout's (e.g. the
+     browser's stored mobile belongs to another account) → HTTP 409
+     `session_mismatch` — refresh the page / sign in to the right account;
+   - an order or subscription belonging to another customer → HTTP 403
+     `not_owned` (*"This order is not available for your account."*).
+5. Anonymous Firebase sessions are guest-only (the Contact page). They are
+   created only when no customer session exists and no customer mobile is
+   stored, are refused by every checkout/payment endpoint, and a browser that
+   holds an anonymous session together with a stored customer mobile is signed
+   out on load so the customer can sign in again (cart kept).
+6. **One browser source of truth for "signed in"** (`lib/customerAuthState.ts`):
+   a customer is signed in only when Firebase Auth has finished restoring the
+   session (`authStateReady`) and the current user is a non-anonymous user with
+   a verified `customerId` token claim. If the cached token has no claim, the
+   SDK force-refreshes it once before sign-in is requested. The remembered
+   mobile is synchronized to that claim but is never a fallback for a missing
+   claim. A remembered
+   mobile or cached profile is never proof of sign-in. The header,
+   checkout, account sign-in panel and the checkout/payment API calls all use
+   this state; checkout replaces its content with a sign-in prompt when the
+   session is absent. Auth restoration and verified-claim lookup failures are
+   surfaced as retryable initialization errors, not reclassified as signed out.
+   API calls send the current user's ID token (the SDK
+   refreshes an expired token) and retry once with a forced refresh on HTTP
+   401 before asking the customer to sign in again.
+7. **When the site may ask for sign-in** (`lib/loginPrompt.ts`): only when the
+   resolved session is absent (signed out or guest), or an API answers
+   `unauthenticated` after the forced token refresh. It never asks because a
+   profile lookup failed, a payment record is stale, or the network is down —
+   those show a retry message and keep the session. The prompt opens at most
+   once per page for the same reason, and every prompt logs a sanitized
+   `[auth-prompt] component=… reason=…` line (no mobile, UID or token) so a
+   real-browser occurrence can be traced in the dev log. The Account sign-in
+   panel acts on what it shows: "Send OTP" never signs a customer out.
+8. A missing customer profile is not cached (only found profiles are, for
+   10 minutes), so a transient miss cannot keep prompting. A pending payment
+   record that the server reports `not_payable` (no attempt mapping, no orders)
+   is discarded instead of being re-verified on every page load.
+9. **Browser persistence.** The shared Web SDK Auth instance explicitly uses
+   `browserLocalPersistence` before OTP custom-token sign-in. Customer session
+   reads and customer API token requests wait for that persistence setup and
+   Firebase's initial restoration; customer pages use the resolved session
+   rather than treating a raw `currentUser` (which may be anonymous) as a
+   customer. If persistence setup itself fails, it is an auth initialization
+   failure and must be surfaced rather than treated as a valid customer login.
+
+10. **Account switching and browser-private state (security audit, 2026-10-14).**
+    Firebase Auth remains the sole session identity; its browser persistence is
+    managed by the Firebase SDK (IndexedDB/local browser persistence), not by
+    application-written token storage. App-owned browser state is separate:
+    `seedlings_customer_mobile` remembers the verified mobile for cart
+    partitioning only; `seedlings_cart:{mobile}` retains each customer's cart
+    and must not be cleared or shown under another customer's identity;
+    account/address caches, pending Cashfree recovery, checkout cart revisions,
+    `seedlings_checkout_details`, `seedlings_last_checkout`, and
+    `seedlings_last_order` are customer-private and must be invalidated on
+    sign-out or a verified UID/customer change. Public catalogue/CMS caches and
+    subscription product/plan selections are not customer identity.
+
+    Source audit found these confirmed gaps before the account-isolation fix:
+    `ProfileHydrator` read the remembered mobile and could render a cached
+    profile without resolving Firebase Auth; account/profile/address/order/
+    subscription UI requests did not all invalidate an in-flight response when
+    the authenticated UID changed; and the profile-photo deletion API verified
+    only that some Firebase user was signed in, not that the submitted Cloudinary
+    URL was the caller's saved profile photo. The implementation now resolves
+    private profile/contact/notification/delivery-calendar views against the
+    Firebase customer session; fences profile, address, account, order,
+    subscription, notification, and payment-recovery updates against the
+    originating UID/customer; clears only customer-private caches and checkout
+    state on logout/identity change; and notifies cart views to switch to the
+    active customer's retained cart. Contact-page prefill now uses a resolved
+    customer session, not the remembered mobile. The profile-photo delete API
+    resolves the caller through verified customer ownership and requires an
+    exact match with that customer's saved `profilePhotoUrl`. Subscription
+    delivery mutations now verify both the resolved customer and subscription
+    ownership on the server.
+
+    Automated coverage includes two distinct customer identities, private-state
+    cleanup while preserving per-customer carts/preferences, stale-session
+    result rejection (including an ID-token claim delayed across an A→B
+    account switch), and server ownership helpers for profile photos and
+    customer resources. Validation recorded for this implementation: all 294
+    unit tests pass, all 56 payment architecture checks pass, TypeScript
+    typecheck and production build pass, and `git diff --check` passes.
+
+    Browser evidence is narrower than a signed-in customer retest. The local
+    Website at `localhost:3000` rendered Checkout's sign-in dialog and logged
+    `auth-prompt component=checkout reason=session_absent`. Firebase browser
+    persistence contained a user marked anonymous (no UID or token was exposed);
+    the same anonymous identity fingerprint remained after refresh. Firestore
+    Listen requests returned HTTP 401. This confirms that this browser context
+    did not have an authenticated customer and that Checkout correctly asked
+    for sign-in; it does not reproduce or explain a separate customer's
+    reported loss of a valid OTP session. OTP sign-in, A→B→A switching with
+    real accounts, real multi-tab behavior, Firebase emulator ownership rules,
+    and payment were not tested. No storage was cleared, no live customer data
+    was changed, and no payment was initiated.
+
+    The `orders`, `subscriptions`, `customers`, `orderFeedback`, and
+    `notifications` Firestore rules already restrict reads/writes to the
+    authenticated owner (or authorized operations/admin role); payment
+    collections are server-only. Admin-SDK APIs must perform equivalent
+    ownership checks themselves because Firestore rules do not apply to them.
+    Account switching is synchronized through Firebase's shared persisted Auth
+    state across tabs; cleanup must target only Seedlings customer-private keys
+    and must preserve unrelated preferences and each customer's namespaced
+    cart. Automated multi-tab tests can validate the lifecycle logic but are
+    not a substitute for browser/emulator verification.
+
+### Checkout-scoped browser state
+
+- At payment start the browser records, per **order set** (sorted order IDs),
+  the cart revision (stable hash of the unified cart) of the checkout that
+  created those orders, and the pending attempt `{ cashfreeOrderId, orderIds,
+  cartRevision }`.
+- A server result is applied only to the state of **its** attempt: the pending
+  record is cleared only when its `cashfreeOrderId` is the resolved one (or, for
+  `paid`, when all its orders are among the paid orders); the cart is cleared
+  only for a server `paid` result whose order set has a recorded cart revision
+  equal to the current cart's. A newer or different cart is never cleared by an
+  older payment.
+- The return page resolves everything from the returned `order_id` and the
+  server's attempt mapping (`orderIds` in the verification result); Retry
+  Payment there retries exactly those orders, never "the latest checkout".
+- Order-detail Retry Payment includes every still-payable order of the same
+  Cashfree order; if those sibling orders cannot be loaded, the retry stops with
+  a message instead of paying one order alone.
+
+### API contract (Website and Mobile)
+
+`POST /api/cashfree/create-payment-session` `{ orderIds, customerMobile, freshAttempt? }`
+→ `{ cashfreeOrderId, paymentSessionId, amount }`; `POST /api/cashfree/verify-payment`
+`{ orderId: cashfreeOrderId }` → `{ status: paid|failed|pending, cashfreeOrderId,
+orderIds, orderNumber(s), paymentId?, message }`. `freshAttempt` stays optional
+(Mobile requests without it may reuse an unused session).
+
+Errors are `{ error, code }` (the `error` wording used by Mobile for 409s is
+unchanged):
+
+| Outcome | HTTP | `code` | Client action |
+|---|---|---|---|
+| Orders already paid (finalized now or earlier) | 409 | `already_paid` | Show completed order; never charge |
+| Earlier payment processing/unknown, or termination unconfirmed | 409 | `payment_processing` | Keep cart; reconcile (Check status) later |
+| Another request is creating the session | 409 | `setup_in_progress` | Wait and retry |
+| Not the caller's order | 403 | `not_owned` | Ask to sign in with the right account |
+| Signed in as a different customer than this checkout | 409 | `session_mismatch` | Refresh the page / sign in to the right account |
+| Total no longer verifiable | 409 | `total_not_verified` | Return to cart |
+| Order not payable / not found | 404/412 | `not_payable` | Return to orders |
+| Bad request / signed out or guest (anonymous) session | 400/401 | `invalid_request` / `unauthenticated` | Fix input / sign in again |
+| Unexpected server or Cashfree failure | 500 | `payment_unavailable` | Retry later; generic message, no internal detail |
+
+A failed payment is not an error response: `verify-payment` answers
+`status: failed` and the customer may retry.
+
+### Inventory
+
+Adding to the cart, creating pending orders/subscriptions and opening Cashfree
+never reduce inventory. A server-confirmed payment is the inventory commitment:
+availability counts an order/subscription as committed demand only once it is
+paid/confirmed/active (`lib/customerAvailabilityMath.ts`), and Admin packing
+deducts physical stock. Pending, failed and cancelled (replaced) records are
+never committed.
 
 ### Payment flow
 
@@ -404,6 +655,31 @@ Payment success is authoritative only after server-side verification/finalizatio
 → Admin sees the resulting order/subscription.
 
 Admin does not create the Cashfree payment session for the Website customer checkout.
+
+### Payment retry and record lifecycle
+
+Every Proceed to Pay / Continue / Retry Payment on the Website starts a **fresh
+Cashfree attempt** for the same internal orders, after the server has proved the
+previous attempt can no longer take money.
+
+- A same-fingerprint checkout retry keeps and reuses its existing pending business orders/subscriptions; retry must not duplicate business records. Order-detail Retry Payment pays every still-payable order that shared the failed/abandoned Cashfree order, so a mixed checkout is retried as one unit.
+- **Decision per earlier Cashfree order** linked to the orders (`lib/server/cashfreeCreateOrder.ts`, `preparePreviousGatewayOrders`), evaluated before anything is created:
+  - order `PAID` or any payment `SUCCESS` → finalize; refuse the new charge (*"already been received"*);
+  - any payment that is neither `NOT_ATTEMPTED` nor a confirmed failure (`FAILED`, `USER_DROPPED`, `VOID`, `CANCELLED`) — e.g. `PENDING` or an unrecognized value, wherever it appears in Cashfree's list → finalize (sync state) and refuse until reconciled;
+  - `TERMINATED` / `EXPIRED` → already unpayable; closed;
+  - `ACTIVE` with no payment attempted and `freshAttempt` absent (Mobile) → the same session may be reused;
+  - otherwise (failed payment, or Website `freshAttempt`) → terminate and confirm `TERMINATED`/`EXPIRED` (asynchronous, bounded poll); a payment that wins the race is finalized instead; anything unconfirmed refuses the new charge.
+- `freshAttempt: true` is an optional, additive field on `/api/cashfree/create-payment-session`. The Website sends it on every explicit pay action; Mobile requests without it keep the existing reuse behaviour. The flag never bypasses the status checks above.
+- **Double-click / concurrent requests:** a temporary lock lease on each existing `orders/{orderId}` document (all taken in one Firestore transaction, 2-minute lease) lets one request proceed, including when order sets overlap (mixed checkout and single-order retry); others get HTTP 409 *"Payment setup is already in progress…"* and create no attempt.
+- **Ambiguous provider creation:** the new Cashfree `order_id`, idempotency key, `creationLock`, and price-verification snapshot are persisted on `paymentAttempts/{id}` before `POST /pg/orders`. A network error, timeout or 5xx leaves the attempt intent `unknown`; after the temporary order lease expires, the next request recovers that exact provider order (GET; re-POST with the same ID and key only if Cashfree reports it does not exist) or fails closed. Because an unresolved intent's session was never handed to a client, an ACTIVE never-attempted intent order created for exactly the same orders is used directly instead of being terminated. A definitive Cashfree 4xx rejection (not 409/429) proves no order was created: the attempt is marked `creation_failed`, the temporary order lease is cleared, and the next request can start cleanly.
+- **Late results for superseded attempts:** a non-paid (pending/failed) verification of a Cashfree order that is no longer the order's current `cashfreeOrderId` never changes the order/subscription state or sends a failure notification; a real failed payment is still kept in transaction history. A late success is still applied (exactly once) or recorded as duplicate/superseded for refund.
+- **Records — retained vs. cleaned:**
+  - `paymentAttempts` (one record per gateway attempt, mapping, creation/finalization state, price verification), Cashfree order/session IDs: retained (reconciliation of delayed webhooks/returns). An attempt closed with no payment ever made is marked `status: abandoned`; a replaced attempt records `supersededBy`.
+  - `paymentTransactions` (customer transaction history): only terminal results are written — failed, successful, `duplicate_success`, `superseded_payment_received`. Pending/unknown polls write nothing, so retries can never accumulate pending history rows; there is nothing to clean up.
+  - Business `orders`/`subscriptions`: never deleted. Retry moves them to the new attempt (`pending_payment`); a cart change cancels them with `supersededAt`.
+  - Browser `localStorage` pending attempt: overwritten by the new attempt; cleared only by a server paid/failed result for that same attempt (see *Checkout-scoped browser state*).
+- Webhook signature verification, server verification, the finalization lock (exactly-once paid/failed finalization in one atomic batch), and duplicate-webhook caching are unchanged. A browser return or SDK callback is never proof of payment. Inventory commitment and subscription activation happen only in paid finalization.
+- **Closing attempts:** an earlier attempt is closed only after Cashfree confirms it `TERMINATED`/`EXPIRED` or a confirmed failure; a never-paid attempt is then marked `abandoned` (attempt mapping kept for late notifications). An attempt whose outcome is uncertain is never closed.
 
 ## 14. Delivery charges
 

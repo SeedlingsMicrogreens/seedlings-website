@@ -1,8 +1,11 @@
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { signInWithCustomToken } from 'firebase/auth';
-import { auth, db } from './firebase';
+import { auth, authPersistenceReady, db } from './firebase';
 import { mergeGuestCartIntoCustomer } from './cart';
 import { normalizeCustomerMobile } from './customerIdentity';
+import { resolveCustomerSession } from './customerAuthState';
+import { clearCustomerAccountCache } from './customerAccount';
+import { clearCustomerPrivateState } from './customerPrivateState';
 
 const CUSTOMERS_COLLECTION = 'customers';
 const CUSTOMER_MOBILE_KEY = 'seedlings_customer_mobile';
@@ -41,6 +44,7 @@ export async function ensureClientOnboarding(mobile: string, otp: string): Promi
 
   // Authenticate before accessing the customer document. Firestore rules require
   // the customer to have a verified Firebase Auth identity for customer data.
+  await authPersistenceReady;
   await signInWithCustomToken(auth, payload.customToken);
   const before = await getDoc(doc(db, CUSTOMERS_COLLECTION, normalizedMobile));
   const customerRef = doc(db, CUSTOMERS_COLLECTION, normalizedMobile);
@@ -51,6 +55,7 @@ export async function ensureClientOnboarding(mobile: string, otp: string): Promi
     authUid: auth.currentUser?.uid || payload.authUid,
     updatedAt: serverTimestamp(),
   }, { merge: true });
+  clearCustomerAccountCache(normalizedMobile);
   mergeGuestCartIntoCustomer(normalizedMobile);
   localStorage.setItem(CUSTOMER_MOBILE_KEY, normalizedMobile);
   return { customerId: normalizedMobile, isNew: !before.exists() };
@@ -61,6 +66,23 @@ export function getStoredCustomerMobile(): string {
   return localStorage.getItem(CUSTOMER_MOBILE_KEY) || '';
 }
 
+/**
+ * The browser's customer session (lib/customerAuthState.ts): signed in only when
+ * Firebase has restored a non-anonymous user; mobile from the verified token claim.
+ */
+export function getCustomerSession() {
+  return authPersistenceReady.then(() => resolveCustomerSession(auth, {
+    get: getStoredCustomerMobile,
+    set: (mobile) => { if (typeof window !== 'undefined') localStorage.setItem(CUSTOMER_MOBILE_KEY, mobile); },
+  }));
+}
+
 export function clearStoredCustomerMobile() {
   if (typeof window !== 'undefined') localStorage.removeItem(CUSTOMER_MOBILE_KEY);
+}
+
+export function clearCustomerBrowserSessionState() {
+  if (typeof window === 'undefined') return;
+  clearCustomerPrivateState(window.localStorage, window.sessionStorage);
+  clearStoredCustomerMobile();
 }

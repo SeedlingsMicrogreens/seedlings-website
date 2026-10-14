@@ -1,11 +1,11 @@
-import { auth } from '@/lib/firebase';
+import { auth, authPersistenceReady } from '@/lib/firebase';
+import { customerIdToken } from '@/lib/customerAuthState';
 
 export type SubscriptionDeliveryAction = 'skip' | 'reschedule';
 
 async function getToken() {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Your login session expired. Please sign in again.');
-  return user.getIdToken();
+  await authPersistenceReady;
+  return customerIdToken(auth);
 }
 
 export async function updateSubscriptionDelivery(input: { subscriptionId: string; action: SubscriptionDeliveryAction; deliveryDate?: string; newDate?: string }) {

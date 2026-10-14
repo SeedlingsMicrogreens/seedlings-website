@@ -3,8 +3,8 @@
 import { deleteDoc, doc, getDocs, query, collection, setDoc, serverTimestamp, where } from 'firebase/firestore';
 import { getToken, isSupported, deleteToken } from 'firebase/messaging';
 import { db } from './firebase';
-import { auth } from './firebase';
 import { getMessagingClient } from './firebaseMessaging';
+import { getCustomerSession } from './clientOnboarding';
 
 let registrationPromise: Promise<string | null> | null = null;
 
@@ -26,7 +26,8 @@ export async function enableCustomerWebPush(customerId: string) {
 }
 
 async function registerCustomerWebPush(customerId: string) {
-  if (!auth.currentUser?.uid) throw new Error('Please sign in before enabling notifications.');
+  const session = await getCustomerSession();
+  if (!session.signedIn || session.mobile !== customerId) throw new Error('Please sign in before enabling notifications.');
   if (!('Notification' in window)) throw new Error('Browser notifications are not supported in this browser.');
   if (!('serviceWorker' in navigator)) throw new Error('Browser push notifications are not supported in this browser.');
 
@@ -49,7 +50,11 @@ async function registerCustomerWebPush(customerId: string) {
   const token = await getToken(messaging, { vapidKey, serviceWorkerRegistration: registration });
   if (!token) throw new Error('Unable to register this browser for notifications.');
 
-  const uid = auth.currentUser.uid;
+  const currentSession = await getCustomerSession();
+  if (!currentSession.signedIn || currentSession.uid !== session.uid || currentSession.mobile !== customerId) {
+    throw new Error('Your login session changed. Please sign in again.');
+  }
+  const uid = currentSession.uid;
   const ref = doc(db, 'customerPushSubscriptions', tokenHashId(token));
   await setDoc(ref, {
     token,
@@ -70,8 +75,9 @@ export async function disableCustomerWebPush() {
   if (messaging) {
     try { await deleteToken(messaging); } catch {}
   }
-  const uid = auth.currentUser?.uid;
-  if (!uid) return;
+  const session = await getCustomerSession();
+  if (!session.signedIn) return;
+  const uid = session.uid;
   const snapshot = await getDocs(query(collection(db, 'customerPushSubscriptions'), where('authUid', '==', uid)));
   await Promise.all(snapshot.docs.map((item) => deleteDoc(item.ref)));
 }

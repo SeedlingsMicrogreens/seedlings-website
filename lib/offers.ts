@@ -17,8 +17,8 @@ export async function calculateCustomerOffers(input: {
   pincode: string;
   geoId: string;
   locationName?: string;
-  oneTimeSubtotal: number;
-  subscriptionSubtotal?: number;
+  oneTimeItems: Array<{ price: number; quantity: number }>;
+  subscriptionItems: Array<{ price: number; quantity: number }>;
   deliveryChargeAmounts: number[];
 }): Promise<CheckoutOfferResult> {
   const snap = await getDocs(collection(db, 'offers'));

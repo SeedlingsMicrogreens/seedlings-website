@@ -5,8 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Header from "@/components/layout/Header";
 import ProductCard from "@/components/business/ProductCard";
 import Footer from "@/components/layout/Footer";
-import { auth } from "@/lib/firebase";
-import { waitForCustomerAuthReady } from "@/lib/authFlow";
+import { getCustomerSession } from "@/lib/clientOnboarding";
 import {
   getUnifiedCart,
   applyCartDeliveryDates,
@@ -417,7 +416,7 @@ function EmptyCart() {
         <div className="mx-auto max-w-5xl px-4 !py-2 text-center sm:!py-4">
           <div className="mx-auto mb-2 flex h-14 w-14 items-center justify-center rounded-full bg-lime-50 text-3xl shadow-sm ring-1 ring-lime-100" aria-hidden="true">🛒</div>
           <h1 className="m-0 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Your cart is empty</h1>
-          <p className="mx-auto mt-1 max-w-2xl text-sm leading-6 text-slate-500 sm:text-base">Looks like you haven&apos;t added any fresh microgreens yet.<br className="hidden sm:block" />Explore our fresh, nutritious microgreens and add your favorites to get started.</p>
+          <p className="mx-auto mt-1 max-w-2xl text-sm leading-6 text-slate-500 sm:text-base">Looks like you haven&apos;t added any fresh microgreens yet.{' '}<br className="hidden sm:block" />Explore our fresh, nutritious microgreens and add your favorites to get started.</p>
           <a className="mt-3 inline-flex items-center justify-center gap-2 rounded-full bg-lime-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-lime-700 focus:outline-none focus:ring-2 focus:ring-lime-500 focus:ring-offset-2" href="/microgreens"><span aria-hidden="true">↗</span>Continue Shopping</a>
         </div>
         {recommendations.length > 0 ? (
@@ -489,8 +488,8 @@ export default function CartPage() {
     checkoutRequestRef.current = true;
 
     try {
-      const authenticated = await waitForCustomerAuthReady(auth);
-      if (!authenticated) {
+      const session = await getCustomerSession();
+      if (!session.signedIn) {
         window.dispatchEvent(new CustomEvent("seedlings-open-login", { detail: { redirectTo: null } }));
         return;
       }

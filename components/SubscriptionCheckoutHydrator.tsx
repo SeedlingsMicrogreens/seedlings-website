@@ -3,15 +3,18 @@
 import { useEffect } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
-import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { getCustomerSession } from '@/lib/clientOnboarding';
 import { getCustomerAccount, type CustomerAccount, type CustomerAddress } from '@/lib/customerAccount';
 import { getActiveSalesProducts, type SalesProduct } from '@/lib/salesProducts';
 import { createCustomerSubscription, loadActiveCustomerSubscriptionPlans, type CustomerSubscriptionPlan } from '@/lib/customerSubscriptions';
 import { confirmHarvestShortage, confirmHighDemandEnquiry, showCustomerSuccess } from '@/lib/customerAlerts';
 import { removeSubscriptionFromCart } from '@/lib/cart';
 import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate } from '@/lib/customerOrderAvailability';
-import { createCashfreeOrder } from '@/lib/cashfreeFunctions';
+import { createCashfreeOrder, customerPaymentMessage, promptSignInIfNeeded } from '@/lib/cashfreeFunctions';
 import { openCashfreeCheckout } from '@/lib/cashfreeClient';
+import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from '@/lib/deliveryCharges';
+import { calculateCustomerOffers } from '@/lib/offers';
+import { checkoutDeliveryChargeAmounts, subscriptionDeliveriesPerTerm } from '@/lib/checkoutPricing';
 
 const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]!));
 const money = (v: number, currency='INR') => { try { return new Intl.NumberFormat('en-IN', { style:'currency', currency, minimumFractionDigits:2, maximumFractionDigits:2 }).format(v); } catch { return `₹${v}`; } };
@@ -61,11 +64,65 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
           <p data-subscription-checkout-message style="font-size:13px;min-height:20px;margin-top:14px"></p>
           <button class="btn primary subscription-checkout-submit" type="button" data-subscription-submit ${addresses.length ? '' : 'disabled'}>Subscribe</button>
         </div>
-        <aside class="summary"><h3>Subscription summary</h3><div class="summary-row"><span>Product</span><span>${esc(product.name)}</span></div><div class="summary-row"><span>Plan</span><span>${esc(plan.name || plan.frequency || 'Subscription')}</span></div><div class="summary-row"><span>Quantity</span><span>${quantity}</span></div><div class="summary-row"><span>Price / term</span><strong>${esc(money(effectivePrice * quantity, product.currency || 'INR'))}</strong></div><div class="summary-row"><span>Delivery</span><span>Calculated from delivery address</span></div><div class="summary-row summary-total"><span>Product total</span><strong>${esc(money(effectivePrice * quantity, product.currency || 'INR'))}</strong></div><p class="muted" style="font-size:11px">The subscription and its first order are created after you confirm the address.</p></aside>
+        <aside class="summary"><h3>Subscription summary</h3><div class="summary-row"><span>Product</span><span>${esc(product.name)}</span></div><div class="summary-row"><span>Plan</span><span>${esc(plan.name || plan.frequency || 'Subscription')}</span></div><div class="summary-row"><span>Quantity</span><span>${quantity}</span></div><div class="summary-row"><span>Price / term</span><strong>${esc(money(effectivePrice * quantity, product.currency || 'INR'))}</strong></div><div class="summary-row" data-subscription-price-offer style="display:none"></div><div class="summary-row"><span>Delivery</span><span>Calculated from delivery address</span></div><div class="summary-row"><span>Product total</span><strong data-subscription-product-total>${esc(money(effectivePrice * quantity, product.currency || 'INR'))}</strong></div><div class="summary-row summary-total"><span>Amount payable</span><strong data-subscription-payable-total>Verified before payment</strong></div><p class="muted" style="font-size:11px">The subscription and its first order are created after you confirm the address.</p></aside>
       </div></section>`;
       const addressSelect = root.querySelector('[data-subscription-address]') as HTMLSelectElement | null;
       const preview = root.querySelector('[data-selected-address]') as HTMLElement | null;
-      addressSelect?.addEventListener('change', () => { const selected = addresses.find((a) => a.id === addressSelect.value); if (preview) preview.textContent = selected ? addressText(selected) : ''; });
+      const offerRow = root.querySelector('[data-subscription-price-offer]') as HTMLElement | null;
+      const productTotal = root.querySelector('[data-subscription-product-total]') as HTMLElement | null;
+      const payableTotal = root.querySelector('[data-subscription-payable-total]') as HTMLElement | null;
+      let priceOfferRequest = 0;
+      const refreshPriceOffer = async () => {
+        const request = ++priceOfferRequest;
+        const subtotal = effectivePrice * quantity;
+        if (productTotal) productTotal.textContent = money(subtotal, product.currency || 'INR');
+        if (offerRow) {
+          offerRow.style.display = 'none';
+          offerRow.textContent = '';
+        }
+        const address = addresses.find((item) => item.id === addressSelect?.value);
+        const pincode = String(address?.pincode || '');
+        if (!/^\d{6}$/.test(pincode)) return;
+        try {
+          const deliveries = subscriptionDeliveriesPerTerm(plan);
+          const deliveryCharges = await calculateCheckoutDeliveryCharges({
+            pincode,
+            oneTime: false,
+            subscriptions: [{
+              planId: plan.id,
+              planName: plan.name || plan.frequency || 'Subscription',
+              deliveryDates: getWeeklyDeliveryDates(startDate || nextWeekSaturday(), deliveries),
+            }],
+          });
+          const geo = deliveryCharges.subscriptions[0];
+          const offer = geo?.sourceId
+            ? await calculateCustomerOffers({
+              pincode,
+              geoId: geo.sourceId,
+              locationName: geo.sourceName || '',
+              oneTimeItems: [],
+              subscriptionItems: [{ price: effectivePrice, quantity }],
+              deliveryChargeAmounts: checkoutDeliveryChargeAmounts(deliveryCharges),
+            })
+            : null;
+          if (disposed || request !== priceOfferRequest) return;
+          const savings = Math.min(subtotal, Number(offer?.subscriptionItemSavings[0] || 0));
+          if (savings > 0 && offerRow) {
+            offerRow.style.display = '';
+            offerRow.innerHTML = `<span>${esc(offer?.priceOffer?.name || 'Price Offer')}</span><strong>−${esc(money(savings, product.currency || 'INR'))}</strong>`;
+          }
+          if (productTotal) productTotal.textContent = money(Math.max(0, subtotal - savings), product.currency || 'INR');
+        } catch (error) {
+          if (disposed || request !== priceOfferRequest) return;
+          renderMessage(error instanceof Error ? error.message : 'Unable to calculate the subscription offer.', true);
+        }
+      };
+      addressSelect?.addEventListener('change', () => {
+        const selected = addresses.find((a) => a.id === addressSelect.value);
+        if (preview) preview.textContent = selected ? addressText(selected) : '';
+        void refreshPriceOffer();
+      });
+      void refreshPriceOffer();
       root.querySelector('[data-subscription-submit]')?.addEventListener('click', async () => {
         const button = root.querySelector('[data-subscription-submit]') as HTMLButtonElement | null;
         const addressId = addressSelect?.value || '';
@@ -108,6 +165,7 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
           if (!result.paymentOrderIds?.length) throw new Error('Unable to prepare the subscription payment.');
           if (button) button.textContent = 'Preparing Payment…';
           const payment = await createCashfreeOrder(result.paymentOrderIds, mobile);
+          if (payableTotal) payableTotal.textContent = money(Number(payment.amount), product.currency || 'INR');
           sessionStorage.setItem('seedlings_last_order', JSON.stringify({
             orderId: result.orderId,
             orderNumber: result.orderNumber,
@@ -120,20 +178,22 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
           if (button) button.textContent = 'Opening Payment…';
           await openCashfreeCheckout(payment.paymentSessionId);
         } catch (error) {
-          renderMessage(error instanceof Error ? error.message : 'Unable to create subscription.', true);
+          renderMessage(customerPaymentMessage(error), true);
+          promptSignInIfNeeded(error);
           if (button) { button.disabled = false; button.textContent = 'Subscribe'; }
         }
       });
     };
-    const start = async (signedIn: boolean) => {
-      if (!signedIn) { renderSignedOut(); return; }
+    const start = async () => {
+      const session = await getCustomerSession();
+      if (!session.signedIn) { renderSignedOut(); return; }
       const params = new URLSearchParams(window.location.search);
       const productId = params.get('product') || '';
       const planId = params.get('plan') || '';
       const quantity = Math.max(1, Math.floor(Number(params.get('quantity') || '1')) || 1);
       const packaging = Math.max(100, Math.floor(Number(params.get('packaging') || '100')) || 100);
       const startDate = params.get('startDate') || nextWeekSaturday();
-      const mobile = getStoredCustomerMobile();
+      const mobile = session.mobile;
       if (!productId || !planId || !mobile) { renderMissing('The subscription selection is incomplete. Please return to the product and choose Subscribe again.'); return; }
       try {
         const [products, plans, account] = await Promise.all([getActiveSalesProducts(), loadActiveCustomerSubscriptionPlans(productId), getCustomerAccount(mobile)]);
@@ -146,7 +206,7 @@ export default function SubscriptionCheckoutHydrator({ children }: { children: R
       } catch (error) { if (!disposed) renderMissing(error instanceof Error ? error.message : 'Unable to load subscription checkout.'); }
     };
     renderLoading();
-    const unsubscribe = onAuthStateChanged(auth, (user) => { void start(Boolean(user)); });
+    const unsubscribe = onAuthStateChanged(auth, () => { void start(); });
     return () => { disposed = true; unsubscribe(); };
   }, []);
   return <>{children}</>;

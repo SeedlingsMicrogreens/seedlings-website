@@ -1,8 +1,7 @@
 "use client";
 import type React from 'react';
 import { useEffect } from 'react';
-import { auth } from '@/lib/firebase';
-import { waitForCustomerAuthReady } from '@/lib/authFlow';
+import { getCustomerSession } from '@/lib/clientOnboarding';
 import { getActiveSalesProducts, type SalesProduct } from '@/lib/salesProducts';
 import { loadActiveCustomerSubscriptionPlans } from '@/lib/customerSubscriptions';
 import { getUnifiedCart, removeFromCart, removeSubscriptionFromCart, setCartQuantity, setSubscriptionCartQuantity, type SubscriptionCartItem } from '@/lib/cart';
@@ -31,8 +30,8 @@ export default function CartHydrator({children}:{children:React.ReactNode}){
    const currency=one[0]?.currency||subs[0]?.currency||'INR';
    const navigateToCheckout = async (event?: MouseEvent) => {
     if (event) event.preventDefault();
-    const authenticated = await waitForCustomerAuthReady(auth);
-    if (!authenticated) {
+    const session = await getCustomerSession();
+    if (!session.signedIn) {
       window.dispatchEvent(new CustomEvent('seedlings-open-login', { detail: { redirectTo: null } }));
       return;
     }

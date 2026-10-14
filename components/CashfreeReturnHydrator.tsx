@@ -1,12 +1,9 @@
 'use client';
 
 import React, { useEffect } from 'react';
-import { onAuthStateChanged, type User } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
-import { clearCart } from '@/lib/cart';
-import { clearPendingCashfreePayment, completeCashfreePayment, createCashfreeOrder } from '@/lib/cashfreeFunctions';
+import { completeCashfreePayment, createCashfreeOrder, customerPaymentMessage, settleCashfreeOutcome } from '@/lib/cashfreeFunctions';
 import { openCashfreeCheckout } from '@/lib/cashfreeClient';
-import { getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { getCustomerSession, getStoredCustomerMobile } from '@/lib/clientOnboarding';
 
 type ReturnResult = {
   status: 'paid' | 'failed' | 'pending';
@@ -22,20 +19,6 @@ type ReturnResult = {
 // in one verification flow and one customer-facing result.
 const verificationPromises = new Map<string, Promise<ReturnResult>>();
 
-async function waitForFirebaseUser(): Promise<User | null> {
-  if (auth.currentUser) return auth.currentUser;
-
-  return new Promise<User | null>((resolve) => {
-    let settled = false;
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (settled) return;
-      settled = true;
-      unsubscribe();
-      resolve(user);
-    });
-  });
-}
-
 function updateResult(root: HTMLElement | null, result: ReturnResult) {
   if (!root) return;
   const title = root.querySelector('[data-payment-title]') as HTMLElement | null;
@@ -48,8 +31,6 @@ function updateResult(root: HTMLElement | null, result: ReturnResult) {
   const combinedOrdersText = orderNumbers.length > 1 ? `Orders: ${orderNumbers.join(', ')}` : '';
 
   if (result.status === 'paid') {
-    clearCart();
-    clearPendingCashfreePayment();
     if (title) title.textContent = 'Payment successful';
     if (copy) copy.textContent = 'Your payment was confirmed and your order has been confirmed.';
     if (number) number.textContent = result.orderNumber ? `Order: ${result.orderNumber}` : '';
@@ -77,12 +58,14 @@ function updateResult(root: HTMLElement | null, result: ReturnResult) {
   if (secondary) { secondary.textContent = 'Return to checkout'; secondary.href = '/checkout'; }
 }
 
-async function retryPaymentFromSession(): Promise<void> {
-  const saved = JSON.parse(sessionStorage.getItem('seedlings_last_checkout') || sessionStorage.getItem('seedlings_last_order') || '{}');
-  const orderIds = Array.isArray(saved.paymentOrderIds) ? saved.paymentOrderIds.map(String).filter(Boolean) : (saved.orderId ? [String(saved.orderId)] : []);
-  if (!orderIds.length) throw new Error('The previous payment order could not be recovered. Please return to Checkout.');
-  const mobile = String(saved.mobile || getStoredCustomerMobile() || '');
-  const payment = await createCashfreeOrder(orderIds, mobile);
+/**
+ * Retries exactly the orders of the returned Cashfree attempt (from the
+ * server's attempt mapping), never whichever checkout was saved last.
+ */
+async function retryReturnedAttempt(result: ReturnResult): Promise<void> {
+  const orderIds = Array.isArray(result.orderIds) ? result.orderIds.map(String).filter(Boolean) : [];
+  if (!orderIds.length) throw new Error('The previous payment could not be matched to its orders. Please retry from My Orders.');
+  const payment = await createCashfreeOrder(orderIds, getStoredCustomerMobile() || '');
   await openCashfreeCheckout(payment.paymentSessionId);
 }
 
@@ -127,8 +110,8 @@ export default function CashfreeReturnHydrator({ children }: { children: React.R
         return;
       }
 
-      const user = await waitForFirebaseUser();
-      if (!user) {
+      const session = await getCustomerSession();
+      if (!session.signedIn) {
         if (!cancelled) updateResult(root, { status: 'failed', message: 'Your login session could not be restored. Please sign in again.' });
         return;
       }
@@ -136,9 +119,10 @@ export default function CashfreeReturnHydrator({ children }: { children: React.R
       const result = await verifyOnce(orderId);
       if (cancelled) return;
 
+      // The returned attempt's own state only: its pending record, and the cart
+      // only if it is still the cart of the checkout that was paid.
+      settleCashfreeOutcome({ status: result.status, cashfreeOrderId: orderId, orderIds: result.orderIds });
       if (result.status === 'paid') {
-        clearCart();
-        clearPendingCashfreePayment();
         sessionStorage.setItem('seedlings_last_order', JSON.stringify({
           orderId: result.orderNumber || '',
           orderNumber: result.orderNumber || '',
@@ -155,8 +139,8 @@ export default function CashfreeReturnHydrator({ children }: { children: React.R
           event.preventDefault();
           retry.textContent = 'Preparing Payment…';
           retry.style.pointerEvents = 'none';
-          try { await retryPaymentFromSession(); }
-          catch (error) { retry.textContent = 'Retry Payment'; retry.style.pointerEvents = ''; updateResult(root, { ...result, message: error instanceof Error ? error.message : 'Unable to retry payment.' }); }
+          try { await retryReturnedAttempt(result); }
+          catch (error) { retry.textContent = 'Retry Payment'; retry.style.pointerEvents = ''; updateResult(root, { ...result, message: customerPaymentMessage(error) }); }
         }, { once: true });
       }
     };

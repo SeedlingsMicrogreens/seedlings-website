@@ -1,16 +1,15 @@
 import { NextResponse } from 'next/server';
-import { requireFirebaseUser } from '@/lib/server/auth';
+import { requireCustomerCaller } from '@/lib/server/auth';
 import { createCashfreePaymentSession } from '@/lib/server/cashfreeCreateOrder';
-import { HttpError } from '@/lib/server/httpError';
+import { paymentErrorResponse } from '@/lib/server/paymentErrors';
 export const runtime = 'nodejs';
 export async function POST(request: Request) {
   try {
-    const user = await requireFirebaseUser(request);
-    const body = await request.json() as { orderIds?: unknown[]; customerMobile?: unknown };
-    return NextResponse.json(await createCashfreePaymentSession(body, user.uid));
+    const user = await requireCustomerCaller(request);
+    const body = await request.json() as { orderIds?: unknown[]; customerMobile?: unknown; freshAttempt?: unknown };
+    // The decoded token carries the server-issued `customerId` claim used for ownership.
+    return NextResponse.json(await createCashfreePaymentSession(body, user));
   } catch (error) {
-    if (error instanceof HttpError) return NextResponse.json({ error: error.message }, { status: error.status });
-    console.error('Cashfree payment session creation failed', error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Unable to create Cashfree payment session.' }, { status: 500 });
+    return paymentErrorResponse(error, { log: 'Cashfree payment session creation failed' });
   }
 }

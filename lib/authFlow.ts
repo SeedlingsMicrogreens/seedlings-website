@@ -1,13 +1,15 @@
 type AuthLike = {
-  currentUser?: unknown | null;
+  currentUser?: { isAnonymous?: boolean } | null;
   authStateReady?: () => Promise<void>;
 };
 
+/** A customer session is a non-anonymous Firebase user (anonymous sessions are guest-only). */
+const isCustomer = (user: AuthLike['currentUser']) => Boolean(user && !user.isAnonymous);
+
 export async function waitForCustomerAuthReady(
   authInstance: AuthLike | null | undefined,
-  timeoutMs = 5000,
 ): Promise<boolean> {
-  if (!authInstance || authInstance.currentUser) return Boolean(authInstance?.currentUser);
+  if (!authInstance || authInstance.currentUser) return isCustomer(authInstance?.currentUser);
 
   const authReady = typeof authInstance.authStateReady === 'function'
     ? authInstance.authStateReady.bind(authInstance)
@@ -15,19 +17,10 @@ export async function waitForCustomerAuthReady(
 
   if (!authReady) return false;
 
-  let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
-
   try {
-    await Promise.race([
-      authReady(),
-      new Promise<void>((_, reject) => {
-        timeoutId = globalThis.setTimeout(() => reject(new Error('Auth initialization timed out.')), timeoutMs);
-      }),
-    ]);
-    return Boolean(authInstance.currentUser);
+    await authReady();
   } catch {
-    return Boolean(authInstance.currentUser);
-  } finally {
-    if (timeoutId) globalThis.clearTimeout(timeoutId);
+    return isCustomer(authInstance.currentUser);
   }
+  return isCustomer(authInstance.currentUser);
 }

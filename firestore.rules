@@ -101,7 +101,8 @@ service cloud.firestore {
         && pendingOrder(request.resource.data)
         && request.resource.data.paymentStatus != 'paid'
         && request.resource.data.status != 'confirmed'
-        && request.resource.data.status != 'active';
+        && request.resource.data.status != 'active'
+        && !request.resource.data.keys().hasAny(['paymentCreationLock']);
       allow update: if signedIn()
         && ownAuthUid(resource.data)
         && ownAuthUid(request.resource.data)
@@ -111,7 +112,8 @@ service cloud.firestore {
         && request.resource.data.authUid == resource.data.authUid
         && request.resource.data.customerId == resource.data.customerId
         && request.resource.data.total == resource.data.total
-        && request.resource.data.items == resource.data.items;
+        && request.resource.data.items == resource.data.items
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['paymentCreationLock']);
       allow delete: if false;
     }
 
@@ -188,12 +190,6 @@ service cloud.firestore {
       allow read, write: if false;
     }
     match /paymentTransactions/{id} {
-      allow read, write: if false;
-    }
-    match /paymentFinalizationLocks/{id} {
-      allow read, write: if false;
-    }
-    match /paymentCreationLocks/{id} {
       allow read, write: if false;
     }
 

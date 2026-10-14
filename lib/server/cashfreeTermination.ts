@@ -13,6 +13,15 @@ export const PREVIOUS_PAYMENT_OPEN = 'Your previous payment is still open. Pleas
 // Neither can be paid any more.
 const UNPAYABLE = new Set(['TERMINATED', 'EXPIRED']);
 
+/** Cashfree payment statuses that prove a payment attempt did not take money. */
+export const FAILED_PAYMENT_STATUSES = new Set(['FAILED', 'USER_DROPPED', 'VOID', 'CANCELLED']);
+
+/** True when a payment is neither a confirmed failure nor NOT_ATTEMPTED (PENDING, SUCCESS, unrecognized). */
+export function isUnresolvedPaymentStatus(status: string) {
+  const value = String(status || '').toUpperCase();
+  return value !== 'NOT_ATTEMPTED' && !FAILED_PAYMENT_STATUSES.has(value);
+}
+
 /** True only for statuses that can never be paid (not TERMINATION_REQUESTED, which is unconfirmed). */
 export function isUnpayableCashfreeStatus(status: string) {
   return UNPAYABLE.has(String(status || '').toUpperCase());

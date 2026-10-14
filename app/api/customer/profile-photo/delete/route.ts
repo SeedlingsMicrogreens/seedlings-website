@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireFirebaseUser } from "@/lib/server/auth";
+import { adminDb } from "@/lib/server/firebaseAdmin";
 import { HttpError } from "@/lib/server/httpError";
+import { assertCallerOwnsProfilePhoto, firestoreOwnershipStore } from "@/lib/server/customerOwnership";
 import { createHash } from "node:crypto";
 
 const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || "df1j4s8cu";
@@ -44,8 +46,9 @@ function sign(publicId: string, timestamp: number): string {
 }
 
 export async function POST(request: Request) {
+  let caller: Awaited<ReturnType<typeof requireFirebaseUser>>;
   try {
-    await requireFirebaseUser(request);
+    caller = await requireFirebaseUser(request);
   } catch (error) {
     if (error instanceof HttpError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
@@ -72,6 +75,18 @@ export async function POST(request: Request) {
 
   const publicId = getPublicIdFromUrl(url);
   if (!publicId) return NextResponse.json({ error: "Invalid Cloudinary photo URL." }, { status: 400 });
+
+  const db = adminDb();
+  try {
+    await assertCallerOwnsProfilePhoto(
+      firestoreOwnershipStore(db),
+      { uid: caller.uid, customerId: caller.customerId },
+      url,
+    );
+  } catch (error) {
+    if (error instanceof HttpError) return NextResponse.json({ error: error.message }, { status: error.status });
+    throw error;
+  }
 
   const timestamp = Math.floor(Date.now() / 1000);
   const formData = new URLSearchParams();

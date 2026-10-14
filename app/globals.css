@@ -1047,6 +1047,26 @@ button {
   box-shadow: var(--shadow)
 }
 
+.contact-grid .form label {
+  font-size: 14px;
+}
+
+@media (max-width: 700px) {
+  .contact-grid .form input,
+  .contact-grid .form select,
+  .contact-grid .form textarea {
+    min-height: 48px;
+    font-size: 16px;
+  }
+
+  .contact-grid .form input:focus-visible,
+  .contact-grid .form select:focus-visible,
+  .contact-grid .form textarea:focus-visible {
+    outline: 2px solid var(--green-dark);
+    outline-offset: 2px;
+  }
+}
+
 label {
   font-size: 12px;
   font-weight: 700;
@@ -3311,6 +3331,23 @@ body:has(.floating-cart) .footer {
   gap: 28px;
 }
 
+@media(max-width:430px) {
+  .account-title {
+    flex-wrap: wrap;
+  }
+
+  .account-title > :first-child {
+    min-width: 0;
+    flex: 1 1 180px;
+  }
+
+  .account-title > .status {
+    max-width: 100%;
+    margin-left: auto;
+    overflow-wrap: anywhere;
+  }
+}
+
 .cart-page-quantity-control {
   display: inline-flex;
   align-items: center;
@@ -3318,8 +3355,8 @@ body:has(.floating-cart) .footer {
 }
 
 .cart-page-quantity-control button {
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -3336,6 +3373,11 @@ body:has(.floating-cart) .footer {
 .cart-page-quantity-control button:hover {
   border-color: var(--green);
   background: var(--green-tint);
+}
+
+.cart-page-quantity-control button:focus-visible {
+  outline: 3px solid var(--green-dark);
+  outline-offset: 2px;
 }
 
 .cart-page-quantity-control button:active {

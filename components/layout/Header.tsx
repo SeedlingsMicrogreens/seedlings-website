@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { getUnifiedCart } from '@/lib/cart';
 import { getCustomerAccount, type CustomerAccount } from '@/lib/customerAccount';
-import { clearStoredCustomerMobile, getStoredCustomerMobile } from '@/lib/clientOnboarding';
+import { clearCustomerBrowserSessionState, getCustomerSession } from '@/lib/clientOnboarding';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
+import { isCurrentCustomerSession } from '@/lib/customerAuthState';
 import NotificationBell from '@/components/NotificationBell';
 
 export type HeaderNavItem = { navKey?: unknown; label?: unknown };
@@ -24,18 +25,31 @@ export default function Header({ navItems = [] }: { navItems?: HeaderNavItem[] }
   const close = () => { setOpen(false); setProfileOpen(false); };
 
   useEffect(() => {
+    let requestId = 0;
+    // Signed in only per the resolved Firebase session (lib/customerAuthState.ts),
+    // never from the remembered mobile or cached profile alone.
     const hydrateCustomer = async () => {
-      const mobile = getStoredCustomerMobile();
-      setCustomerMobile(mobile);
-      if (!mobile) { setCustomer(null); return; }
-      try { setCustomer(await getCustomerAccount(mobile)); }
-      catch { setCustomer(null); }
+      const currentRequest = ++requestId;
+      setCustomer(null);
+      setCustomerMobile('');
+      const session = await getCustomerSession();
+      if (currentRequest !== requestId || !session.signedIn) return;
+      setCustomerMobile(session.mobile);
+      try {
+        const account = await getCustomerAccount(session.mobile);
+        if (currentRequest === requestId && await isCurrentCustomerSession(auth, { uid: session.uid, mobile: session.mobile })) setCustomer(account);
+      } catch (error) {
+        if (currentRequest === requestId) {
+          console.error('Customer header profile could not be loaded.', error);
+          setCustomer(null);
+        }
+      }
     };
     const unsubscribe = onAuthStateChanged(auth, () => {
       void hydrateCustomer();
     });
     window.addEventListener('seedlings-customer-authenticated', hydrateCustomer);
-    return () => { unsubscribe(); window.removeEventListener('seedlings-customer-authenticated', hydrateCustomer); };
+    return () => { requestId += 1; unsubscribe(); window.removeEventListener('seedlings-customer-authenticated', hydrateCustomer); };
   }, []);
 
   useEffect(() => {
@@ -83,10 +97,12 @@ export default function Header({ navItems = [] }: { navItems?: HeaderNavItem[] }
 
   const logout = async () => {
     close();
-    clearStoredCustomerMobile();
     setCustomer(null);
     setCustomerMobile('');
-    try { await Promise.race([signOut(auth), new Promise<void>((resolve) => window.setTimeout(resolve, 800))]); }
+    try {
+      clearCustomerBrowserSessionState();
+      await signOut(auth);
+    }
     catch (error) { console.error('Customer logout failed', error); }
     window.location.assign('/');
   };

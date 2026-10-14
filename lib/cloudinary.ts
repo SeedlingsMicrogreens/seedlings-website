@@ -14,10 +14,12 @@ export async function uploadToCloudinary(file: File): Promise<string> {
 }
 
 export async function deleteFromCloudinary(url: string): Promise<void> {
-  const { auth } = await import("@/lib/firebase");
-  const user = auth.currentUser;
-  if (!user) throw new Error("Your login session expired. Please sign in again.");
-  const idToken = await user.getIdToken();
+  const [{ auth, authPersistenceReady }, { customerIdToken }] = await Promise.all([
+    import("@/lib/firebase"),
+    import("@/lib/customerAuthState"),
+  ]);
+  await authPersistenceReady;
+  const idToken = await customerIdToken(auth);
 
   const response = await fetch("/api/customer/profile-photo/delete", {
     method: "POST",

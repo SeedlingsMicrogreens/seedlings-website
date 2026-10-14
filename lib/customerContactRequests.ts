@@ -1,5 +1,5 @@
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { auth, authPersistenceReady, db } from './firebase';
 
 export type CustomerEnquirySource = 'customer_checkout' | 'contact_page';
 
@@ -26,6 +26,8 @@ export type CustomerContactRequest = {
 };
 
 export async function createCustomerContactRequest(input: CustomerContactRequest) {
+  await authPersistenceReady;
+  await auth.authStateReady();
   const currentUser = auth.currentUser;
   const data: Record<string, unknown> = {
     name: String(input.name || '').trim(),
