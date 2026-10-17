@@ -111,7 +111,8 @@ function FAQ({ items, loading }: { items: Array<{ question: string; answer: stri
 export default function HomePage() {
   const [navItems, setNavItems] = useState<NavItem[]>([]);
   const [settings, setSettings] = useState<SiteSettings | null>(null);
-  const [hero, setHero] = useState<CmsRecord | null>(null);
+  const [heroSlides, setHeroSlides] = useState<CmsRecord[]>([]);
+  const [activeHeroIndex, setActiveHeroIndex] = useState(0);
   const [homeContent, setHomeContent] = useState<CmsRecord[]>([]);
   const [trustPoints, setTrustPoints] = useState<CmsRecord[]>([]);
   const [testimonials, setTestimonials] = useState<CmsRecord[]>(STATIC_TESTIMONIALS);
@@ -139,7 +140,7 @@ export default function HomePage() {
           cachedFaq ?? getPublishedCollection<CmsRecord>(cmsCollections.faq),
         ]);
         if (!active) return;
-        setNavItems(nav as NavItem[]); setSettings(site as SiteSettings); setHero(sortByOrder(heroRows)[0] ?? null); setHomeContent(homeRows); setTrustPoints(trustRows); setFeaturedProducts(products); setProductsLoading(false);
+        setNavItems(nav as NavItem[]); setSettings(site as SiteSettings); setHeroSlides(sortByOrder(heroRows)); setActiveHeroIndex(0); setHomeContent(homeRows); setTrustPoints(trustRows); setFeaturedProducts(products); setProductsLoading(false);
         const nextTestimonials = freshTestimonials.length ? freshTestimonials : STATIC_TESTIMONIALS;
         const nextFaq = freshFaq.length ? sortByOrder(freshFaq).map((item) => ({ question: asText(item.question), answer: asText(item.answer), sortOrder: Number(item.sortOrder ?? 0) })) : STATIC_FAQS.map((item, index) => ({ ...item, sortOrder: index }));
         setTestimonials(nextTestimonials); setTestimonialsLoading(false); setFaqItems(nextFaq); setFaqLoading(false);
@@ -157,20 +158,40 @@ export default function HomePage() {
   const promise = content.get('promise');
   const why = content.get('why');
   const app = content.get('appBanner');
-  const trustMap = useMemo(() => new Map(trustPoints.map((item) => [String(item.itemKey ?? ''), item])), [trustPoints]);
+  // Homepage Content is the primary source for Trust Points. Keep the standalone
+  // collection as a compatibility fallback for existing installations during migration.
+  const homepageTrust = content.get('trust');
+  const trustMap = useMemo(() => {
+    const fromHomepage: Array<[string, CmsRecord]> = homepageTrust ? [
+      ['fresh', { itemKey: 'fresh', title: homepageTrust.freshTitle, text: homepageTrust.freshText }],
+      ['seed', { itemKey: 'seed', title: homepageTrust.seedTitle, text: homepageTrust.seedText }],
+      ['water', { itemKey: 'water', title: homepageTrust.waterTitle, text: homepageTrust.waterText }],
+      ['ordering', { itemKey: 'ordering', title: homepageTrust.orderingTitle, text: homepageTrust.orderingText }],
+    ].filter(([, item]) => Boolean(asText(item.title) || asText(item.text))) : [];
+    const primary = new Map(fromHomepage);
+    if (primary.size) return primary;
+    return new Map(trustPoints.map((item) => [String(item.itemKey ?? ''), item]));
+  }, [homepageTrust, trustPoints]);
 
-  const heroStyle = asText(hero?.imageUrl) ? { backgroundImage: `url(${asText(hero?.imageUrl)})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined;
+  const hero = heroSlides[activeHeroIndex] ?? null;
+  useEffect(() => {
+    if (heroSlides.length < 2) return;
+    const timer = window.setInterval(() => setActiveHeroIndex((index) => (index + 1) % heroSlides.length), 8000);
+    return () => window.clearInterval(timer);
+  }, [heroSlides.length]);
+  const heroStyle = asText(hero?.imageUrl) ? { backgroundImage: `url(${asText(hero.imageUrl)})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined;
+  const hasHeroContent = Boolean(asText(hero?.eyebrow) || asText(hero?.title) || asText(hero?.subtitle) || asText(hero?.primaryButtonText) || asText(hero?.secondaryButtonText));
 
   return <>
     <Header navItems={navItems} />
     <main>
-      <section className="hero"><div className="hero-art" style={heroStyle} /><div className="container hero-content"><span className="eyebrow">{asText(hero?.eyebrow, 'Freshly grown • Harvested for you')}</span><h1>{hero ? asText(hero.title) : <>Small Growth.<br /><span>Giant Impact.</span></>}</h1><p>{asText(hero?.subtitle, 'Fresh microgreens, grown with precision and delivered at their peak.')}</p><div className="actions"><a className="btn primary" href={asUrl(hero?.primaryButtonUrl, '/microgreens')}>{asText(hero?.primaryButtonText, 'Explore Microgreens')}</a><a className="btn secondary" href={asUrl(hero?.secondaryButtonUrl, '/our-journey')}>{asText(hero?.secondaryButtonText, 'Our Story')}</a></div></div></section>
+      <section className={`hero${heroStyle ? ' hero-has-image' : ''}${hasHeroContent ? '' : ' hero-image-only'}`} aria-label="Homepage hero banner"><div className="hero-art" style={heroStyle} />{hasHeroContent && <div className="container hero-content">{asText(hero?.eyebrow) && <span className="eyebrow">{asText(hero?.eyebrow)}</span>}{asText(hero?.title) && <h1>{asText(hero?.title)}</h1>}{asText(hero?.subtitle) && <p>{asText(hero?.subtitle)}</p>}<div className="actions">{asText(hero?.primaryButtonText) && <a className="btn primary" href={asUrl(hero?.primaryButtonUrl, '/microgreens')}>{asText(hero?.primaryButtonText)}</a>}{asText(hero?.secondaryButtonText) && <a className="btn secondary" href={asUrl(hero?.secondaryButtonUrl, '/our-journey')}>{asText(hero?.secondaryButtonText)}</a>}</div></div>}{heroSlides.length > 1 && <div className="hero-slider-controls" aria-label="Hero slide controls"><button type="button" aria-label="Previous slide" onClick={() => setActiveHeroIndex((index) => (index - 1 + heroSlides.length) % heroSlides.length)}>‹</button><div className="hero-slider-dots">{heroSlides.map((slide, index) => <button key={String(slide.id ?? index)} type="button" aria-label={`Go to slide ${index + 1}`} aria-current={index === activeHeroIndex ? 'true' : undefined} className={index === activeHeroIndex ? 'active' : ''} onClick={() => setActiveHeroIndex(index)} />)}</div><button type="button" aria-label="Next slide" onClick={() => setActiveHeroIndex((index) => (index + 1) % heroSlides.length)}>›</button></div>}</section>
       <section className="trust"><div className="container trust-grid">{[['fresh','Fresh to order','Harvested close to delivery'],['seed','Non-GMO seeds','Carefully selected varieties'],['water','Less water','Efficient indoor growing'],['ordering','Easy ordering','Website & mobile app']].map(([key, fallbackTitle, fallbackText]) => { const item = trustMap.get(key); return <div key={key}><strong>{asText(item?.title, fallbackTitle)}</strong><span>{asText(item?.text, fallbackText)}</span></div>; })}</div></section>
       <FeaturedProducts products={featuredProducts} loading={productsLoading} />
-      <section className="section" style={{ paddingTop: 25 }}><div className="container"><div className="promo"><div className="promo-grid"><div><span className="eyebrow" style={{ color: '#d5ef9a' }}>{asText(promise?.eyebrow, 'The Seedlings promise')}</span><h2>{asText(promise?.title, 'Freshness you can see. Nutrition you can feel.')}</h2><p>{asText(promise?.body, 'From careful seed selection to harvest, we build the experience around fresh, beautiful microgreens.')}</p><a className="btn secondary" href={asUrl(promise?.buttonUrl, '/our-journey')}>{asText(promise?.buttonText, 'Why Seedlings')} <span className="icon">→</span></a></div><div className="promo-pills">{[['freshTitle','freshText','Fresh','grown for the order'],['localTitle','localText','Local','closer to your plate'],['simpleTitle','simpleText','Simple','easy online ordering']].map(([titleKey,textKey,titleFallback,textFallback]) => <div className="promo-pill" key={titleKey}><strong>{asText(promise?.[titleKey], titleFallback)}</strong><span>{asText(promise?.[textKey], textFallback)}</span></div>)}</div></div></div></div></section>
+      <section className="section" style={{ paddingTop: 25 }}><div className="container"><div className="promo"><div className="promo-grid"><div><span className="eyebrow" style={{ color: '#d5ef9a' }}>{asText(promise?.eyebrow, 'The Seedlings promise')}</span><h2>{asText(promise?.title, 'Freshness you can see. Nutrition you can feel.')}</h2><p>{asText(promise?.body, 'From careful seed selection to harvest, we build the experience around fresh, beautiful microgreens.')}</p><a className="btn secondary" href={asUrl(promise?.buttonUrl, '/our-journey')}>{asText(promise?.buttonText, 'Why Seedlings')}</a></div><div className="promo-pills">{[['freshTitle','freshText','Fresh','grown for the order'],['localTitle','localText','Local','closer to your plate'],['simpleTitle','simpleText','Simple','easy online ordering']].map(([titleKey,textKey,titleFallback,textFallback]) => <div className="promo-pill" key={titleKey}><strong>{asText(promise?.[titleKey], titleFallback)}</strong><span>{asText(promise?.[textKey], textFallback)}</span></div>)}</div></div></div></div></section>
       <Testimonials items={testimonials} loading={testimonialsLoading} />
       <FAQ items={faqItems} loading={faqLoading} />
-      <section className="section"><div className="container split"><div className="visual" /><div><span className="eyebrow">{asText(why?.eyebrow, 'Why Seedlings')}</span><h2>{asText(why?.title, 'Nutrition that starts small and makes a difference.')}</h2><p className="muted">{asText(why?.body, 'We grow nutrient-dense microgreens indoors with careful attention to seed quality, growing conditions and harvest timing.')}</p><div className="features">{[['feature1Title','feature1Text','01','Precision purity','Carefully selected seeds and controlled growing conditions.'],['feature2Title','feature2Text','02','Harvested fresh','We grow with freshness and delivery timing in mind.'],['feature3Title','feature3Text','03','Resource conscious','Indoor growing helps us use water efficiently.']].map(([titleKey,textKey,num,titleFallback,textFallback]) => <div className="feature" key={num}><span className="feature-num">{num}</span><div><h3>{asText(why?.[titleKey], titleFallback)}</h3><p>{asText(why?.[textKey], textFallback)}</p></div></div>)}</div><a className="btn dark" href={asUrl(why?.buttonUrl, '/our-journey')}>{asText(why?.buttonText, 'Discover our journey')}</a></div></div></section>
+      <section className="section"><div className="container split"><div className={`visual${asText(why?.imageUrl) ? ' has-image' : ''}`} style={asText(why?.imageUrl) ? { backgroundImage: `url(${asText(why.imageUrl)})` } : undefined} role={asText(why?.imageUrl) ? 'img' : undefined} aria-label={asText(why?.imageUrl) ? 'Why Seedlings' : undefined} /><div><span className="eyebrow">{asText(why?.eyebrow, 'Why Seedlings')}</span><h2>{asText(why?.title, 'Nutrition that starts small and makes a difference.')}</h2><p className="muted">{asText(why?.body, 'We grow nutrient-dense microgreens indoors with careful attention to seed quality, growing conditions and harvest timing.')}</p><div className="features">{[['feature1Title','feature1Text','01','Precision purity','Carefully selected seeds and controlled growing conditions.'],['feature2Title','feature2Text','02','Harvested fresh','We grow with freshness and delivery timing in mind.'],['feature3Title','feature3Text','03','Resource conscious','Indoor growing helps us use water efficiently.']].map(([titleKey,textKey,num,titleFallback,textFallback]) => <div className="feature" key={num}><span className="feature-num">{num}</span><div><h3>{asText(why?.[titleKey], titleFallback)}</h3><p>{asText(why?.[textKey], textFallback)}</p></div></div>)}</div><a className="btn dark" href={asUrl(why?.buttonUrl, '/our-journey')}>{asText(why?.buttonText, 'Discover our journey')}</a></div></div></section>
       <section className="banner"><div className="container banner-inner"><div><span className="eyebrow" style={{ color: '#fff3db' }}>{asText(app?.eyebrow, 'Order anywhere')}</span><h2>{asText(app?.title, 'Fresh microgreens, one tap away.')}</h2><p>{asText(app?.body, 'Browse products and manage your orders through Seedlings.')}</p></div><div className="stores"><a className="store" href={asUrl(app?.googlePlayUrl, '#')}><small>GET IT ON</small><strong>Google Play</strong></a><a className="store" href={asUrl(app?.appStoreUrl, '#')}><small>DOWNLOAD ON THE</small><strong>App Store</strong></a></div></div></section>
     </main>
     <Footer navItems={navItems} settings={settings} />

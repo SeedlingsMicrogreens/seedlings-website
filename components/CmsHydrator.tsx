@@ -96,20 +96,6 @@ function renderFeaturedProducts(root: HTMLElement, items: FeaturedProduct[]) {
   cards.innerHTML = featuredProductMarkup(items);
 }
 
-const STATIC_FAQS = [
-  { question: 'What are microgreens?', answer: 'Microgreens are young edible plants harvested at an early stage. They are fresh, flavourful, and easy to add to everyday meals.' },
-  { question: 'How should I store microgreens?', answer: 'Keep them refrigerated and consume them while they are fresh. Follow the storage instructions provided with your order.' },
-  { question: 'How often are microgreens delivered?', answer: 'For subscriptions, deliveries follow the selected subscription plan and scheduled delivery dates. One-time orders are delivered according to the selected delivery option.' },
-  { question: 'Can I skip or reschedule a subscription delivery?', answer: 'Yes. You can use the delivery calendar in your account to skip or reschedule an eligible upcoming delivery.' },
-];
-
-const STATIC_TESTIMONIALS = [
-  { customerName: 'Priya Sharma', rating: 5, content: 'The microgreens are always fresh, crisp, and packed really well. They have become a regular part of our meals.' },
-  { customerName: 'A customer', rating: 5, content: 'I love the freshness and quality. The greens arrive looking just like they were harvested that day.' },
-  { customerName: 'Sneha Kulkarni', rating: 5, content: 'The sunflower and broccoli microgreens are my favourites. Great quality and really convenient for everyday meals.' },
-  { customerName: 'Amit Patil', rating: 4, content: 'Very fresh microgreens and good variety. I have been enjoying adding them to salads, sandwiches, and breakfast.' },
-  { customerName: 'Neha Joshi', rating: 5, content: 'Excellent quality and timely delivery. The microgreens make even a simple home-cooked meal feel special.' },
-];
 
 function testimonialMarkup(items: Array<Record<string, unknown>>) {
   return items.slice().sort((a,b)=>Number(a.sortOrder??0)-Number(b.sortOrder??0)).map(x=>`<article class="testimonial"><div class="stars">${'★'.repeat(Math.max(0,Math.min(5,Number(x.rating??0))))}</div><p class="quote">“${esc(x.content)}”</p><div class="person"><span class="avatar">${String(x.customerName??'?').trim().charAt(0).toUpperCase()}</span><span><strong>${esc(x.customerName)}</strong><br><small class="muted">Seedlings customer</small></span></div></article>`).join('');
@@ -620,13 +606,30 @@ async function applyHome(root: HTMLElement) {
   const why=byKey.get('why'); const split=root.querySelector('.split');
   if(why&&split){text(split.querySelector('.eyebrow'),why.eyebrow);text(split.querySelector('h2'),why.title);text(split.querySelector('p.muted'),why.body);const fs=Array.from(split.querySelectorAll('.feature'));[[why.feature1Title,why.feature1Text],[why.feature2Title,why.feature2Text],[why.feature3Title,why.feature3Text]].forEach((v,i)=>{text(fs[i]?.querySelector('h3'),v[0]);text(fs[i]?.querySelector('p'),v[1]);});text(split.querySelector('a'),why.buttonText);attr(split.querySelector('a'),'href',why.buttonUrl);}
   const app=byKey.get('appBanner'); const banner=root.querySelector('.banner'); if(app&&banner){text(banner.querySelector('.eyebrow'),app.eyebrow);text(banner.querySelector('h2'),app.title);text(banner.querySelector('p'),app.body);const stores=Array.from(banner.querySelectorAll('.store'));attr(stores[0],'href',app.googlePlayUrl);attr(stores[1],'href',app.appStoreUrl);}
-  const trustMap=new Map(trust.map(x=>[String(x.itemKey??''),x])); const trustEls=Array.from(root.querySelectorAll('.trust-grid>div')); ['fresh','seed','water','ordering'].forEach((k,i)=>{const x=trustMap.get(k);if(x){text(trustEls[i]?.querySelector('strong'),x.title);text(trustEls[i]?.querySelector('span'),x.text);}});
-  const testimonialItems = testimonials.length ? testimonials : STATIC_TESTIMONIALS;
-  renderTestimonials(root, testimonialItems);
-  initializeTestimonialCarousel(root);
-  const faqItems = faq.length ? faq : STATIC_FAQS;
-  const box=root.querySelector('.faq');
-  if(box){ box.innerHTML = faqMarkup(faqItems); initializeFaqAccordion(root); }
+  // Homepage Content is the primary CMS source for Trust Points. Read legacy standalone
+  // trust records only as a backwards-compatible fallback when the homepage trust section
+  // has not yet been configured, so existing content is not lost during transition.
+  const trustSection = byKey.get('trust');
+  const trustEls=Array.from(root.querySelectorAll('.trust-grid>div'));
+  const homepageTrust = trustSection ? [
+    { title: trustSection.freshTitle, text: trustSection.freshText },
+    { title: trustSection.seedTitle, text: trustSection.seedText },
+    { title: trustSection.waterTitle, text: trustSection.waterText },
+    { title: trustSection.orderingTitle, text: trustSection.orderingText },
+  ] : [];
+  if (homepageTrust.some(x => typeof x.title === 'string' && x.title.trim() || typeof x.text === 'string' && x.text.trim())) {
+    homepageTrust.forEach((x,i)=>{ text(trustEls[i]?.querySelector('strong'),x.title); text(trustEls[i]?.querySelector('span'),x.text); });
+  } else {
+    const trustMap=new Map(trust.map(x=>[String(x.itemKey??''),x]));
+    ['fresh','seed','water','ordering'].forEach((k,i)=>{const x=trustMap.get(k);if(x){text(trustEls[i]?.querySelector('strong'),x.title);text(trustEls[i]?.querySelector('span'),x.text);}});
+  }
+  // Published CMS records are authoritative. Do not silently substitute hardcoded sample
+  // testimonials or FAQs when editors have not published content.
+  const testimonialSection = root.querySelector('.testimonials-section') as HTMLElement | null;
+  if (testimonials.length) { renderTestimonials(root, testimonials); initializeTestimonialCarousel(root); if (testimonialSection) testimonialSection.hidden = false; }
+  else { renderTestimonials(root, []); if (testimonialSection) testimonialSection.hidden = true; }
+  const box=root.querySelector('.faq') as HTMLElement | null;
+  if(box){ if (faq.length) { box.innerHTML = faqMarkup(faq); initializeFaqAccordion(root); box.hidden = false; } else { box.hidden = true; box.innerHTML = ''; } }
 }
 
 async function applyPage(root: HTMLElement, page: Page) {
@@ -644,20 +647,47 @@ async function applyPage(root: HTMLElement, page: Page) {
       getPublishedCollection<Record<string,unknown>>(cmsCollections.seedlingsFeedback)
     ]);
     const h=hero[0],s=spark[0],p=process[0];
-    if(h){
-      text(root.querySelector('.page-hero h1'),h.title);
-      text(root.querySelector('.page-hero p'),h.body);
-      image(root.querySelector('.page-hero img'),h.imageUrl);
+    const banner = root.querySelector('.journey-banner-image') as HTMLImageElement | null;
+    // Prefer the currently published Admin CMS hero. The legacy document is fallback only;
+    // it must never overwrite a newer published image with stale content.
+    const publishedBannerUrl = typeof h?.imageUrl === 'string' ? h.imageUrl.trim() : '';
+    const legacyBannerUrl = typeof legacyContent?.bannerImage === 'string' ? legacyContent.bannerImage.trim() : '';
+    const bannerUrl = publishedBannerUrl || legacyBannerUrl;
+    if (banner) {
+      if (bannerUrl) {
+        banner.onload = () => banner.classList.add('is-loaded');
+        banner.onerror = () => { banner.classList.remove('is-loaded'); banner.removeAttribute('src'); };
+        banner.src = bannerUrl;
+        if (banner.complete && banner.naturalWidth > 0) banner.classList.add('is-loaded');
+      } else {
+        banner.removeAttribute('src');
+        banner.classList.remove('is-loaded');
+      }
     }
-    // The current Admin/CMS document stores the Journey banner at journey_page/content.bannerImage.
-    // Keep support for the newer websiteJourneyContent blocks while using the existing source-of-truth document.
-    if(legacyContent){
-      const bannerImage=String(legacyContent.bannerImage ?? '').trim();
+    if(h){
+      text(root.querySelector('.journey-page-hero h1'),h.title);
+      text(root.querySelector('.journey-page-hero p'),h.body);
+    }
+    if(!publishedBannerUrl && legacyContent){
       const bannerTitle=String(legacyContent.bannerTitle ?? '').trim();
-      if(bannerImage) image(root.querySelector('.journey-banner-image'),bannerImage);
-      if(bannerTitle) text(root.querySelector('.page-hero h1'),bannerTitle);
+      if(bannerTitle) text(root.querySelector('.journey-page-hero h1'),bannerTitle);
     }
     const split=root.querySelector('.split');
+    const sparkVisual = split?.querySelector('.visual') as HTMLElement | null;
+    const sparkImageUrl = typeof s?.imageUrl === 'string' ? s.imageUrl.trim() : '';
+    if (sparkVisual) {
+      if (sparkImageUrl) {
+        sparkVisual.style.backgroundImage = `url("${sparkImageUrl.replace(/["\\]/g, '')}")`;
+        sparkVisual.classList.add('has-image');
+        sparkVisual.setAttribute('role', 'img');
+        sparkVisual.setAttribute('aria-label', typeof s?.title === 'string' ? s.title : 'The Spark');
+      } else {
+        sparkVisual.style.removeProperty('background-image');
+        sparkVisual.classList.remove('has-image');
+        sparkVisual.removeAttribute('role');
+        sparkVisual.removeAttribute('aria-label');
+      }
+    }
     if(s&&split){
       text(split.querySelector('.eyebrow'),s.eyebrow);
       text(split.querySelector('h2'),s.title);

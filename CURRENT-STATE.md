@@ -347,3 +347,6 @@ Before any Cashfree order is created (`createCashfreePaymentSession`, used by `/
 - Added A/B fixture coverage for targeted logout cleanup and cart retention, late A results after B becomes current, and server ownership checks for profile photos, checkout identity, and customer resources.
 - Validation: 294/294 unit tests pass; 56/56 payment architecture static checks pass; TypeScript typecheck and production build pass; `git diff --check` passes.
 - Browser evidence (local `localhost:3000`, no storage cleared): Checkout showed the sign-in dialog and logged `auth-prompt component=checkout reason=session_absent`. The Firebase persisted browser record was anonymous, and the same non-reversible UID fingerprint remained after reload; Firestore Listen calls returned HTTP 401. No OTP customer session was present in this browser, so the sign-in prompt was correct for the observed state. This does not prove why a different customer's authenticated session was reportedly lost. No A→B→A live-account flow, explicit customer logout/sign-in, multi-tab flow, Firestore emulator ownership run, or payment was performed.
+
+## CMS alignment (2026-10-17)
+- Homepage Trust Points now prefer Homepage Content data; legacy trust collection retained as fallback.

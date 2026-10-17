@@ -490,3 +490,7 @@ Older documents contain statements that no longer exactly describe the current r
 - Added explicit CORS response headers and OPTIONS preflight handling to send-otp and verify-otp.
 - Allows known local development origins (Expo web and local Website) and the deployed Website origin.
 - OTP generation, server-side CUSTOMER_OTP_DEMO_MODE, SMS provider configuration, OTP verification, and Firebase Custom Token behavior are unchanged.
+
+## CMS alignment — 2026-10-17
+- Homepage Trust Points now prefer Homepage Content data; legacy trust collection retained as fallback.
+- Navigation route aligned with the website Journey route where configured.
