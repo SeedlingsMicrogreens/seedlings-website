@@ -11,6 +11,8 @@ const nonNegative = (value: unknown) => {
   return Number.isFinite(n) && n >= 0 ? n : 0;
 };
 const amount = (value: unknown) => Math.max(0, Number(value) || 0);
+/** Round INR currency to paise at the shared checkout-pricing boundary. */
+export const roundCheckoutMoney = (value: unknown) => Math.round((Number(value) || 0) * 100) / 100;
 
 type Data = Record<string, any>;
 
@@ -215,7 +217,7 @@ export function computeCheckoutDeliveryCharges(geolocations: Array<{ id: string;
 
   const makeResult = (deliveryDates: string[], chargedDeliveryDates: string[], extra: Record<string, unknown> = {}): DeliveryChargeResult => {
     const finalCharge = baseCharge;
-    const termCharge = finalCharge * chargedDeliveryDates.length;
+    const termCharge = roundCheckoutMoney(finalCharge * chargedDeliveryDates.length);
     return {
       finalCharge,
       baseCharge,
@@ -494,8 +496,8 @@ function priceItemSavings(offer: CustomerOffer, items: Array<{ price: number; qu
   return items.map(({ price: priceInput, quantity: quantityInput }) => {
     const price = amount(priceInput);
     const quantity = amount(quantityInput);
-    const perUnit = Math.round(savingFor(offer, price) * 100) / 100;
-    return Math.min(price, perUnit) * quantity;
+    const perUnit = roundCheckoutMoney(savingFor(offer, price));
+    return roundCheckoutMoney(Math.min(price, perUnit) * quantity);
   });
 }
 
@@ -567,51 +569,52 @@ export function allocateCheckoutTotals(input: {
   deliveryCharges: CheckoutDeliveryCharges;
   offers: CheckoutOfferResult;
 }) {
-  let remainingDeliveryOfferSavings = Math.min(
+  let remainingDeliveryOfferSavings = roundCheckoutMoney(Math.min(
     Math.max(0, Number(input.offers.deliverySavings || 0)),
     input.deliveryCharges.total,
-  );
+  ));
   const allocateDeliverySaving = (charge: number) => {
-    const saving = Math.min(Math.max(0, charge), remainingDeliveryOfferSavings);
-    remainingDeliveryOfferSavings = Math.max(0, Math.round((remainingDeliveryOfferSavings - saving) * 100) / 100);
+    const saving = roundCheckoutMoney(Math.min(Math.max(0, charge), remainingDeliveryOfferSavings));
+    remainingDeliveryOfferSavings = roundCheckoutMoney(Math.max(0, remainingDeliveryOfferSavings - saving));
     return saving;
   };
   const oneTime = input.oneTimeGroups.map((group, index) => {
-    const allocatedOffer = Math.min(group.subtotal, Math.max(0, Number(group.priceOfferSavings || 0)));
+    const allocatedOffer = roundCheckoutMoney(Math.min(group.subtotal, Math.max(0, Number(group.priceOfferSavings || 0))));
     const originalDeliveryFee = index < input.deliveryCharges.oneTime.chargedDeliveryDates.length
       ? Number(input.deliveryCharges.oneTime.perDeliveryCharge || 0)
       : 0;
     const deliveryOfferSaving = allocateDeliverySaving(originalDeliveryFee);
-    const deliveryFee = Math.max(0, originalDeliveryFee - deliveryOfferSaving);
-    const mrpSaving = Math.max(0, group.mrpSubtotal - group.subtotal);
+    const deliveryFee = roundCheckoutMoney(Math.max(0, originalDeliveryFee - deliveryOfferSaving));
+    const mrpSaving = roundCheckoutMoney(Math.max(0, group.mrpSubtotal - group.subtotal));
     return {
       date: group.date,
-      subtotal: group.subtotal,
+      subtotal: roundCheckoutMoney(group.subtotal),
       allocatedOffer,
       deliveryFee,
       deliveryOfferSaving,
-      offerTotalSaving: allocatedOffer + deliveryOfferSaving,
+      offerTotalSaving: roundCheckoutMoney(allocatedOffer + deliveryOfferSaving),
       mrpSaving,
       discount: allocatedOffer,
-      total: Math.max(0, group.subtotal - allocatedOffer) + deliveryFee,
+      total: roundCheckoutMoney(Math.max(0, group.subtotal - allocatedOffer) + deliveryFee),
     };
   });
 
   const subscriptions = input.subscriptions.map(({ subtotal, deliveryFee, priceOfferSavings }) => {
-    const allocated = Math.min(subtotal, Math.max(0, Number(priceOfferSavings || 0)));
+    const allocated = roundCheckoutMoney(Math.min(subtotal, Math.max(0, Number(priceOfferSavings || 0))));
     const deliveryOfferSaving = allocateDeliverySaving(deliveryFee);
-    const discountedDeliveryFee = Math.max(0, deliveryFee - deliveryOfferSaving);
+    const discountedDeliveryFee = roundCheckoutMoney(Math.max(0, deliveryFee - deliveryOfferSaving));
     return {
-      subtotal,
+      subtotal: roundCheckoutMoney(subtotal),
       allocated,
       deliveryFee: discountedDeliveryFee,
       deliveryOfferSaving,
-      offerTotalSaving: allocated + deliveryOfferSaving,
-      total: Math.max(0, subtotal - allocated) + discountedDeliveryFee,
+      offerTotalSaving: roundCheckoutMoney(allocated + deliveryOfferSaving),
+      total: roundCheckoutMoney(Math.max(0, subtotal - allocated) + discountedDeliveryFee),
     };
   });
 
   const deliveryOfferSavings = [...oneTime, ...subscriptions]
     .reduce((sum, order) => sum + order.deliveryOfferSaving, 0);
-  return { oneTime, subscriptions, deliveryOfferSavings };
+  const roundedDeliveryOfferSavings = roundCheckoutMoney(deliveryOfferSavings);
+  return { oneTime, subscriptions, deliveryOfferSavings: roundedDeliveryOfferSavings };
 }

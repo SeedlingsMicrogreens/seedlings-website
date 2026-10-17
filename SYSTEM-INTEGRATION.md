@@ -822,3 +822,7 @@ The Website should consume the Firestore collection directly using its existing 
 - Current device latitude/longitude and delivery timestamp are captured at the moment Mark Delivered is confirmed.
 - Customer Firebase authentication and the Delivery Partner session are independent browser sessions; logging into or out of one must not replace or clear the other.
 - Delivery completion does not perform another inventory deduction and does not change growing-batch `soldQuantityGrams`; batch sold quantity is recorded during Admin handover.
+
+
+### Checkout monetary rounding
+Browser checkout and server payment verification use `lib/checkoutPricing.ts` and `roundCheckoutMoney` to round INR monetary amounts to two decimal places (paise) before saving/comparing order totals.

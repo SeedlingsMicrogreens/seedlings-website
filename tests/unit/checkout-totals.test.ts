@@ -13,6 +13,7 @@ import {
   resolveOneTimePrice,
   resolveSubscriptionPrice,
   resolveSubscriptionPlanSavings,
+  roundCheckoutMoney,
   subscriptionDeliveriesPerTerm,
   subscriptionEndDate,
   type CustomerOffer,
@@ -880,4 +881,11 @@ test('G2: two subscriptions on the same plan allocate shared delivery dates only
 
 test('NO_OFFERS is the zero offer result', () => {
   assert.equal(NO_OFFERS.totalSavings, 0);
+});
+
+
+test('checkout currency rounding is consistent to two decimal places', () => {
+  assert.equal(roundCheckoutMoney(383.699999999), 383.7);
+  assert.equal(roundCheckoutMoney(10.005), 10.01);
+  assert.equal(roundCheckoutMoney(-1.239), -1.24);
 });

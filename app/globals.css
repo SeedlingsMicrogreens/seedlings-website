@@ -5994,6 +5994,17 @@ body.journey-feedback-modal-open { overflow: hidden; }
 }
 
 
+/* Reserve the banner ratio while CMS data loads, without showing a placeholder backdrop. */
+.hero.hero-loading {
+  width: 100%;
+  min-height: 0;
+  height: auto;
+  aspect-ratio: 1920 / 650;
+  background: transparent;
+}
+.hero.hero-loading:before { background: transparent; }
+.hero.hero-loading .hero-art { background: transparent; }
+
 /* Keep every CMS hero slide at the same responsive 1920:650 ratio. */
 .hero.hero-has-image {
   width: 100%;
