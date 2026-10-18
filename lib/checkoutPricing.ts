@@ -108,7 +108,7 @@ export function resolveSubscriptionPlanSavings(
   }
   return {
     maximumPlanPrice,
-    savings: Math.round((maximumPlanPrice - planPrice) * quantity * 100) / 100,
+    savings: roundCheckoutMoney((maximumPlanPrice - planPrice) * quantity),
   };
 }
 
@@ -385,7 +385,7 @@ export function checkoutSavingsBreakdown(input: {
   subscriptionPlanSavings?: number;
   deliverySavings: number;
 }): CheckoutSavingsBreakdown {
-  const round = (value: number) => Math.round(Math.max(0, Number(value) || 0) * 100) / 100;
+  const round = (value: number) => roundCheckoutMoney(Math.max(0, Number(value) || 0));
   const mrpSavings = round(input.mrpSavings);
   const priceOfferSavings = round(input.priceOfferSavings);
   const productSavings = round(mrpSavings + priceOfferSavings);

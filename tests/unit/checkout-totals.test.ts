@@ -889,3 +889,22 @@ test('checkout currency rounding is consistent to two decimal places', () => {
   assert.equal(roundCheckoutMoney(10.005), 10.01);
   assert.equal(roundCheckoutMoney(-1.239), -1.24);
 });
+
+test('allocated checkout totals normalize floating-point line sums before persistence', () => {
+  const deliveryCharges = computeCheckoutDeliveryCharges([geo], {
+    pincode: PINCODE,
+    oneTime: true,
+    oneTimeDates: ['2026-10-17'],
+    subscriptions: [],
+  });
+  const allocation = allocateCheckoutTotals({
+    oneTimeGroups: [{ date: '2026-10-17', subtotal: 0.1 + 0.2, mrpSubtotal: 0.3, priceOfferSavings: 0 }],
+    subscriptions: [],
+    deliveryCharges,
+    offers: NO_OFFERS,
+  });
+
+  assert.equal(allocation.oneTime[0].subtotal, 0.3);
+  assert.equal(allocation.oneTime[0].total, 40.3);
+  assert.equal(roundCheckoutMoney(allocation.oneTime[0].total), allocation.oneTime[0].total);
+});

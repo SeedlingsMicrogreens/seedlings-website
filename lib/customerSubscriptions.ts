@@ -5,7 +5,7 @@ import { type SalesProduct } from './salesProducts';
 import { checkProductAvailability, nextWeekSaturday, resolveProductDeliveryDate } from './customerOrderAvailability';
 import { calculateCheckoutDeliveryCharges, getWeeklyDeliveryDates } from './deliveryCharges';
 import { calculateCustomerOffers, calculateCustomerSubscriptionEntitlement } from './offers';
-import { allocateCheckoutTotals, checkoutDeliveryChargeAmounts, NO_OFFERS, subscriptionDeliveriesPerTerm, subscriptionEndDate } from './checkoutPricing';
+import { allocateCheckoutTotals, checkoutDeliveryChargeAmounts, NO_OFFERS, roundCheckoutMoney, subscriptionDeliveriesPerTerm, subscriptionEndDate } from './checkoutPricing';
 import { buildShortageEnquiryMessage, createCustomerContactRequest } from './customerContactRequests';
 import { PACKAGING_OPTIONS } from './packaging';
 import { summaryFromOrders } from './checkoutFingerprint';
@@ -245,9 +245,8 @@ export async function createCustomerSubscription(input: {
   subscription.subscriptionOfferId = entitlement.offer?.id || '';
   subscription.subscriptionOfferName = entitlement.offer?.name || '';
   subscription.endDate = subscriptionEndDate(actualFirstDelivery, entitlement.totalDeliveries);
-  const roundMoney = (value: number) => Number(Number(value || 0).toFixed(2));
-  const deliveryFeePerDelivery = roundMoney(delivery?.perDeliveryCharge || 0);
-  const subtotal = roundMoney(unitPrice * input.quantity);
+  const deliveryFeePerDelivery = roundCheckoutMoney(delivery?.perDeliveryCharge || 0);
+  const subtotal = roundCheckoutMoney(unitPrice * input.quantity);
   const offerResult = delivery?.sourceId
     ? await calculateCustomerOffers({
       pincode: String((address as Record<string, unknown>).pincode || ''),
@@ -258,7 +257,7 @@ export async function createCustomerSubscription(input: {
       deliveryChargeAmounts: checkoutDeliveryChargeAmounts(deliveryCharges),
     })
     : NO_OFFERS;
-  const originalDeliveryFee = roundMoney(delivery?.termCharge || 0);
+  const originalDeliveryFee = roundCheckoutMoney(delivery?.termCharge || 0);
   const allocation = allocateCheckoutTotals({
     oneTimeGroups: [],
     subscriptions: [{
@@ -270,9 +269,9 @@ export async function createCustomerSubscription(input: {
     offers: offerResult,
   }).subscriptions[0];
   const priceOfferSaving = allocation.allocated;
-  const deliveryFee = roundMoney(allocation.deliveryFee);
+  const deliveryFee = roundCheckoutMoney(allocation.deliveryFee);
   const deliveryOfferSaving = allocation.deliveryOfferSaving;
-  const total = roundMoney(allocation.total);
+  const total = roundCheckoutMoney(allocation.total);
   subscription.deliveryFeePerDelivery = deliveryFeePerDelivery;
   subscription.deliveryChargeDetails = delivery?.snapshot || {};
 

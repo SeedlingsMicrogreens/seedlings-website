@@ -6,6 +6,7 @@ import {
   computeCustomerOffers,
   getWeeklyDeliveryDates,
   normalizePincode,
+  roundCheckoutMoney,
   resolveOneTimePrice,
   resolveSubscriptionPrice,
   computeSubscriptionDeliveryEntitlement,
@@ -46,7 +47,7 @@ export type CheckoutTotalsStore = {
   saveVerifications: (records: Array<{ orderId: string; data: Data }>) => Promise<void>;
 };
 
-const money = (value: unknown) => Math.round((Number(value) || 0) * 100) / 100;
+const money = (value: unknown) => roundCheckoutMoney(value);
 const close = (a: number, b: number) => Math.abs(a - b) <= TOLERANCE;
 
 /** Price-relevant fields of an order; a stored verification applies only while these are unchanged. */

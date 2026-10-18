@@ -6075,3 +6075,9 @@ body.journey-feedback-modal-open { overflow: hidden; }
   .hero-slider-dots button { width: 6px; height: 6px; }
   .hero-slider-dots button.active { width: 14px; }
 }
+
+
+/* The first CMS homepage hero slide is image-led and must not receive the text-contrast gradient. */
+.hero.hero-has-image.hero-no-backdrop:before {
+  background: transparent;
+}

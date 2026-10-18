@@ -185,6 +185,8 @@ If totals mismatch, the server rejects the checkout with a 409-style mismatch
 path. This is a mandatory parity rule for any mobile implementation: server
 re-pricing should be authoritative.
 
+**Paise consistency requirement:** all Website checkout flows use `roundCheckoutMoney()` from `lib/checkoutPricing.ts` for currency rounding. The mixed-checkout writer must persist each order's `total` directly from the shared `allocateCheckoutTotals()` result; it must not independently reconstruct the total from subtotal, discount, and delivery fee. The checkout response total is the sum of those allocated per-order totals rounded once to two decimal places. Standalone subscription checkout must also use the shared rounding helper. This keeps the displayed checkout amount, persisted order amounts, server verification, and Cashfree request aligned at the currency boundary.
+
 ## 4. Payment flow
 
 ### 4.1 Cashfree payment-session creation
