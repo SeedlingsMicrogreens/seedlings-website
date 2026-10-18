@@ -168,12 +168,13 @@ service cloud.firestore {
     }
 
     // Customer enquiries are separate from orders. A signed-in customer may
-    // create an enquiry for their own session; the public contact form may also
-    // create an enquiry without authentication. Enquiries are not orders and
-    // cannot be updated or deleted by customers.
+    // create a checkout enquiry for their own session. Public contact-form
+    // (`contact_page`) enquiries are written only by the server after the
+    // CAPTCHA is verified (app/api/contact), so they cannot be created here.
+    // Enquiries are not orders and cannot be updated or deleted by customers.
     match /enquiries/{enquiryId} {
       allow create: if request.resource.data.status == 'open'
-        && request.resource.data.source in ['customer_checkout', 'contact_page']
+        && request.resource.data.source == 'customer_checkout'
         && request.resource.data.name is string
         && request.resource.data.productName is string
         && request.resource.data.message is string

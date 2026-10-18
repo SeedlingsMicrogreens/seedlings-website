@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
+import TurnstileWidget from '@/components/TurnstileWidget';
 import { getActiveSalesProducts, type SalesProduct } from '@/lib/salesProducts';
-import { createCustomerContactRequest } from '@/lib/customerContactRequests';
 import { getCustomerSession, getStoredCustomerMobile } from '@/lib/clientOnboarding';
 import { getCustomerAccount } from '@/lib/customerAccount';
 import { auth, authPersistenceReady } from '@/lib/firebase';
@@ -12,7 +12,12 @@ import { signInAnonymously } from 'firebase/auth';
 import { mayStartGuestSession } from '@/lib/customerSession';
 import { isCurrentCustomerSession } from '@/lib/customerAuthState';
 
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || '';
+
 export default function ContactPage() {
+  const [captchaToken, setCaptchaToken] = useState('');
+  // Turnstile tokens are single-use: a new key remounts the widget for a fresh challenge.
+  const [captchaKey, setCaptchaKey] = useState(0);
   const [products, setProducts] = useState<SalesProduct[]>([]);
   const [productId, setProductId] = useState('');
   const [otherProduct, setOtherProduct] = useState('');
@@ -85,25 +90,24 @@ export default function ContactPage() {
     if (!productId) return setResult({ ok: false, text: 'Please select a product.' });
     if (productId === 'other' && !productName) return setResult({ ok: false, text: 'Please enter the product name.' });
     if (!message.trim()) return setResult({ ok: false, text: 'Please enter your message.' });
+    if (!captchaToken) return setResult({ ok: false, text: 'Please complete the verification.' });
 
     setSending(true);
     try {
       const session = await getCustomerSession();
-      const account = session.signedIn ? await getCustomerAccount(session.mobile) : null;
       if (session.signedIn && !(await isCurrentCustomerSession(auth, { uid: session.uid, mobile: session.mobile }))) {
         throw new Error('Your sign-in changed. Please review your contact details and try again.');
       }
-      const looksLikeEmail = contact.includes('@');
-      await createCustomerContactRequest({
-        customerId: account?.id,
-        name: name.trim(),
-        mobile: looksLikeEmail ? account?.mobileNumber || account?.mobile || '' : contact,
-        email: looksLikeEmail ? contact : account?.email || '',
-        productName,
-        message: message.trim(),
-        source: 'contact_page',
-        status: 'open',
+      // The server verifies the CAPTCHA and saves the enquiry; identity comes only from the ID token.
+      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : '';
+      const response = await fetch('/api/contact', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}) },
+        body: JSON.stringify({ name: name.trim(), contact, productName, message: message.trim(), captchaToken }),
       });
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(data.error || 'Unable to send your enquiry.');
       setResult({ ok: true, text: 'Your enquiry has been sent. Our team will contact you soon.' });
       setMessage('');
       setProductId('');
@@ -111,6 +115,8 @@ export default function ContactPage() {
     } catch (error) {
       setResult({ ok: false, text: error instanceof Error ? error.message : 'Unable to send your enquiry.' });
     } finally {
+      setCaptchaToken('');
+      setCaptchaKey((key) => key + 1);
       setSending(false);
     }
   }
@@ -139,8 +145,11 @@ export default function ContactPage() {
           </label>
           {productId === 'other' && <label>Product Name<input value={otherProduct} onChange={(event) => setOtherProduct(event.target.value)} placeholder="Enter product name" /></label>}
           <label>Message<textarea rows={5} value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Your message" /></label>
+          {TURNSTILE_SITE_KEY
+            ? <TurnstileWidget key={captchaKey} siteKey={TURNSTILE_SITE_KEY} action="contact" onToken={setCaptchaToken} onError={(text) => setResult({ ok: false, text })} />
+            : <p className="text-danger" style={{ margin: 0 }}>The contact form is temporarily unavailable. Please call or email us.</p>}
           {result && <p className={result.ok ? 'text-success' : 'text-danger'} style={{ margin: 0 }}>{result.text}</p>}
-          <button className="btn primary" type="submit" disabled={sending}>{sending ? 'Sending…' : 'Send enquiry'}</button>
+          <button className="btn primary" type="submit" disabled={sending || !TURNSTILE_SITE_KEY || !captchaToken}>{sending ? 'Sending…' : 'Send enquiry'}</button>
         </form>
       </div></section>
     </main>
