@@ -117,6 +117,13 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Customers may read only their own subscription delivery records (Delivery
+    // Calendar, queried by customerId). Writes stay Admin/server-side only.
+    match /subscriptionDeliveries/{deliveryId} {
+      allow read: if signedIn() && ownCustomer(resource.data);
+      allow write: if false;
+    }
+
     // Customers may submit feedback only for their own delivered order/delivery.
     // The document ID is intentionally not user-controlled for uniqueness; the
     // application checks for an existing feedback record before showing the form.

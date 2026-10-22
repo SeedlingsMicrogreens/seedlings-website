@@ -8,25 +8,19 @@ import { getCustomerSession } from '@/lib/clientOnboarding';
 import { isCurrentCustomerSession } from '@/lib/customerAuthState';
 import { getActiveSalesProducts, type SalesProduct } from '@/lib/salesProducts';
 import { updateSubscriptionDelivery } from '@/lib/customerSubscriptionDeliveryActions';
+import {
+  buildCalendarEvents,
+  buildVirtualEvents,
+  calendarDate,
+  mapDeliveryRecords,
+  statusLabel,
+  statusTone,
+  type CalendarDeliveryRecord as DeliveryRecord,
+  type CalendarEvent,
+  type CalendarSubscription as Subscription,
+} from '@/lib/deliveryCalendarEvents';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
-
-type Subscription = Record<string, unknown> & { id: string };
-type DeliveryRecord = Record<string, unknown> & { id: string };
-
-type CalendarEvent = {
-  id: string;
-  date: string;
-  status: string;
-  productName: string;
-  quantity: number;
-  subscriptionId: string;
-  deliveryNumber: number;
-  orderId?: string;
-  imageUrl?: string;
-  sellingOptionLabel?: string;
-  isVirtual?: boolean;
-};
 
 function parseDate(value: unknown): Date | null {
   if (!value) return null;
@@ -50,13 +44,6 @@ function todayIso() {
   return dateOnly(new Date());
 }
 
-function addDays(iso: string, days: number) {
-  const d = parseDate(iso);
-  if (!d) return '';
-  d.setDate(d.getDate() + days);
-  return dateOnly(d);
-}
-
 function monthTitle(date: Date) {
   return date.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
 }
@@ -71,25 +58,6 @@ function fullDate(value: unknown) {
   return d ? d.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 }
 
-function statusLabel(status: string) {
-  const normalized = status.toLowerCase();
-  if (normalized === 'upcoming') return 'Upcoming';
-  if (normalized === 'delivered') return 'Actual delivery';
-  return status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function statusTone(status: string) {
-  const normalized = status.toLowerCase();
-  if (normalized === 'upcoming') return 'upcoming';
-  if (normalized === 'skipped') return 'skipped';
-  if (normalized === 'rescheduled') return 'rescheduled';
-  return 'actual';
-}
-
-function normalizeStatus(value: unknown) {
-  return String(value || '').trim().toLowerCase();
-}
-
 function nextTwoSaturdaysFromToday(endDate?: string) {
   const result: string[] = [];
   const cursor = parseDate(todayIso());
@@ -102,63 +70,6 @@ function nextTwoSaturdaysFromToday(endDate?: string) {
     cursor.setDate(cursor.getDate() + 7);
   }
   return result;
-}
-
-function buildVirtualEvents(subscriptions: Subscription[], deliveries: DeliveryRecord[], products: SalesProduct[]) {
-  const explicitDates = new Set(deliveries.map((delivery) => dateOnly(delivery.deliveryDate)).filter(Boolean));
-  const events: CalendarEvent[] = [];
-
-  for (const subscription of subscriptions) {
-    const subscriptionStatus = normalizeStatus(subscription.status);
-    if (!['active', 'paused'].includes(subscriptionStatus)) continue;
-
-    let next = dateOnly(subscription.nextDeliveryDate);
-    const endDate = dateOnly(subscription.endDate);
-    const total = Math.max(0, Math.round(Number(subscription.totalDeliveries || 0)));
-    const generated = Math.max(0, Math.round(Number(subscription.deliveriesGenerated || 0)));
-    const remaining = Math.max(0, total - generated);
-    const product = products.find((item) => String(item.id) === String(subscription.salableProductId || subscription.productId || ''));
-
-    for (let i = 0; i < remaining && next && (!endDate || next <= endDate); i += 1) {
-      if (!explicitDates.has(next)) {
-        events.push({
-          id: `virtual-${subscription.id}-${next}`,
-          date: next,
-          status: 'upcoming',
-          productName: String(subscription.productName || product?.name || 'Subscription'),
-          quantity: Number(subscription.quantity || 1),
-          subscriptionId: subscription.id,
-          deliveryNumber: generated + i + 1,
-          imageUrl: product?.imageUrl,
-          sellingOptionLabel: String(subscription.sellingOptionLabel || ''),
-          isVirtual: true,
-        });
-      }
-      next = addDays(next, 7);
-    }
-  }
-
-  return events;
-}
-
-function mapDeliveryRecords(deliveries: DeliveryRecord[], subscriptions: Subscription[], products: SalesProduct[]) {
-  return deliveries.map((delivery): CalendarEvent => {
-    const subscriptionId = String(delivery.subscriptionId || '');
-    const subscription = subscriptions.find((item) => item.id === subscriptionId);
-    const product = products.find((item) => String(item.id) === String(delivery.salableProductId || delivery.productId || subscription?.salableProductId || ''));
-    return {
-      id: delivery.id,
-      date: dateOnly(delivery.deliveryDate),
-      status: normalizeStatus(delivery.status) || 'upcoming',
-      productName: String(delivery.productName || subscription?.productName || product?.name || 'Subscription'),
-      quantity: Number(delivery.quantity || subscription?.quantity || 1),
-      subscriptionId,
-      deliveryNumber: Number(delivery.deliveryNumber || 0),
-      orderId: String(delivery.orderId || ''),
-      imageUrl: String(delivery.imageUrl || product?.imageUrl || ''),
-      sellingOptionLabel: String(delivery.sellingOptionLabel || subscription?.sellingOptionLabel || ''),
-    };
-  }).filter((event) => Boolean(event.date));
 }
 
 export default function DeliveryCalendarPage() {
@@ -269,17 +180,7 @@ export default function DeliveryCalendarPage() {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [detailsOpen]);
 
-  const events = useMemo(() => {
-    const explicit = mapDeliveryRecords(deliveries, subscriptions, products);
-    const virtual = buildVirtualEvents(subscriptions, deliveries, products);
-    const all = [...explicit, ...virtual].filter((event) => event.date);
-    const unique = new Map<string, CalendarEvent>();
-    for (const event of all) {
-      const key = `${event.subscriptionId}:${event.date}:${event.status}`;
-      if (!unique.has(key) || !event.isVirtual) unique.set(key, event);
-    }
-    return [...unique.values()].sort((a, b) => a.date.localeCompare(b.date) || a.productName.localeCompare(b.productName));
-  }, [deliveries, subscriptions, products]);
+  const events = useMemo(() => buildCalendarEvents(subscriptions, deliveries, products), [deliveries, subscriptions, products]);
 
   const monthEvents = useMemo(() => events.filter((event) => {
     const prefix = `${view.getFullYear()}-${String(view.getMonth() + 1).padStart(2, '0')}`;
@@ -332,7 +233,7 @@ export default function DeliveryCalendarPage() {
   const handleReschedule = async () => {
     if (!selectedEvent || !selectedSubscription || !canReschedule || busyAction) return;
     const { default: Swal } = await import('sweetalert2');
-    const dates = nextTwoSaturdaysFromToday(dateOnly(selectedSubscription.endDate));
+    const dates = nextTwoSaturdaysFromToday(calendarDate(selectedSubscription.endDate));
     if (!dates.length) {
       await Swal.fire({ customClass: { container: 'delivery-action-swal-container' }, icon: 'info', title: 'No dates available', text: 'There are no upcoming Saturday dates available within your subscription period.' });
       return;
@@ -438,7 +339,7 @@ export default function DeliveryCalendarPage() {
 
               <div className="delivery-calendar-legend" aria-label="Delivery status legend">
                 <span><i className="legend-dot legend-dot--upcoming" />Upcoming delivery</span>
-                <span><i className="legend-dot legend-dot--actual" />Actual delivery</span>
+                <span><i className="legend-dot legend-dot--actual" />Delivered</span>
                 <span><i className="legend-dot legend-dot--skipped" />Skipped</span>
                 <span><i className="legend-dot legend-dot--rescheduled" />Rescheduled</span>
               </div>

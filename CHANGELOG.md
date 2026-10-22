@@ -1,3 +1,14 @@
+## 2026-10-22 — Delivery Calendar: "Delivered" label
+- The calendar chip, details badge and legend now show `delivered` deliveries as **Delivered** instead of "Actual delivery". Display text only; status mapping, colors, dates and events are unchanged.
+
+## 2026-10-22 — Delivery Calendar: actual delivery status and dates
+- Actual delivery is shown only for a `subscriptionDeliveries` record with status `delivered`. Previously every status other than upcoming/skipped/rescheduled (pending, packed, assigned, out_for_delivery, failed, cancelled) used the Actual delivery indicator. In-progress statuses now use the Upcoming indicator and failed/cancelled the neutral one; labels and legend are unchanged. An order's `delivered` status is not used for delivery completion.
+- Each record is shown on its persisted `deliveryDate`: date-only values are used as stored; Timestamp/ISO instants are read on the Asia/Kolkata calendar instead of the browser time zone. No dates are generated or offset.
+- No duplicate events: records for the same occurrence and date (canonical and legacy IDs) collapse to one, `delivered` first. A recorded delivery now replaces only its own subscription's virtual delivery on that date (previously it hid every subscription's delivery that day).
+- Mapping moved to `lib/deliveryCalendarEvents.ts`; added `tests/unit/delivery-calendar-events.test.ts` (10 tests).
+- `firestore.rules`: added owner-only customer read of `subscriptionDeliveries` (no customer writes). The checked-in rules previously denied the calendar's read. The deployed ruleset is not verified and must be merged separately.
+- Validation: unit 320/320, typecheck, payment static checks and production build pass. No real Firestore data, deployed rules, emulator or browser verification.
+
 ## 2026-10-14 — Remediate shared delivery login OTP
 - Removed the universal `1234` delivery login credential. Active Admin/Super Admin/Operations accounts issue a random six-digit code through `POST /api/delivery/login/otp`; the code is returned once with `Cache-Control: no-store` for out-of-band delivery.
 - Store only a keyed hash and challenge metadata on the existing `deliveryUsers/{id}` record. Codes expire after five minutes, lock after five invalid submissions, and are consumed transactionally before issuing the existing independent delivery session cookie. Updated the delivery login to accept six digits.

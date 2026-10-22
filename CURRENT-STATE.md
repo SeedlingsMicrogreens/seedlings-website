@@ -135,7 +135,9 @@ Important rules:
 
 ## 5. Subscription delivery calendar
 
-- Recorded `subscriptionDeliveries` are used for actual delivery status.
+- Recorded `subscriptionDeliveries` are used for actual delivery status. Only status `delivered` is shown as Delivered (label and legend; green indicator); pending/packed/assigned/out_for_delivery keep the Upcoming indicator, failed/cancelled the neutral one. An order's `delivered` status is never used to mark deliveries completed (mapping in `lib/deliveryCalendarEvents.ts`).
+- Each record is shown on its persisted `deliveryDate` (date-only as stored; Timestamp/ISO instants on the Asia/Kolkata calendar). Records for the same occurrence and date collapse to one event; a record replaces only its own subscription's virtual delivery on that date.
+- Customers read their own `subscriptionDeliveries` records directly (repository rule: owner read via `customerId`, no customer writes). The deployed rules are not verified from this workspace.
 - Future deliveries can be represented virtually until a delivery document exists.
 - Past dates and today are informational; customer actions are for eligible future deliveries.
 - Skip and reschedule are validated server-side for ownership, active/paid subscription, future date, schedule and delivery state.
