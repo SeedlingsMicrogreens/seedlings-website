@@ -16,6 +16,8 @@ const routeForMenuItem = (pathname: string, href: string) => {
 
   // Order details belong to the Orders section.
   if (pathname === '/order-detail' && route === '/orders') return true;
+  // Blog posts belong to the Blog section.
+  if (route === '/blog' && pathname.startsWith('/blog/')) return true;
 
   return pathname === route;
 };

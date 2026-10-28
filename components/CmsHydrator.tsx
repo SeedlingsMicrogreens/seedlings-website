@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useRef, type ReactNode } from 'react';
-import { cmsCollections, getPublishedByField, getPublishedCollection, getDocById } from '@/lib/cms';
+import { cmsCollections, contactList, getPublishedByField, getPublishedCollection, getDocById, telHref } from '@/lib/cms';
 import { getFeaturedProducts, type FeaturedProduct } from '@/lib/products';
 import { refreshActiveSalesProducts, productSlug } from '@/lib/salesProducts';
+import { youtubeEmbedUrl } from '@/lib/youtube';
 
 export type Page = 'home'|'microgreens'|'product'|'journey'|'contact'|'account'|'cart'|'checkout'|'success';
 const text = (el: Element | null | undefined, value: unknown) => { if (el && typeof value === 'string' && value.trim()) el.textContent = value; };
@@ -132,11 +133,6 @@ async function getCachedTestimonials(): Promise<Record<string, unknown>[]> {
     console.error('Testimonials load failed', e);
     return [];
   }
-}
-
-function youtubeEmbedUrl(videoId: unknown): string {
-  const id = String(videoId ?? '').trim();
-  return /^[A-Za-z0-9_-]{11}$/.test(id) ? `https://www.youtube.com/embed/${encodeURIComponent(id)}` : '';
 }
 
 function seedlingsFeedbackMarkup(items: Array<Record<string, unknown>>) {
@@ -549,14 +545,17 @@ async function applyCommon(root: HTMLElement) {
   if (settings) {
     text(root.querySelector('.footer-bottom span:first-child'), `© 2026 ${String(settings.siteName ?? '')}`.trim());
     text(root.querySelector('.footer-bottom span:last-child'), settings.tagline);
-    const contactLinks = Array.from(root.querySelectorAll('.footer a'));
-    const phone = String(settings.contactPhone ?? '').trim();
-    const email = String(settings.contactEmail ?? '').trim();
-    for (const a of contactLinks) {
-      const href = a.getAttribute('href') ?? '';
-      if (href.startsWith('tel:') && phone) { text(a, phone); attr(a, 'href', `tel:${phone.replace(/\s+/g,'')}`); }
-      if (href.startsWith('mailto:') && email) { text(a, email); attr(a, 'href', `mailto:${email}`); }
-    }
+    // Phone/email settings may list several values; render one footer link per value.
+    const replaceLinks = (selector: string, values: string[], href: (value: string) => string) => {
+      if (!values.length) return;
+      root.querySelectorAll(`.footer ${selector}`).forEach((link) => link.replaceWith(...values.map((value) => {
+        const next = link.cloneNode(false) as HTMLAnchorElement;
+        next.setAttribute('href', href(value)); next.textContent = value;
+        return next;
+      })));
+    };
+    replaceLinks('a[href^="tel:"]', contactList(settings.contactPhone, '').filter(Boolean), telHref);
+    replaceLinks('a[href^="mailto:"]', contactList(settings.contactEmail, '').filter(Boolean), (value) => `mailto:${value}`);
     const brand = root.querySelector('.brand');
     if (brand) text(brand.querySelector('span:last-child'), settings.siteName);
     const logo = String(settings.logoUrl ?? '').trim();

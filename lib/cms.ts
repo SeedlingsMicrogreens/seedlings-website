@@ -34,3 +34,29 @@ export async function getPublishedByField<T extends Record<string, unknown>>(nam
   const snap = await getDocs(query(collection(db, name), where(field, '==', value), where('status', '==', 'published')));
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as unknown as T);
 }
+
+function setMeta(attribute: 'name' | 'property', key: string, content: string) {
+  let meta = document.querySelector(`meta[${attribute}="${key}"]`) as HTMLMetaElement | null;
+  if (!meta) { meta = document.createElement('meta'); meta.setAttribute(attribute, key); document.head.appendChild(meta); }
+  meta.content = content;
+}
+
+const seoValue = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+
+// Applies the SEO fields from an admin CMS > Website Pages document; empty fields leave the page defaults alone.
+export function applyPageSeo(page: Record<string, unknown> | null) {
+  const title = seoValue(page?.seoTitle);
+  const description = seoValue(page?.seoDescription);
+  const imageUrl = seoValue(page?.ogImageUrl);
+  if (title) { document.title = title; setMeta('property', 'og:title', title); }
+  if (description) { setMeta('name', 'description', description); setMeta('property', 'og:description', description); }
+  if (imageUrl) setMeta('property', 'og:image', imageUrl);
+}
+
+// Site Settings phone/email fields accept several values separated by commas.
+export function contactList(value: unknown, fallback: string): string[] {
+  const items = (typeof value === 'string' ? value : '').split(',').map((item) => item.trim()).filter(Boolean);
+  return items.length ? items : [fallback];
+}
+
+export const telHref = (phone: string) => `tel:${phone.replace(/[^\d+]/g, '')}`;

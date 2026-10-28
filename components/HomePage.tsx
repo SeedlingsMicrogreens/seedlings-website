@@ -24,6 +24,13 @@ const STATIC_TESTIMONIALS = [
 ];
 
 type CmsRecord = Record<string, unknown>;
+// Defaults for the trust strip below the banner (must match seedlings-microgreen-admin cms/homepage TRUST_POINTS).
+const TRUST_POINTS = [
+  ['fresh', 'Fresh to order', 'Harvested close to delivery'],
+  ['seed', 'Non-GMO seeds', 'Carefully selected varieties'],
+  ['water', 'Less water', 'Efficient indoor growing'],
+  ['ordering', 'Easy ordering', 'Website & mobile app'],
+] as const;
 
 type NavItem = { navKey?: unknown; label?: unknown; url?: unknown };
 
@@ -33,6 +40,8 @@ type SiteSettings = {
   contactPhone?: unknown;
   contactEmail?: unknown;
   logoUrl?: unknown;
+  googlePlayUrl?: unknown;
+  appStoreUrl?: unknown;
 };
 
 const asText = (value: unknown, fallback = '') => typeof value === 'string' && value.trim() ? value.trim() : fallback;
@@ -157,20 +166,26 @@ export default function HomePage() {
   const content = useMemo(() => new Map(homeContent.map((item) => [String(item.key ?? ''), item])), [homeContent]);
   const promise = content.get('promise');
   const why = content.get('why');
-  const app = content.get('appBanner');
-  // Homepage Content is the primary source for Trust Points. Keep the standalone
-  // collection as a compatibility fallback for existing installations during migration.
+  // App store links come from Site Settings (admin: Footer & App Links). The retired Homepage Content App Banner
+  // is a fallback for links saved there before the move. Buttons without a link are hidden, not sent to '#'.
+  const legacyApp = content.get('appBanner');
+  const storeLinks = [
+    { label: 'Google Play', prefix: 'GET IT ON', url: asText(settings?.googlePlayUrl, asText(legacyApp?.googlePlayUrl)) },
+    { label: 'App Store', prefix: 'DOWNLOAD ON THE', url: asText(settings?.appStoreUrl, asText(legacyApp?.appStoreUrl)) },
+  ].filter((store) => store.url);
+  // Each Trust Point field comes from Homepage Content, then the legacy standalone collection, then the default.
+  // Admin CMS > Homepage Content pre-fills its form in this same order, so the admin shows what is live here.
   const homepageTrust = content.get('trust');
-  const trustMap = useMemo(() => {
-    const fromHomepage: Array<[string, CmsRecord]> = homepageTrust ? ([
-      ['fresh', { itemKey: 'fresh', title: homepageTrust.freshTitle, text: homepageTrust.freshText }],
-      ['seed', { itemKey: 'seed', title: homepageTrust.seedTitle, text: homepageTrust.seedText }],
-      ['water', { itemKey: 'water', title: homepageTrust.waterTitle, text: homepageTrust.waterText }],
-      ['ordering', { itemKey: 'ordering', title: homepageTrust.orderingTitle, text: homepageTrust.orderingText }],
-    ] satisfies Array<[string, CmsRecord]>).filter(([, item]) => Boolean(asText(item.title) || asText(item.text))) : [];
-    const primary = new Map(fromHomepage);
-    if (primary.size) return primary;
-    return new Map(trustPoints.map((item) => [String(item.itemKey ?? ''), item]));
+  const trustItems = useMemo(() => {
+    const legacy = new Map(trustPoints.map((item) => [String(item.itemKey ?? ''), item]));
+    return TRUST_POINTS.map(([key, fallbackTitle, fallbackText]) => {
+      const old = legacy.get(key);
+      return {
+        key,
+        title: asText(homepageTrust?.[`${key}Title`], asText(old?.title, fallbackTitle)),
+        text: asText(homepageTrust?.[`${key}Text`], asText(old?.text, fallbackText)),
+      };
+    });
   }, [homepageTrust, trustPoints]);
 
   const hero = heroSlides[activeHeroIndex] ?? null;
@@ -186,13 +201,13 @@ export default function HomePage() {
     <Header navItems={navItems} />
     <main>
       <section className={`hero${heroStyle ? ' hero-has-image' : ' hero-loading'}${hasHeroContent ? '' : ' hero-image-only'}${activeHeroIndex === 0 ? ' hero-no-backdrop' : ''}`} aria-label="Homepage hero banner"><div className="hero-art" style={heroStyle} />{hasHeroContent && <div className="container hero-content">{asText(hero?.eyebrow) && <span className="eyebrow">{asText(hero?.eyebrow)}</span>}{asText(hero?.title) && <h1>{asText(hero?.title)}</h1>}{asText(hero?.subtitle) && <p>{asText(hero?.subtitle)}</p>}<div className="actions">{asText(hero?.primaryButtonText) && <a className="btn primary" href={asUrl(hero?.primaryButtonUrl, '/microgreens')}>{asText(hero?.primaryButtonText)}</a>}{asText(hero?.secondaryButtonText) && <a className="btn secondary" href={asUrl(hero?.secondaryButtonUrl, '/our-journey')}>{asText(hero?.secondaryButtonText)}</a>}</div></div>}{heroSlides.length > 1 && <div className="hero-slider-controls" aria-label="Hero slide controls"><button type="button" aria-label="Previous slide" onClick={() => setActiveHeroIndex((index) => (index - 1 + heroSlides.length) % heroSlides.length)}>‹</button><div className="hero-slider-dots">{heroSlides.map((slide, index) => <button key={String(slide.id ?? index)} type="button" aria-label={`Go to slide ${index + 1}`} aria-current={index === activeHeroIndex ? 'true' : undefined} className={index === activeHeroIndex ? 'active' : ''} onClick={() => setActiveHeroIndex(index)} />)}</div><button type="button" aria-label="Next slide" onClick={() => setActiveHeroIndex((index) => (index + 1) % heroSlides.length)}>›</button></div>}</section>
-      <section className="trust"><div className="container trust-grid">{[['fresh','Fresh to order','Harvested close to delivery'],['seed','Non-GMO seeds','Carefully selected varieties'],['water','Less water','Efficient indoor growing'],['ordering','Easy ordering','Website & mobile app']].map(([key, fallbackTitle, fallbackText]) => { const item = trustMap.get(key); return <div key={key}><strong>{asText(item?.title, fallbackTitle)}</strong><span>{asText(item?.text, fallbackText)}</span></div>; })}</div></section>
+      <section className="trust"><div className="container trust-grid">{trustItems.map((item) => <div key={item.key}><strong>{item.title}</strong><span>{item.text}</span></div>)}</div></section>
       <FeaturedProducts products={featuredProducts} loading={productsLoading} />
       <section className="section" style={{ paddingTop: 25 }}><div className="container"><div className="promo"><div className="promo-grid"><div><span className="eyebrow" style={{ color: '#d5ef9a' }}>{asText(promise?.eyebrow, 'The Seedlings promise')}</span><h2>{asText(promise?.title, 'Freshness you can see. Nutrition you can feel.')}</h2><p>{asText(promise?.body, 'From careful seed selection to harvest, we build the experience around fresh, beautiful microgreens.')}</p><a className="btn secondary" href={asUrl(promise?.buttonUrl, '/our-journey')}>{asText(promise?.buttonText, 'Why Seedlings')}</a></div><div className="promo-pills">{[['freshTitle','freshText','Fresh','grown for the order'],['localTitle','localText','Local','closer to your plate'],['simpleTitle','simpleText','Simple','easy online ordering']].map(([titleKey,textKey,titleFallback,textFallback]) => <div className="promo-pill" key={titleKey}><strong>{asText(promise?.[titleKey], titleFallback)}</strong><span>{asText(promise?.[textKey], textFallback)}</span></div>)}</div></div></div></div></section>
       <Testimonials items={testimonials} loading={testimonialsLoading} />
       <FAQ items={faqItems} loading={faqLoading} />
       <section className="section"><div className="container split"><div className={`visual${asText(why?.imageUrl) ? ' has-image' : ''}`} style={asText(why?.imageUrl) ? { backgroundImage: `url(${asText(why?.imageUrl)})` } : undefined} role={asText(why?.imageUrl) ? 'img' : undefined} aria-label={asText(why?.imageUrl) ? 'Why Seedlings' : undefined} /><div><span className="eyebrow">{asText(why?.eyebrow, 'Why Seedlings')}</span><h2>{asText(why?.title, 'Nutrition that starts small and makes a difference.')}</h2><p className="muted">{asText(why?.body, 'We grow nutrient-dense microgreens indoors with careful attention to seed quality, growing conditions and harvest timing.')}</p><div className="features">{[['feature1Title','feature1Text','01','Precision purity','Carefully selected seeds and controlled growing conditions.'],['feature2Title','feature2Text','02','Harvested fresh','We grow with freshness and delivery timing in mind.'],['feature3Title','feature3Text','03','Resource conscious','Indoor growing helps us use water efficiently.']].map(([titleKey,textKey,num,titleFallback,textFallback]) => <div className="feature" key={num}><span className="feature-num">{num}</span><div><h3>{asText(why?.[titleKey], titleFallback)}</h3><p>{asText(why?.[textKey], textFallback)}</p></div></div>)}</div><a className="btn dark" href={asUrl(why?.buttonUrl, '/our-journey')}>{asText(why?.buttonText, 'Discover our journey')}</a></div></div></section>
-      <section className="banner"><div className="container banner-inner"><div><span className="eyebrow" style={{ color: '#fff3db' }}>{asText(app?.eyebrow, 'Order anywhere')}</span><h2>{asText(app?.title, 'Fresh microgreens, one tap away.')}</h2><p>{asText(app?.body, 'Browse products and manage your orders through Seedlings.')}</p></div><div className="stores"><a className="store" href={asUrl(app?.googlePlayUrl, '#')}><small>GET IT ON</small><strong>Google Play</strong></a><a className="store" href={asUrl(app?.appStoreUrl, '#')}><small>DOWNLOAD ON THE</small><strong>App Store</strong></a></div></div></section>
+      {storeLinks.length > 0 && <section className="banner"><div className="container banner-inner"><div><span className="eyebrow" style={{ color: '#fff3db' }}>Order anywhere</span><h2>Fresh microgreens, one tap away.</h2><p>Browse products and manage your orders through Seedlings.</p></div><div className="stores">{storeLinks.map((store) => <a className="store" key={store.label} href={store.url} target="_blank" rel="noopener noreferrer"><small>{store.prefix}</small><strong>{store.label}</strong></a>)}</div></div></section>}
     </main>
     <Footer navItems={navItems} settings={settings} />
     <FloatingCart />

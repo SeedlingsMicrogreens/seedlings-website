@@ -272,6 +272,24 @@ service cloud.firestore {
       allow delete: if admin() || (signedIn() && resource.data.authUid == request.auth.uid);
     }
 
+    // Published website content managed in the admin CMS is public.
+    match /websiteHomepageContent/{id} {
+      allow read: if admin() || resource.data.status == 'published';
+      allow write: if admin();
+    }
+    match /websiteTrustPoints/{id} {
+      allow read: if admin() || resource.data.status == 'published';
+      allow write: if admin();
+    }
+    match /cmsBlogs/{id} {
+      allow read: if admin() || resource.data.status == 'published';
+      allow write: if admin();
+    }
+    match /websitePages/{id} {
+      allow read: if admin() || resource.data.status == 'published';
+      allow write: if admin();
+    }
+
     // Everything else is denied by default. Admin SDK is not subject to these rules.
     match /{document=**} {
       allow read, write: if false;
