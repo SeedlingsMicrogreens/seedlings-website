@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { cmsCollections, getDocById, getPublishedCollection } from '@/lib/cms';
+import { applyPageSeo, cmsCollections, getDocById, getPublishedByField, getPublishedCollection } from '@/lib/cms';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import { getActiveSalesProducts, productSlug, type SalesProduct } from '@/lib/salesProducts';
@@ -183,6 +183,7 @@ export default function CataloguePage() {
   const [category, setCategory] = useState('');
   const [navItems, setNavItems] = useState<Record<string, unknown>[]>([]);
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
+  const [content, setContent] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     document.title = 'Microgreens | Seedlings';
@@ -194,6 +195,12 @@ export default function CataloguePage() {
     }
 
     let active = true;
+
+    // Page content loads separately so a CMS failure never hides the products; defaults stay in place.
+    getPublishedByField<Record<string, unknown>>(cmsCollections.websitePages, 'pageKey', 'microgreens')
+      .then((rows) => { if (active) setContent(rows[0] ?? null); })
+      .catch((contentError) => console.error('Microgreens page content could not be loaded.', contentError));
+
     const load = async () => {
       try {
         const productsPromise = getActiveSalesProducts();
@@ -227,6 +234,11 @@ export default function CataloguePage() {
     };
   }, []);
 
+  useEffect(() => { applyPageSeo(content); }, [content]);
+
+  const heroImageUrl = text(content?.imageUrl);
+  const heroDescription = text(content?.body);
+
   const categories = useMemo(
     () => [...new Set(products.map((p) => text(p.category)).filter(Boolean))].slice(0, 5),
     [products],
@@ -245,8 +257,8 @@ export default function CataloguePage() {
         <section className="relative overflow-hidden border-b border-[var(--line)] bg-[#eef3d9]">
           <div className="relative mx-auto w-full max-w-[1440px]">
             <img
-              src={heroBannerImage.src}
-              alt="Fresh microgreens with the message Small Greens, Big Benefits"
+              src={heroImageUrl || heroBannerImage.src}
+              alt={heroImageUrl ? text(content?.imageAlt, 'Fresh microgreens') : 'Fresh microgreens with the message Small Greens, Big Benefits'}
               className="block h-auto w-full object-contain"
             />
             <nav aria-label="Breadcrumb" className="relative mx-auto w-full max-w-[1180px] px-4 py-3 text-sm text-[var(--soft)] sm:px-0">
@@ -265,11 +277,14 @@ export default function CataloguePage() {
             <div className="mb-7 flex flex-wrap items-end justify-between gap-5">
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-[1.6px] text-[var(--green-dark)]">
-                  Our products
+                  {text(content?.eyebrow, 'Our products')}
                 </span>
                 <h1 className="mt-2 font-serif text-[clamp(34px,4vw,48px)] font-bold leading-tight">
-                  Microgreens
+                  {text(content?.title, 'Microgreens')}
                 </h1>
+                {heroDescription ? (
+                  <p className="mt-2 max-w-[640px] text-sm text-[var(--soft)]">{heroDescription}</p>
+                ) : null}
               </div>
               {!loading && !error ? (
                 <span className="pb-1 text-sm font-medium text-[var(--soft)]">

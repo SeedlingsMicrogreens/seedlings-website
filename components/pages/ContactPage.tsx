@@ -11,8 +11,17 @@ import { auth, authPersistenceReady } from '@/lib/firebase';
 import { signInAnonymously } from 'firebase/auth';
 import { mayStartGuestSession } from '@/lib/customerSession';
 import { isCurrentCustomerSession } from '@/lib/customerAuthState';
+import { applyPageSeo, cmsCollections, contactList, getPublishedByField, telHref } from '@/lib/cms';
+import { useSiteChrome } from '@/components/layout/useSiteChrome';
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || '';
+
+type CmsRecord = Record<string, unknown>;
+
+const cmsText = (record: CmsRecord | null, key: string, fallback: string) => {
+  const value = record?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+};
 
 export default function ContactPage() {
   const [captchaToken, setCaptchaToken] = useState('');
@@ -27,6 +36,19 @@ export default function ContactPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [content, setContent] = useState<CmsRecord | null>(null);
+  const { navItems, settings } = useSiteChrome();
+
+  useEffect(() => {
+    let active = true;
+    // Loads separately from the header/footer data, so a failed read keeps the page defaults without blanking them.
+    getPublishedByField<CmsRecord>(cmsCollections.websitePages, 'pageKey', 'contact')
+      .then((rows) => { if (active) setContent(rows[0] ?? null); })
+      .catch((error) => console.error('Contact page content could not be loaded.', error));
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => { applyPageSeo(content); }, [content]);
 
   useEffect(() => {
     let active = true;
@@ -80,6 +102,11 @@ export default function ContactPage() {
     return products.find((product) => product.id === productId)?.name || '';
   }, [productId, otherProduct, products]);
 
+  // The page's own phone/email win; otherwise fall back to the site-wide contact details from CMS settings.
+  const phone = cmsText(content, 'phone', contactList(settings?.contactPhone, '+91 73785 11588')[0]);
+  const email = cmsText(content, 'email', contactList(settings?.contactEmail, 'info@seedlingsmicrogreen.com')[0]);
+  const formIntro = cmsText(content, 'formIntro', '');
+
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setResult(null);
@@ -122,18 +149,19 @@ export default function ContactPage() {
   }
 
   return <>
-    <Header navItems={[]} />
+    <Header navItems={navItems} />
     <main>
-      <section className="page-hero"><div className="container"><div className="breadcrumbs"><a href="/">Home</a> / Contact</div><h1>Let's connect.</h1><p>Have a question about our greens, an order or delivery? Send us a message.</p></div></section>
+      <section className="page-hero"><div className="container"><div className="breadcrumbs"><a href="/">Home</a> / Contact</div><h1>{cmsText(content, 'title', "Let's connect.")}</h1><p>{cmsText(content, 'body', 'Have a question about our greens, an order or delivery? Send us a message.')}</p></div></section>
       <section className="section"><div className="container contact-grid">
-        <div><span className="eyebrow">Contact Seedlings</span><h2>Bring a little more green to your plate.</h2><p className="muted">We are happy to help with product information, orders, subscriptions and general enquiries.</p>
+        <div><span className="eyebrow">{cmsText(content, 'eyebrow', 'Contact Seedlings')}</span><h2>{cmsText(content, 'sectionTitle', 'Bring a little more green to your plate.')}</h2><p className="muted">{cmsText(content, 'sectionText', 'We are happy to help with product information, orders, subscriptions and general enquiries.')}</p>
           <div className="features">
-            <div className="feature"><span className="feature-num">01</span><div><h3>Call</h3><p>+91 73785 11588</p></div></div>
-            <div className="feature"><span className="feature-num">02</span><div><h3>Email</h3><p>info@seedlingsmicrogreen.com</p></div></div>
-            <div className="feature"><span className="feature-num">03</span><div><h3>Service</h3><p>Fresh microgreens with convenient delivery.</p></div></div>
+            <div className="feature"><span className="feature-num">01</span><div><h3>{cmsText(content, 'callTitle', 'Call')}</h3><p><a href={telHref(phone)}>{cmsText(content, 'callText', phone)}</a></p></div></div>
+            <div className="feature"><span className="feature-num">02</span><div><h3>{cmsText(content, 'emailTitle', 'Email')}</h3><p><a href={`mailto:${email}`}>{cmsText(content, 'emailText', email)}</a></p></div></div>
+            <div className="feature"><span className="feature-num">03</span><div><h3>{cmsText(content, 'serviceTitle', 'Service')}</h3><p>{cmsText(content, 'serviceText', 'Fresh microgreens with convenient delivery.')}</p></div></div>
           </div>
         </div>
         <form className="form" onSubmit={submit}>
+          {formIntro && <p className="muted" style={{ margin: 0 }}>{formIntro}</p>}
           <label>Name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name" /></label>
           <label>Mobile / Email<input value={mobileEmail} onChange={(event) => setMobileEmail(event.target.value)} placeholder="How can we reach you?" /></label>
           <label>Product
@@ -153,6 +181,6 @@ export default function ContactPage() {
         </form>
       </div></section>
     </main>
-    <Footer navItems={[]} settings={null} />
+    <Footer navItems={navItems} settings={settings} />
   </>;
 }

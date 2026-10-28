@@ -121,6 +121,7 @@ export default function Header({ navItems = [] }: { navItems?: HeaderNavItem[] }
         <a href="/" onClick={close}>{label('home', 'Home')}</a>
         <a href="/microgreens" onClick={close}>{label('microgreens', 'Microgreens')}</a>
         <a href="/our-journey" onClick={close}>{label('journey', 'Journey')}</a>
+        <a href="/blog" onClick={close}>{label('blog', 'Blog')}</a>
         <a href="/contact" onClick={close}>{label('contact', 'Contact')}</a>
         <NotificationBell />
         <a href="/cart" onClick={close} className="nav-cart-icon" aria-label={cartCount === null ? 'Cart' : `Cart, ${cartCount} items`}>
