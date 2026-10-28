@@ -37,6 +37,6 @@ export default function Footer({ navItems = [], settings = null }: { navItems?: 
       <div><h3>Explore</h3><a href="/microgreens">{label(navItems, 'footerMicrogreens', 'Microgreens')}</a><a href="/our-journey">{label(navItems, 'footerJourney', 'Our Journey')}</a><a href="/blog">{label(navItems, 'footerBlog', 'Blog')}</a><a href="/contact">{label(navItems, 'footerContact', 'Contact')}</a><a href="/profile">{label(navItems, 'footerAccount', 'My Profile')}</a><a href={deliveryAuthenticated ? '/deliveries' : '/delivery-login'}>{deliveryAuthenticated ? 'Delivery Partner Dashboard' : 'Delivery Partner Login'}</a></div>
       <div><h3>Contact</h3>{phones.map((phone) => <a key={phone} href={telHref(phone)}>{phone}</a>)}{emails.map((email) => <a key={email} href={`mailto:${email}`}>{email}</a>)}<a href="/contact">Send an enquiry</a></div>
     </div>
-    <div className="container footer-bottom"><span>© 2026 {footerSiteName}</span><span>{tagline}</span></div>
+    <div className="container footer-bottom"><span>© 2026 {footerSiteName}</span><span className="footer-legal"><a href="/terms-and-conditions">{label(navItems, 'footerTerms', 'Terms & Conditions')}</a><a href="/privacy-policy">{label(navItems, 'footerPrivacy', 'Privacy Policy')}</a></span><span>{tagline}</span></div>
   </footer>;
 }

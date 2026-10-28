@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import { useSiteChrome } from '@/components/layout/useSiteChrome';
-import { applyPageSeo } from '@/lib/cms';
-import { formatBlogDate, getPublishedBlog, type BlogPost } from '@/lib/blogs';
+import { applyPageSeo, formatCmsDate } from '@/lib/cms';
+import { getPublishedBlog, type BlogPost } from '@/lib/blogs';
 import { richTextPlain, sanitizeRichTextHtml } from '@/lib/richText';
 import { youtubeEmbedUrl } from '@/lib/youtube';
 
@@ -34,7 +34,7 @@ export default function BlogPostPage({ slug }: { slug: string }) {
 
   const contentHtml = useMemo(() => post ? sanitizeRichTextHtml(post.content) : '', [post]);
   const embedUrl = youtubeEmbedUrl(post?.videoId);
-  const meta = post ? [post.authorName, formatBlogDate(post.publishedAt)].filter(Boolean).join(' · ') : '';
+  const meta = post ? [post.authorName, formatCmsDate(post.publishedAt)].filter(Boolean).join(' · ') : '';
   const heading = post?.title || (status === 'loading' ? '' : status === 'missing' ? 'Post not found' : 'Blog unavailable');
 
   return <>
@@ -48,7 +48,7 @@ export default function BlogPostPage({ slug }: { slug: string }) {
         {post && <>
           {post.coverImageUrl && <img className="blog-article-image" src={post.coverImageUrl} alt={post.title} />}
           {embedUrl && <div className="blog-video"><iframe src={embedUrl} title={`${post.title} video`} loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen /></div>}
-          <div className="blog-content" dangerouslySetInnerHTML={{ __html: contentHtml }} />
+          <div className="rich-content" dangerouslySetInnerHTML={{ __html: contentHtml }} />
         </>}
         {status !== 'loading' && <a className="btn outline blog-back" href="/blog">← All posts</a>}
       </div></section>

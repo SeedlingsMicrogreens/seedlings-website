@@ -6082,7 +6082,7 @@ body.journey-feedback-modal-open { overflow: hidden; }
   background: transparent;
 }
 
-/* Blog (/blog and /blog/[slug]) — content from Admin CMS > Blogs. */
+/* Blog (/blog and /blog/[slug]) and legal pages — content from Admin CMS. .rich-content styles Admin rich text. */
 .blog-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -6157,7 +6157,8 @@ body.journey-feedback-modal-open { overflow: hidden; }
   to { background-position: -100% 0 }
 }
 
-.blog-article {
+.blog-article,
+.legal-article {
   max-width: 780px
 }
 
@@ -6190,34 +6191,34 @@ body.journey-feedback-modal-open { overflow: hidden; }
   border: 0
 }
 
-.blog-content {
+.rich-content {
   font-size: 17px;
   line-height: 1.75;
   overflow-wrap: anywhere
 }
 
-.blog-content h2,
-.blog-content h3,
-.blog-content h4 {
+.rich-content h2,
+.rich-content h3,
+.rich-content h4 {
   font-family: "Playfair Display", serif;
   line-height: 1.25;
   margin: 1.6em 0 .5em
 }
 
-.blog-content p,
-.blog-content ul,
-.blog-content ol,
-.blog-content blockquote {
+.rich-content p,
+.rich-content ul,
+.rich-content ol,
+.rich-content blockquote {
   margin: 0 0 1em
 }
 
-.blog-content blockquote {
+.rich-content blockquote {
   border-left: 4px solid var(--green);
   padding-left: 16px;
   color: var(--soft)
 }
 
-.blog-content a {
+.rich-content a {
   color: var(--orange-dark);
   text-decoration: underline
 }
@@ -6232,5 +6233,14 @@ body.journey-feedback-modal-open { overflow: hidden; }
 
 @media (max-width: 640px) {
   .blog-grid { grid-template-columns: 1fr }
-  .blog-content { font-size: 16px }
+  .rich-content { font-size: 16px }
+}
+
+.footer-legal {
+  display: flex;
+  gap: 16px
+}
+
+.footer-legal a {
+  color: inherit
 }

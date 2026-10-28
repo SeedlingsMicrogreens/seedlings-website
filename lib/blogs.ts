@@ -42,10 +42,3 @@ export async function getPublishedBlog(slug: string): Promise<BlogPost | null> {
   const rows = await getPublishedByField<Record<string, unknown>>(cmsCollections.blogs, 'slug', slug);
   return rows[0] ? toBlogPost(rows[0]) : null;
 }
-
-/** Formats the Admin "YYYY-MM-DD" publish date, e.g. "28 October 2026"; anything else gives ''. */
-export function formatBlogDate(value: string): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return '';
-  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-}

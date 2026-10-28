@@ -4,14 +4,15 @@ import { useEffect, useState } from 'react';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import { useSiteChrome } from '@/components/layout/useSiteChrome';
-import { formatBlogDate, getPublishedBlogs, type BlogPost } from '@/lib/blogs';
+import { getPublishedBlogs, type BlogPost } from '@/lib/blogs';
+import { formatCmsDate } from '@/lib/cms';
 import { richTextPlain } from '@/lib/richText';
 import { youtubeThumbnailUrl } from '@/lib/youtube';
 
 function BlogCard({ post }: { post: BlogPost }) {
   const imageUrl = post.coverImageUrl || youtubeThumbnailUrl(post.videoId);
   const summary = post.excerpt || richTextPlain(post.content);
-  const date = formatBlogDate(post.publishedAt);
+  const date = formatCmsDate(post.publishedAt);
   return <a className="card blog-card" href={`/blog/${encodeURIComponent(post.slug)}`}>
     <div className="blog-card-art">{imageUrl && <img src={imageUrl} alt="" loading="lazy" />}</div>
     <div className="blog-card-body">

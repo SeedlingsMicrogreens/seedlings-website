@@ -60,3 +60,10 @@ export function contactList(value: unknown, fallback: string): string[] {
 }
 
 export const telHref = (phone: string) => `tel:${phone.replace(/[^\d+]/g, '')}`;
+
+/** Formats an Admin "YYYY-MM-DD" date field, e.g. "28 October 2026"; anything else gives ''. */
+export function formatCmsDate(value: unknown): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof value === 'string' ? value.trim() : '');
+  if (!match) return '';
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+}
